@@ -1,0 +1,49 @@
+# Linter config. The important part is depguard: it turns the architecture
+# rules into CI failures instead of code-review reminders.
+run:
+  timeout: 5m
+
+linters:
+  enable:
+    - depguard
+    - errcheck
+    - govet
+    - staticcheck
+    - revive
+    - gosec
+    - bodyclose
+    - sqlclosecheck
+    - rowserrcheck
+
+linters-settings:
+  depguard:
+    rules:
+      # Rule 1 (dependency rule): business logic must not know about the web
+      # framework or the database driver. If a service needs one of these, the
+      # abstraction is in the wrong place.
+      domain-purity:
+        files:
+          - "**/internal/modules/*/domain.go"
+          - "**/internal/modules/*/service.go"
+        deny:
+          - pkg: github.com/gin-gonic/gin
+            desc: "business logic must not import the web framework; handlers translate HTTP"
+          - pkg: github.com/jackc/pgx
+            desc: "business logic must not import the database driver; repositories do"
+          - pkg: database/sql
+            desc: "business logic must not import database/sql; repositories do"
+
+      # Rule 2 (cross-module rule): a module reaches another module only
+      # through the interface it declares in its own ports.go, never by
+      # importing that module's repository or handler.
+      no-cross-module-internals:
+        files:
+          - "**/internal/modules/**"
+        deny:
+          - pkg: github.com/CleargateFinance/cleargate-core/internal/app
+            desc: "modules must not import the composition root"
+
+issues:
+  exclude-rules:
+    - path: _test\.go
+      linters: [gosec, errcheck]

@@ -1,0 +1,12 @@
+# Local development dependencies only. Production runs elsewhere.
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: cleargate
+      POSTGRES_PASSWORD: cleargate
+      POSTGRES_DB: cleargate
+    ports: ["5432:5432"]
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]

@@ -1,0 +1,11 @@
+# Source of truth for the public API contract.
+#
+# The SDK, MCP server and console live in separate repositories and generate
+# their clients from this file. Keeping the contract here means a breaking
+# change is visible as a diff in this repo rather than discovered by a
+# customer's agent failing mid-run.
+openapi: 3.1.0
+info:
+  title: Cleargate Finance API
+  version: 0.1.0
+paths: {}
