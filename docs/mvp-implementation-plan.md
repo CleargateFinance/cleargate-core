@@ -28,7 +28,7 @@ The instinct is to build the API endpoint first, because it demos. This plan bui
 
 1. **Cost of being wrong.** A ledger bug moves money incorrectly and does so *silently*. A routing bug is a 404 you notice in a minute. Spend the fresh attention on the thing whose failures are invisible.
 2. **Dependency direction.** Ledger depends on nothing. Payment depends on everything. Building bottom-up means every phase is testable in isolation the day it is written.
-3. **The compiler works for you.** Once `money.Amount` exists and refuses `float64`, every later phase inherits that safety for free.
+3. **The compiler works for you.** Once `currency.Amount` exists and refuses `float64`, every later phase inherits that safety for free.
 
 The objection — "then we have nothing to show for two weeks" — is answered by Phase 0, which puts a deployable service with a health check in CI on day two. After that each phase is 2–5 days and independently demonstrable.
 
@@ -57,7 +57,7 @@ Phases 2/3 and 4 are independent of Phase 1 — parallelisable if more than one 
 
 ### Task 0.1: Money type
 
-**Files:** `internal/shared/money/money.go`, `internal/shared/money/money_test.go`
+**Files:** `internal/shared/currency/currency.go`, `internal/shared/currency/currency_test.go`
 
 > **Why this and not that — no `float64` constructor**
 > `0.1 + 0.2 != 0.3` in IEEE-754. The ledger's defining invariant is that postings sum to exactly zero, so a type that cannot represent its own inputs cannot satisfy it. The protection is not "remember to use decimal" — it is that no function in this package accepts a `float64`, so the mistake does not compile. Whitepaper §8.3 depends on this.
@@ -65,17 +65,17 @@ Phases 2/3 and 4 are independent of Phase 1 — parallelisable if more than one 
 - [ ] **Step 1: Write the failing tests**
 
 ```go
-// internal/shared/money/money_test.go
-package money_test
+// internal/shared/currency/currency_test.go
+package currency_test
 
 import (
 	"testing"
 
-	"github.com/CleargateFinance/cleargate-core/internal/shared/money"
+	"github.com/CleargateFinance/cleargate-core/internal/shared/currency"
 )
 
 func TestParse_ExactDecimal(t *testing.T) {
-	a, err := money.Parse("0.40", money.USDC)
+	a, err := currency.Parse("0.40", currency.USDC)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -86,30 +86,30 @@ func TestParse_ExactDecimal(t *testing.T) {
 
 func TestAdd_IsExact(t *testing.T) {
 	// The canonical float64 failure. This must hold exactly.
-	x, _ := money.Parse("0.1", money.USDC)
-	y, _ := money.Parse("0.2", money.USDC)
+	x, _ := currency.Parse("0.1", currency.USDC)
+	y, _ := currency.Parse("0.2", currency.USDC)
 	sum, err := x.Add(y)
 	if err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	want, _ := money.Parse("0.3", money.USDC)
+	want, _ := currency.Parse("0.3", currency.USDC)
 	if !sum.Equal(want) {
 		t.Fatalf("0.1 + 0.2 = %s, want 0.3", sum)
 	}
 }
 
 func TestAdd_RejectsAssetMismatch(t *testing.T) {
-	usdc, _ := money.Parse("1", money.USDC)
-	other, _ := money.Parse("1", money.Asset("EURC"))
+	usdc, _ := currency.Parse("1", currency.USDC)
+	other, _ := currency.Parse("1", currency.Asset("EURC"))
 	if _, err := usdc.Add(other); err == nil {
 		t.Fatal("adding across assets must fail")
 	}
 }
 
 func TestSum_ZeroForBalancedLines(t *testing.T) {
-	debit, _ := money.Parse("-0.40", money.USDC)
-	credit, _ := money.Parse("0.40", money.USDC)
-	total, err := money.Sum(money.USDC, debit, credit)
+	debit, _ := currency.Parse("-0.40", currency.USDC)
+	credit, _ := currency.Parse("0.40", currency.USDC)
+	total, err := currency.Sum(currency.USDC, debit, credit)
 	if err != nil {
 		t.Fatalf("Sum: %v", err)
 	}
@@ -121,13 +121,13 @@ func TestSum_ZeroForBalancedLines(t *testing.T) {
 
 - [ ] **Step 2: Run and confirm failure**
 
-`go test ./internal/shared/money/ -run . -v` → FAIL, `undefined: money.Parse`
+`go test ./internal/shared/currency/ -run . -v` → FAIL, `undefined: currency.Parse`
 
 - [ ] **Step 3: Implement**
 
 ```go
-// internal/shared/money/money.go
-package money
+// internal/shared/currency/currency.go
+package currency
 
 import (
 	"fmt"
@@ -150,11 +150,11 @@ type Amount struct {
 
 func Parse(s string, a Asset) (Amount, error) {
 	if a == "" {
-		return Amount{}, fmt.Errorf("money: empty asset")
+		return Amount{}, fmt.Errorf("currency: empty asset")
 	}
 	d, err := decimal.NewFromString(s)
 	if err != nil {
-		return Amount{}, fmt.Errorf("money: parse %q: %w", s, err)
+		return Amount{}, fmt.Errorf("currency: parse %q: %w", s, err)
 	}
 	return Amount{v: d, asset: a}, nil
 }
@@ -172,14 +172,14 @@ func (a Amount) Equal(b Amount) bool { return a.asset == b.asset && a.v.Equal(b.
 // return an error rather than a silently wrong comparison.
 func (a Amount) GreaterThan(b Amount) (bool, error) {
 	if a.asset != b.asset {
-		return false, fmt.Errorf("money: asset mismatch %s vs %s", a.asset, b.asset)
+		return false, fmt.Errorf("currency: asset mismatch %s vs %s", a.asset, b.asset)
 	}
 	return a.v.GreaterThan(b.v), nil
 }
 
 func (a Amount) Add(b Amount) (Amount, error) {
 	if a.asset != b.asset {
-		return Amount{}, fmt.Errorf("money: asset mismatch %s vs %s", a.asset, b.asset)
+		return Amount{}, fmt.Errorf("currency: asset mismatch %s vs %s", a.asset, b.asset)
 	}
 	return Amount{v: a.v.Add(b.v), asset: a.asset}, nil
 }
@@ -198,14 +198,14 @@ func Sum(asset Asset, amounts ...Amount) (Amount, error) {
 }
 ```
 
-- [ ] **Step 4: Verify** — `go test ./internal/shared/money/ -v` → PASS (4 tests)
+- [ ] **Step 4: Verify** — `go test ./internal/shared/currency/ -v` → PASS (4 tests)
 
 - [ ] **Step 5: Commit**
 
 ```bash
 go get github.com/shopspring/decimal
-git add internal/shared/money go.mod go.sum
-git commit -m "feat(money): exact decimal amount type with asset safety"
+git add internal/shared/currency go.mod go.sum
+git commit -m "feat(currency): exact decimal amount type with asset safety"
 ```
 
 ### Task 0.2: Config, Postgres pool, unit of work
@@ -513,16 +513,16 @@ package ledger
 
 type Line struct {
 	LedgerAccountID id.LedgerAccountID
-	Amount          money.Amount // signed
+	Amount          currency.Amount // signed
 }
 
 // Balanced reports whether the lines form a valid double-entry transaction.
-func Balanced(asset money.Asset, lines []Line) (bool, error) {
-	amounts := make([]money.Amount, 0, len(lines))
+func Balanced(asset currency.Asset, lines []Line) (bool, error) {
+	amounts := make([]currency.Amount, 0, len(lines))
 	for _, l := range lines {
 		amounts = append(amounts, l.Amount)
 	}
-	total, err := money.Sum(asset, amounts...)
+	total, err := currency.Sum(asset, amounts...)
 	if err != nil {
 		return false, err
 	}
@@ -764,7 +764,7 @@ CREATE UNIQUE INDEX mandate_one_active ON mandate (agent_id) WHERE effective_to 
 ```go
 // internal/modules/authz/engine_test.go
 func TestDecide(t *testing.T) {
-	usd := func(s string) money.Amount { a, _ := money.Parse(s, money.USDC); return a }
+	usd := func(s string) currency.Amount { a, _ := currency.Parse(s, currency.USDC); return a }
 
 	base := authz.Snapshot{
 		Rules: authz.Rules{

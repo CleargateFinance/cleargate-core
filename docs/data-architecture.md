@@ -304,7 +304,7 @@ CREATE TABLE posting (
 
 Three deliberate choices:
 
-- **`numeric`, never `float8`.** `0.1 + 0.2 != 0.3` in binary floating point. A ledger whose defining invariant is "sums to zero" cannot be built on a type that cannot represent its own inputs. Non-negotiable, and it must be mirrored in Go — hence `internal/shared/money`, which does not accept a `float64`.
+- **`numeric`, never `float8`.** `0.1 + 0.2 != 0.3` in binary floating point. A ledger whose defining invariant is "sums to zero" cannot be built on a type that cannot represent its own inputs. Non-negotiable, and it must be mirrored in Go — hence `internal/shared/currency`, which does not accept a `float64`.
 - **Signed amounts rather than a `direction` column.** The zero-sum check becomes `SUM(amount) = 0`, which the database can verify directly. A `direction` enum makes it `SUM(CASE WHEN ... )`, which is slower and easier to get wrong.
 - **Partitioned by month from day one.** §8.6 anticipates *"an agent paying the same merchant 800 times daily."* Partitioning an empty table is a five-minute job; partitioning a live billion-row table is a migration project. Do it now.
 
