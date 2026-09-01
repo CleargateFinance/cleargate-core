@@ -208,19 +208,19 @@ git add internal/shared/currency go.mod go.sum
 git commit -m "feat(currency): exact decimal amount type with asset safety"
 ```
 
-### Task 0.2: Config, Postgres pool, unit of work
+### Task 0.2: Config, database pool, unit of work
 
-**Files:** `internal/platform/config/config.go`, `internal/platform/postgres/postgres.go`, `internal/platform/postgres/unitofwork.go`
+**Files:** `internal/infrastructure/config/config.go`, `internal/infrastructure/database/postgres.go`, `internal/infrastructure/database/unitofwork.go`
 
 > **Why this and not that — the unit of work takes a `context.Context`, not a `*sql.Tx`**
 > Repositories need to run inside a caller-controlled transaction, but a repository method signature must not leak the transaction type — that would force every module to import pgx and would break the dependency rule. Stashing the transaction in the context means `Post(ctx, ...)` joins whatever transaction is open, and works identically outside one. One signature, both cases.
 
-- [ ] **Step 1: Failing test** (`internal/platform/postgres/unitofwork_test.go`)
+- [ ] **Step 1: Failing test** (`internal/infrastructure/database/unitofwork_test.go`)
 
 ```go
 //go:build integration
 
-package postgres_test
+package database_test
 
 import (
 	"context"
@@ -260,13 +260,13 @@ func TestUnitOfWork_RollsBackOnError(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Confirm failure** — `go test ./internal/platform/postgres/ -tags=integration -v` → FAIL (undefined fixtures)
+- [ ] **Step 2: Confirm failure** — `go test ./internal/infrastructure/database/ -tags=integration -v` → FAIL (undefined fixtures)
 
 - [ ] **Step 3: Implement the DB handle and UoW**
 
 ```go
-// internal/platform/postgres/postgres.go
-package postgres
+// internal/infrastructure/database/postgres.go
+package database
 
 import (
 	"context"
@@ -301,8 +301,8 @@ func (d *DB) q(ctx context.Context) pgx.Tx { // nil means "use pool"
 > Fill in `Exec`/`Query`/`QueryRow` delegating to `d.q(ctx)` when non-nil, else `d.Pool`. Keep this file under ~120 lines; it is plumbing.
 
 ```go
-// internal/platform/postgres/unitofwork.go
-package postgres
+// internal/infrastructure/database/unitofwork.go
+package database
 
 import (
 	"context"
@@ -365,16 +365,16 @@ func NewTestDB(t *testing.T) *TestDB {
 - [ ] **Step 5: Verify and commit**
 
 ```bash
-go test ./internal/platform/postgres/ -tags=integration -v   # PASS
-git add internal/platform test/fixtures go.mod go.sum
-git commit -m "feat(platform): postgres pool, context-scoped unit of work, test harness"
+go test ./internal/infrastructure/database/ -tags=integration -v   # PASS
+git add internal/infrastructure test/fixtures go.mod go.sum
+git commit -m "feat(infrastructure): database pool, context-scoped unit of work, test harness"
 ```
 
 ### Task 0.3: Migration tooling and the walking skeleton
 
 - [ ] **Step 1:** `cmd/migrate` wrapping `golang-migrate`, subcommands `up`/`down`/`version`.
 - [ ] **Step 2:** `migrations/000001_extensions.up.sql` — `CREATE EXTENSION IF NOT EXISTS pgcrypto;`
-- [ ] **Step 3:** `internal/platform/httpx` — Gin engine with request-ID, structured logging, panic recovery, and the single `apperr.Kind → HTTP status` mapper.
+- [ ] **Step 3:** `internal/infrastructure/httpx` — Gin engine with request-ID, structured logging, panic recovery, and the single `apperr.Kind → HTTP status` mapper.
 - [ ] **Step 4:** `internal/app/api.go` — `BuildAPI(cfg) (*gin.Engine, func(), error)` registering only `GET /v1/health` (checks DB and Redis).
 - [ ] **Step 5:** `cmd/api/main.go` — graceful shutdown as sketched in the scaffold.
 
@@ -704,7 +704,7 @@ func TestVerify_FailsOnAnyMutation(t *testing.T)          // flip one byte -> re
 func TestVerify_FailsOnWrongKey(t *testing.T)
 ```
 
-- [ ] **Step 3: Implement** — Ed25519 in `internal/platform/crypto`.
+- [ ] **Step 3: Implement** — Ed25519 in `internal/infrastructure/crypto`.
 
 > **Why Ed25519 over ECDSA:** deterministic (no nonce to reuse and leak a key), fixed 64-byte signatures, no curve or parameter choices to get wrong, and constant-time by construction in Go's stdlib.
 

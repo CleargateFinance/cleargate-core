@@ -1,7 +1,7 @@
-// Package postgres owns the database connection pool and transaction plumbing.
-// It contains no business logic and no SQL statements — those live in each
-// module's repo_postgres.go file.
-package postgres
+// Package database owns the connection pool and transaction plumbing (backed
+// by Postgres). It contains no business logic and no table-specific SQL —
+// that lives in each module's repo_postgres.go file.
+package database
 
 // DB is the handle modules receive. It abstracts *pgxpool.Pool so a repository
 // method works identically inside or outside an open transaction.
