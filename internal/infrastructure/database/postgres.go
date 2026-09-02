@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// Unique tag used to store and find one specific value inside a `context.Context`
 type ctxKey struct{}
 
 // DB is what repositories receive. Exec/Query transparently use the ambient
@@ -20,6 +21,7 @@ type DB struct {
 	UoW  UnitOfWork
 }
 
+// unused atm
 type querier interface {
 	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
 	Query(context.Context, string, ...any) (pgx.Rows, error)
@@ -34,7 +36,7 @@ func (d *DB) q(ctx context.Context) pgx.Tx { // nil means "use pool"
 }
 
 // Exec, Query and QueryRow join the ambient transaction stashed in ctx by
-// UnitOfWork.Do, if one is open; otherwise they run directly against the pool.
+// UnitOfWork.Do, if one is open, otherwise they run directly against the pool.
 // This is what lets a repository call db.Exec(ctx, ...) without ever knowing
 // whether it's inside a transaction.
 func (d *DB) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
