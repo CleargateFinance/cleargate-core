@@ -1,6 +1,7 @@
 // Package database owns the connection pool and transaction plumbing (backed
 // by Postgres). It contains no business logic and no table-specific SQL —
-// that lives in each module's repo_postgres.go file.
+// that lives in each module's repo_postgres.go file. Below methods are the single door
+// every repo_postgres.go file uses to talk to the database
 package database
 
 import (
@@ -21,18 +22,12 @@ type DB struct {
 	UoW  UnitOfWork
 }
 
-// unused atm
-type querier interface {
-	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
-	Query(context.Context, string, ...any) (pgx.Rows, error)
-	QueryRow(context.Context, string, ...any) pgx.Row
-}
-
+// `q` method checks if there is an open transaction right now, or not
 func (d *DB) q(ctx context.Context) pgx.Tx { // nil means "use pool"
-	if tx, ok := ctx.Value(ctxKey{}).(pgx.Tx); ok {
-		return tx
+	if tx, ok := ctx.Value(ctxKey{}).(pgx.Tx); ok { // `ctx.Value()` always returns the generic type `any`. Instead we unwrapping returned value from ctx as a concrete type `pgx.Tx`.
+		return tx // yes — a transaction was stashed here, use it
 	}
-	return nil
+	return nil // no — nothing stashed, caller should use the plain pool
 }
 
 // Exec, Query and QueryRow join the ambient transaction stashed in ctx by
@@ -41,9 +36,9 @@ func (d *DB) q(ctx context.Context) pgx.Tx { // nil means "use pool"
 // whether it's inside a transaction.
 func (d *DB) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
 	if tx := d.q(ctx); tx != nil {
-		return tx.Exec(ctx, sql, args...)
+		return tx.Exec(ctx, sql, args...) // run it as part of the open transaction
 	}
-	return d.Pool.Exec(ctx, sql, args...)
+	return d.Pool.Exec(ctx, sql, args...) // no transaction open — run it standalone
 }
 
 func (d *DB) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
