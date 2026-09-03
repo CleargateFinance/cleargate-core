@@ -30,10 +30,10 @@ func (d *DB) q(ctx context.Context) pgx.Tx { // nil means "use pool"
 	return nil // no — nothing stashed, caller should use the plain pool
 }
 
-// Exec, Query and QueryRow join the ambient transaction stashed in ctx by
-// UnitOfWork.Do, if one is open, otherwise they run directly against the pool.
-// This is what lets a repository call db.Exec(ctx, ...) without ever knowing
-// whether it's inside a transaction.
+// Exec joins the ambient transaction stashed in ctx by UnitOfWork.Do, if one
+// is open; otherwise it runs directly against the pool. This is what lets a
+// repository call db.Exec(ctx, ...) without ever knowing whether it's inside
+// a transaction.
 func (d *DB) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
 	if tx := d.q(ctx); tx != nil {
 		return tx.Exec(ctx, sql, args...) // run it as part of the open transaction
@@ -41,6 +41,8 @@ func (d *DB) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandT
 	return d.Pool.Exec(ctx, sql, args...) // no transaction open — run it standalone
 }
 
+// Query joins the ambient transaction stashed in ctx by UnitOfWork.Do, if one
+// is open; otherwise it runs directly against the pool.
 func (d *DB) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
 	if tx := d.q(ctx); tx != nil {
 		return tx.Query(ctx, sql, args...)
@@ -48,6 +50,8 @@ func (d *DB) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, erro
 	return d.Pool.Query(ctx, sql, args...)
 }
 
+// QueryRow joins the ambient transaction stashed in ctx by UnitOfWork.Do, if
+// one is open; otherwise it runs directly against the pool.
 func (d *DB) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
 	if tx := d.q(ctx); tx != nil {
 		return tx.QueryRow(ctx, sql, args...)

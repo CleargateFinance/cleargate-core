@@ -28,27 +28,34 @@ type UnitOfWork interface {
 // running one query on it, and returning it.
 type uow struct{ pool *pgxpool.Pool }
 
+// NewUnitOfWork builds a UnitOfWork backed by pool.
 func NewUnitOfWork(pool *pgxpool.Pool) UnitOfWork {
 	return &uow{pool: pool}
 }
 
 func (u *uow) Do(ctx context.Context, fn func(ctx context.Context) error) error {
+	// 1. Check whether there is an open tx already (to omit nested txs)
 	if _, ok := ctx.Value(ctxKey{}).(pgx.Tx); ok {
-		return fn(ctx)
+		return fn(ctx) // if yes run fn inside existing tx
 	}
 
-	tx, err := u.pool.Begin(ctx) // borrow a connection FROM the pool, put it in draft mode
+	// 2. Borrow a connection from the pool, put it in draft mode
+	tx, err := u.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin: %w", err)
 	}
 
-	defer func() { // if anything failed before reaching `Commit()`, that deferred `Rollback()` discards the changes draft
+	// 3. If anything failed before reaching `Commit()`, that deferred `Rollback()` discards the changes
+	defer func() {
 		_ = tx.Rollback(ctx)
 	}()
 
-	if err := fn(context.WithValue(ctx, ctxKey{}, tx)); err != nil { // run the code — its queries go into the draft
+	// 4. - Stash the transaction into the context
+	// 	  - After that run `fn` with that new context
+	// 	  - If `fn` returned an error --> skip Commit, fall through, Do returns that error, and the deferred Rollback throws away everything `fn` did.
+	if err := fn(context.WithValue(ctx, ctxKey{}, tx)); err != nil {
 		return err
 	}
-
+	// - If `fn` succeeded `tx.Commit()` makes everything permanent
 	return tx.Commit(ctx)
 }
