@@ -1,4 +1,8 @@
 # Local development dependencies only. Production runs elsewhere.
+#
+# Host ports are deliberately non-default (5433 rather than 5432) so this
+# project does not collide with any Postgres already installed on the machine.
+# Inside the container the service still listens on its normal port.
 services:
   postgres:
     image: postgres:17-alpine
@@ -7,6 +11,17 @@ services:
       POSTGRES_PASSWORD: cleargate
       POSTGRES_DB: cleargate
     ports: ["5432:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cleargate"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   redis:
     image: redis:7-alpine
-    ports: ["6379:6379"]
+    ports: ["6380:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
