@@ -11,32 +11,54 @@ jobs:
   build-and-test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
         with:
           go-version: "1.26"
           cache: true
 
-      - run: go build ./...
-      - run: go vet ./...
-      - run: go test ./internal/... -race -count=1
+      - name: Build all packages
+        run: go build ./...
+
+      - name: Vet (static analysis)
+        run: go vet ./...
+
+      - name: Run unit tests
+        run: go test ./internal/... -race -count=1
 
   integration:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
         with:
           go-version: "1.26"
           cache: true
-      - run: go test ./test/... -race -count=1 -tags=integration
+
+      # ./... rather than ./test/..., since integration-tagged tests are
+      # co-located with the code they test (e.g. internal/infrastructure/database),
+      # not centralized under test/. This runner has Docker preinstalled, so
+      # testcontainers-go spins up the same Postgres/Redis containers used locally.
+      - name: Run integration tests (spins real Postgres + Redis via testcontainers)
+        run: go test ./... -race -count=1 -tags=integration
 
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
         with:
           go-version: "1.26"
           cache: true
-      - uses: golangci/golangci-lint-action@v7
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v7
