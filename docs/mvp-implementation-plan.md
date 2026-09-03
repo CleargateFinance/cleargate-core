@@ -374,7 +374,7 @@ git commit -m "feat(infrastructure): database pool, context-scoped unit of work,
 
 - [ ] **Step 1:** `cmd/migrate` wrapping `golang-migrate`, subcommands `up`/`down`/`version`.
 - [ ] **Step 2:** `migrations/000001_extensions.up.sql` — `CREATE EXTENSION IF NOT EXISTS pgcrypto;`
-- [ ] **Step 3:** `internal/infrastructure/httpx` — Gin engine with request-ID, structured logging, panic recovery, and the single `apperr.Kind → HTTP status` mapper.
+- [ ] **Step 3:** `internal/infrastructure/server` — Gin engine with request-ID, structured logging, panic recovery, and the single `apperr.Kind → HTTP status` mapper.
 - [ ] **Step 4:** `internal/app/api.go` — `BuildAPI(cfg) (*gin.Engine, func(), error)` registering only `GET /v1/health` (checks DB and Redis).
 - [ ] **Step 5:** `cmd/api/main.go` — graceful shutdown as sketched in the scaffold.
 
@@ -1076,16 +1076,16 @@ func (s *Service) Authorize(ctx context.Context, req Request) (*Result, error) {
 v1 := r.Group("/v1")
 
 agentAPI := v1.Group("",
-	httpx.AgentAuth(accountMod.Service()),
-	httpx.Idempotency(idemStore),
-	httpx.RateLimitPerAgent(cfg.Limits),
+	server.AgentAuth(accountMod.Service()),
+	server.Idempotency(idemStore),
+	server.RateLimitPerAgent(cfg.Limits),
 )
 paymentMod.RegisterAgentRoutes(agentAPI)   // POST /payments/authorize
 
-consoleAPI := v1.Group("", httpx.UserAuth(sessions), httpx.RateLimitPerAccount(cfg.Limits))
+consoleAPI := v1.Group("", server.UserAuth(sessions), server.RateLimitPerAccount(cfg.Limits))
 accountMod.RegisterRoutes(consoleAPI)
 decisionMod.RegisterRoutes(consoleAPI)
-mandateMod.RegisterRoutes(consoleAPI, httpx.RequireRole(domain.RoleAdmin))
+mandateMod.RegisterRoutes(consoleAPI, server.RequireRole(domain.RoleAdmin))
 ```
 
 > **Why grouping rather than per-handler checks**
