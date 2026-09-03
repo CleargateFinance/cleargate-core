@@ -13,6 +13,7 @@ import (
 // Asset identifies the unit of account (e.g. USDC on Base).
 type Asset string
 
+// USDC is the stablecoin asset used throughout the platform.
 const USDC Asset = "USDC"
 
 // Amount is an exact decimal quantity of a specific Asset.

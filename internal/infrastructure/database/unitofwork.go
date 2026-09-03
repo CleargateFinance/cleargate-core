@@ -28,6 +28,7 @@ type UnitOfWork interface {
 // running one query on it, and returning it.
 type uow struct{ pool *pgxpool.Pool }
 
+// NewUnitOfWork builds a UnitOfWork backed by pool.
 func NewUnitOfWork(pool *pgxpool.Pool) UnitOfWork {
 	return &uow{pool: pool}
 }

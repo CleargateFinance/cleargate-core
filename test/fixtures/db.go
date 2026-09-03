@@ -1,3 +1,5 @@
+// Package fixtures provides shared test helpers — such as spinning up a
+// throwaway Postgres instance for integration tests.
 package fixtures
 
 import (

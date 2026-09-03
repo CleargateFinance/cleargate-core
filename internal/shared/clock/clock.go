@@ -6,4 +6,6 @@ package clock
 
 import "time"
 
+// Clock is an injectable time source, letting tests fake "now" instead of
+// sleeping for real time to pass.
 type Clock interface{ Now() time.Time }

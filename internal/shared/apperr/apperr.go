@@ -5,8 +5,11 @@
 // needs to import net/http to report a failure.
 package apperr
 
+// Kind classifies an error into one of a small, fixed set of semantic
+// categories, independent of any transport (HTTP, gRPC, ...).
 type Kind int
 
+// The fixed set of error kinds every module may return.
 const (
 	KindInternal Kind = iota
 	KindNotFound
