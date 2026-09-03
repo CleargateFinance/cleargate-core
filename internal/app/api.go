@@ -93,9 +93,6 @@ func BuildAPI(ctx context.Context, cfg *config.Config, log *slog.Logger) (*API, 
 // Mandate-mutating routes will be registered only under consoleAPI, so an
 // agent credential cannot reach them even if a handler forgets its check. The
 // route simply does not exist on that surface.
-//
-// At this phase only the health endpoint exists. The groups arrive with the
-// modules that need them, in Phase 6.
 func (a *API) registerRoutes() {
 	v1 := a.Engine.Group("/v1")
 	v1.GET("/health", a.health)
