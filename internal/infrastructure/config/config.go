@@ -81,8 +81,8 @@ func Load() (*Config, error) {
 		},
 		Database: Database{
 			DSN:            env("DATABASE_DSN", ""),
-			MaxConns:       int32(envInt("DATABASE_MAX_CONNS", 10)),
-			MinConns:       int32(envInt("DATABASE_MIN_CONNS", 2)),
+			MaxConns:       envInt32("DATABASE_MAX_CONNS", 10),
+			MinConns:       envInt32("DATABASE_MIN_CONNS", 2),
 			ConnectTimeout: envDuration("DATABASE_CONNECT_TIMEOUT", 10*time.Second),
 		},
 		Cache: Cache{
@@ -139,6 +139,20 @@ func envInt(key string, fallback int) int {
 		return fallback
 	}
 	return v
+}
+
+// envInt32 behaves like envInt but parses directly into an int32.
+//
+// ParseInt is given a 32-bit width up front, so a value outside int32's range
+// is a parse error and falls back to the default. Parsing as a plain int and
+// narrowing afterward would let an out-of-range value silently wrap into a
+// different, possibly negative, number instead of being caught.
+func envInt32(key string, fallback int32) int32 {
+	v, err := strconv.ParseInt(os.Getenv(key), 10, 32)
+	if err != nil {
+		return fallback
+	}
+	return int32(v)
 }
 
 // envDuration behaves like env but parses a Go duration such as "10s".

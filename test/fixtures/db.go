@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"github.com/golang-migrate/migrate/v4"
+	// Blank imports register the drivers with golang-migrate. They are
+	// imported for their side effects only, which is why they have no name.
 	_ "github.com/golang-migrate/migrate/v4/database/postgres"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 	"github.com/testcontainers/testcontainers-go"
