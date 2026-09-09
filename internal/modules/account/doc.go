@@ -3,5 +3,4 @@
 //
 // This package only manages the identity aspects of these entities. Payer and payee are
 // roles assumed per transaction and live in the payment module.
-
 package account
