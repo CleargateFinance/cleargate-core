@@ -93,6 +93,31 @@ func (c *Client) Delete(ctx context.Context, key string) error {
 	return nil
 }
 
+// Increment adds one to a counter and returns the new value, setting the
+// expiry only when the key is created.
+//
+// The expiry is deliberately not refreshed on later increments, so a counter
+// measures a fixed window from its first event rather than sliding forward
+// each time. A sliding window would let a slow, steady attacker hold a
+// throttle open indefinitely.
+//
+// Both commands go out in one round trip. INCR is atomic, so concurrent
+// callers cannot lose a count between them.
+func (c *Client) Increment(ctx context.Context, key string, ttl time.Duration) (int64, error) {
+	if ttl <= 0 {
+		return 0, fmt.Errorf("cache: increment %s: ttl must be positive", key)
+	}
+
+	pipe := c.rdb.TxPipeline()
+	incr := pipe.Incr(ctx, key)
+	pipe.ExpireNX(ctx, key, ttl)
+
+	if _, err := pipe.Exec(ctx); err != nil {
+		return 0, fmt.Errorf("cache: increment %s: %w", key, err)
+	}
+	return incr.Val(), nil
+}
+
 // TTL reports the remaining lifetime of a key. It exists so that callers, and
 // tests, can verify an entry cannot outlive what it describes.
 func (c *Client) TTL(ctx context.Context, key string) (time.Duration, error) {

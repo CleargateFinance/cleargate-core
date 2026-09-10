@@ -20,29 +20,53 @@ const (
 	// DefaultStepUpWindow is how recently a second factor must have been
 	// satisfied for an action that creates authority or moves money.
 	DefaultStepUpWindow = 15 * time.Minute
+
+	// DefaultEmailTokenLifetime is how long a verification link stays usable.
+	// Generous, because the message may sit unread in an inbox overnight.
+	DefaultEmailTokenLifetime = 24 * time.Hour
+
+	// DefaultResetTokenLifetime is how long a password reset link stays
+	// usable. Much shorter, because it grants control of an account and a link
+	// sitting in a mailbox is a liability for as long as it works.
+	DefaultResetTokenLifetime = time.Hour
 )
 
 // Service implements this module's use cases. It depends on the interfaces in
 // ports.go, never on the storage or transport implementations directly.
 type Service struct {
-	repo   Repository
-	hasher PasswordHasher
-	cache  SessionCache
-	clock  Clock
-	log    *slog.Logger
+	repo     Repository
+	hasher   PasswordHasher
+	cache    SessionCache
+	mailer   Mailer
+	throttle Throttle
+	clock    Clock
+	log      *slog.Logger
 
-	sessionLifetime time.Duration
-	cacheWindow     time.Duration
-	stepUpWindow    time.Duration
+	sessionLifetime    time.Duration
+	cacheWindow        time.Duration
+	stepUpWindow       time.Duration
+	emailTokenLifetime time.Duration
+	resetTokenLifetime time.Duration
+
+	// consentVersions maps a document to the version currently shown at
+	// sign-up, so what a person agreed to is recorded rather than assumed.
+	consentVersions map[string]string
 }
 
 // Options configures a Service. Zero values select the defaults above, so a
 // caller cannot accidentally configure a session that never expires or a cache
 // entry that outlives its own revocation.
 type Options struct {
-	SessionLifetime time.Duration
-	CacheWindow     time.Duration
-	StepUpWindow    time.Duration
+	SessionLifetime    time.Duration
+	CacheWindow        time.Duration
+	StepUpWindow       time.Duration
+	EmailTokenLifetime time.Duration
+	ResetTokenLifetime time.Duration
+
+	// ConsentVersions carries the document versions in force, keyed by
+	// DocumentTermsOfService and DocumentPrivacyPolicy. A document missing
+	// from the map records no consent for it.
+	ConsentVersions map[string]string
 }
 
 // systemClock is the default time source, used when none is injected.
@@ -56,6 +80,8 @@ func NewService(
 	repo Repository,
 	hasher PasswordHasher,
 	cache SessionCache,
+	mailer Mailer,
+	throttle Throttle,
 	clock Clock,
 	log *slog.Logger,
 	opts Options,
@@ -75,16 +101,30 @@ func NewService(
 	if opts.StepUpWindow <= 0 {
 		opts.StepUpWindow = DefaultStepUpWindow
 	}
+	if opts.EmailTokenLifetime <= 0 {
+		opts.EmailTokenLifetime = DefaultEmailTokenLifetime
+	}
+	if opts.ResetTokenLifetime <= 0 {
+		opts.ResetTokenLifetime = DefaultResetTokenLifetime
+	}
+	if opts.ConsentVersions == nil {
+		opts.ConsentVersions = map[string]string{}
+	}
 
 	return &Service{
-		repo:            repo,
-		hasher:          hasher,
-		cache:           cache,
-		clock:           clock,
-		log:             log,
-		sessionLifetime: opts.SessionLifetime,
-		cacheWindow:     opts.CacheWindow,
-		stepUpWindow:    opts.StepUpWindow,
+		repo:               repo,
+		hasher:             hasher,
+		cache:              cache,
+		mailer:             mailer,
+		throttle:           throttle,
+		clock:              clock,
+		log:                log,
+		sessionLifetime:    opts.SessionLifetime,
+		cacheWindow:        opts.CacheWindow,
+		stepUpWindow:       opts.StepUpWindow,
+		emailTokenLifetime: opts.EmailTokenLifetime,
+		resetTokenLifetime: opts.ResetTokenLifetime,
+		consentVersions:    opts.ConsentVersions,
 	}
 }
 
