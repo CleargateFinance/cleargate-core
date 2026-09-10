@@ -16,6 +16,11 @@ type AgentSessionID string
 // UserID identifies a human who logs into an account.
 type UserID string
 
+// UserSessionID identifies one human login session. It is distinct from
+// AgentSessionID, which groups an agent's payments into a run: one is a
+// credential's lifetime, the other is a unit of work.
+type UserSessionID string
+
 // PrincipalID identifies the human or legal entity ultimately responsible
 // for one or more accounts.
 type PrincipalID string

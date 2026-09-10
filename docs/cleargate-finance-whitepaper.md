@@ -135,12 +135,16 @@ Roles are not new entities; they describe how an entity participates in a given 
 
 - **Payer** — the account whose agent is spending. Exactly one per payment.
 - **Payee** — the party receiving payment and expected to deliver. This is what was historically called "the merchant." Reputation attaches to this role. A payee may be an on-platform account or an external endpoint — the role is identical either way.
-- **Approver** — a user who signs off when a payment escalates.
+- **Approver** *(later, with escalation)* — a user who signs off when a payment escalates. Distinct from the guardian below: an approver releases a *single payment* in real time, a guardian vetoes a *change to spending authority* over hours.
 - **Backer** *(later)* — whoever underwrites guarantees for a class of counterparties.
 
 The key consequence: **"merchant" is not an entity type — it is an account acting in the payee role.** Any account can occupy it. This is what makes agent-to-agent payment the same code path as agent-to-merchant payment.
 
-**Permission roles**, governing what a user may do within an account: **owner** (everything, including billing), **admin** (manage agents and mandates, not billing), **approver** (approve escalated payments, not change mandates), **viewer** (read-only console and reports). This permission model is also the enterprise segregation-of-duties mechanism — the user who sets a policy need not be the user who approves an exception.
+**Permission roles**, governing what a user may do within an account: **owner** (everything, including billing and the commercial relationship), **admin** (manage agents and mandates, not billing), **guardian** (stop things — veto a pending change to spending authority, freeze the account — and propose nothing), **viewer** (read-only console and reports).
+
+Two separations do the work. *Propose versus stop* — owner and admin against guardian — is the security boundary: on a guarded account no single compromised human can widen what an agent may spend, because raising a cap waits out a delay in which a second person holding separate hardware can veto it. *Own versus operate* — owner against admin — is the organisational one, so a business can hire someone to run its agents without handing them the power to close the account or move its billing.
+
+This is also the enterprise segregation-of-duties mechanism: the user who sets a policy need not be the user who can stop it. The guardian's power is deliberately subtractive, so a stolen guardian credential is worth nothing on its own, and every blocking power it holds is bounded — a veto cancels one proposal rather than killing the subject, and the guardian itself remains removable by the owner on a delay.
 
 ### 4.3 Transaction and settlement concepts
 
@@ -502,7 +506,7 @@ The entity model from Section 4 arranges as follows: a principal owns an account
 ```mermaid
 flowchart TB
     PR["Principal<br/>legally responsible"] --> ACC["Account<br/>holds balance"]
-    ACC --> U["Users<br/>owner · admin · approver · viewer"]
+    ACC --> U["Users<br/>owner · admin · guardian · viewer"]
     ACC --> AG["Agent"]
     AG --> M["Mandate<br/>signed rules"]
     AG --> CP["Counterparty<br/>external endpoint or another account"]
@@ -521,6 +525,8 @@ flowchart TB
 ```
 
 Retail usage is this hierarchy with the top layers collapsed — the principal is the person, the account is theirs, and there is one user who is implicitly the owner. Identical objects, identical code path. Multi-tenancy is designed in from the first commit because retrofitting it is a rewrite.
+
+**Administrative controls are opt-in, and tier with the customer.** A retail account has one owner, no guardian and no delay: changes to spending authority apply immediately, and the owner is notified. Setting a timelock adds a waiting period even with nobody to veto — useful on its own, because it converts a stolen session from an instant loss into an emailed warning the owner can act on. Appointing a guardian adds the second pair of eyes: raising a cap then waits out the delay and can be vetoed by someone holding separate hardware. The asymmetry that keeps this from being theatre is that **enabling a protection is instant while removing one is delayed, notified and — except for the guardian's own tenure — vetoable**, since disabling the alarm is always an attacker's first move. Nothing here is a separate product tier; it is the same objects with more of them filled in.
 
 **No wallet per agent.** One account per customer with a scoped credential per agent. Creating an agent issues a credential; revoking an agent revokes it instantly, with no funds to sweep. Funding occurs once at the customer level and agents draw just-in-time, so no capital sits idle across hundreds of wallets.
 

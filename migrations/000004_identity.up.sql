@@ -39,28 +39,13 @@ CREATE TABLE principal_identity (
 );
 
 -- ---------------------------------------------------------------------------
--- Accounts
--- ---------------------------------------------------------------------------
-
-CREATE TABLE account (
-  id                uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  principal_id      uuid NOT NULL REFERENCES principal(id),
-  parent_account_id uuid REFERENCES account(id),   -- for platform tiering
-  display_name      text NOT NULL,
-  status            text NOT NULL DEFAULT 'active'
-                      CHECK (status IN ('active','suspended','closed')),
-  -- How long a risk-increasing change waits before taking effect, giving the
-  -- guardian a window to veto it. Zero would disable the control.
-  timelock_hours    int NOT NULL DEFAULT 24 CHECK (timelock_hours BETWEEN 1 AND 168),
-  created_at        timestamptz NOT NULL DEFAULT now()
-);
-
--- ---------------------------------------------------------------------------
 -- Login
 -- ---------------------------------------------------------------------------
 
 -- A login. Exactly one per principal. Note: the email is an authentication
 -- identifier, not compliance data, which is why it lives here.
+--
+-- Declared before account so that account.frozen_by can reference it.
 CREATE TABLE app_user (
   id                  uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   principal_id        uuid NOT NULL UNIQUE REFERENCES principal(id),
@@ -71,6 +56,35 @@ CREATE TABLE app_user (
   status              text NOT NULL DEFAULT 'active'
                         CHECK (status IN ('active','suspended','deactivated')),
   created_at          timestamptz NOT NULL DEFAULT now()
+);
+
+-- ---------------------------------------------------------------------------
+-- Accounts
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE account (
+  id                uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  principal_id      uuid NOT NULL REFERENCES principal(id),
+  parent_account_id uuid REFERENCES account(id),   -- for platform tiering
+  display_name      text NOT NULL,
+  status            text NOT NULL DEFAULT 'active'
+                      CHECK (status IN ('active','suspended','closed')),
+
+  -- Who froze the account, so that person can lift it instantly while anyone
+  -- else has to wait.
+  frozen_by         uuid REFERENCES app_user(id),
+  frozen_at         timestamptz,
+
+  -- How long a risk-increasing change waits before it takes effect. Zero is
+  -- the default and means no delay, which is correct for an account with no
+  -- guardian: a waiting period protects nobody when nobody is watching it.
+  timelock_hours    int NOT NULL DEFAULT 0 CHECK (timelock_hours BETWEEN 0 AND 168),
+
+  created_at        timestamptz NOT NULL DEFAULT now(),
+
+  -- Suspension and its timestamp cannot disagree about whether this account
+  -- is frozen.
+  CHECK ((status = 'suspended') = (frozen_at IS NOT NULL))
 );
 
 -- ---------------------------------------------------------------------------
@@ -218,28 +232,64 @@ CREATE UNIQUE INDEX account_invitation_pending
 -- ---------------------------------------------------------------------------
 
 -- Changes that alter the safety net itself, rather than acting within it.
--- These need the guardian's explicit "yes", not merely the absence of a veto.
+-- Owner-proposed, delayed, notified, and applied unless stopped. Which of them
+-- may be vetoed, and by whom, is application policy: nobody may veto their own
+-- removal as guardian, or the control becomes a lockout.
 CREATE TABLE account_control_change (
   id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   account_id   uuid NOT NULL REFERENCES account(id),
   change_type  text NOT NULL CHECK (change_type IN
-                 ('transfer_owner','reassign_guardian','lower_timelock')),
+                 ('transfer_owner','reassign_guardian','remove_guardian',
+                  'lower_timelock','close_account')),
   payload      jsonb NOT NULL,   -- {"user_id": ...} or {"timelock_hours": ...}
   proposed_by  uuid NOT NULL REFERENCES app_user(id),
-  confirmed_by uuid REFERENCES app_user(id),
-  token_hash   bytea NOT NULL UNIQUE,
-  confirmed_at timestamptz,
+
+  status       text NOT NULL DEFAULT 'pending'
+                 CHECK (status IN ('pending','applied','vetoed','cancelled')),
+
+  -- When it lands if nobody stops it. Fixed at proposal time from the timelock
+  -- then in force, and never recomputed: otherwise shortening the timelock
+  -- would accelerate a proposal already in flight.
+  effective_at timestamptz NOT NULL,
+
+  applied_at   timestamptz,
+  vetoed_by    uuid REFERENCES app_user(id),
+  vetoed_at    timestamptz,
   cancelled_at timestamptz,
-  expires_at   timestamptz NOT NULL,
   created_at   timestamptz NOT NULL DEFAULT now(),
 
-  CHECK ((confirmed_at IS NULL) = (confirmed_by IS NULL))
+  CHECK ((status = 'vetoed')    = (vetoed_at IS NOT NULL)),
+  CHECK ((status = 'applied')   = (applied_at IS NOT NULL)),
+  CHECK ((status = 'cancelled') = (cancelled_at IS NOT NULL))
 );
 
 -- One live proposal of each kind at a time.
 CREATE UNIQUE INDEX account_control_change_live
   ON account_control_change (account_id, change_type)
-  WHERE confirmed_at IS NULL AND cancelled_at IS NULL;
+  WHERE status = 'pending';
+
+-- ---------------------------------------------------------------------------
+-- Notifications
+-- ---------------------------------------------------------------------------
+
+-- What was sent, to whom, about what. Emission rides the outbox in the same
+-- transaction as the change itself; this records the delivery outcome, because
+-- a guardian whose mail bounces has silently stopped being a control.
+CREATE TABLE notification (
+  id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id      uuid NOT NULL REFERENCES app_user(id),
+  account_id   uuid REFERENCES account(id),
+  kind         text NOT NULL,     -- 'mandate.proposed', 'guardian.removal_proposed', ...
+  subject_type text,              -- 'mandate' | 'account_control_change' | 'agent'
+  subject_id   uuid,
+  channel      text NOT NULL DEFAULT 'email' CHECK (channel IN ('email')),
+  created_at   timestamptz NOT NULL DEFAULT now(),
+  sent_at      timestamptz,
+  failed_at    timestamptz,
+  failure      text
+);
+CREATE INDEX notification_by_user ON notification (user_id, created_at DESC);
+CREATE INDEX notification_failed ON notification (account_id) WHERE failed_at IS NOT NULL;
 
 -- ---------------------------------------------------------------------------
 -- Audit trail and consent
@@ -275,6 +325,9 @@ CREATE TABLE user_consent (
 -- Agents
 -- ---------------------------------------------------------------------------
 
+-- A registration, not a program. The agent runs on the customer's own
+-- infrastructure; this row is the identity it is connected to Cleargate as,
+-- and the thing a credential authenticates and a mandate authorises.
 CREATE TABLE agent (
   id         uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   account_id uuid NOT NULL REFERENCES account(id),
@@ -291,6 +344,7 @@ CREATE TABLE agent (
 CREATE TABLE agent_credential (
   id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   agent_id     uuid NOT NULL REFERENCES agent(id),
+  name         text NOT NULL,          -- "prod-worker-3"; which key to revoke at 2am
   prefix       text NOT NULL UNIQUE,   -- lookup key, safe to log
   secret_hash  bytea NOT NULL,         -- sha256; the secret is 256 CSPRNG bits
   created_by   uuid REFERENCES app_user(id),

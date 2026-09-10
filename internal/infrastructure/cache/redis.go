@@ -7,6 +7,7 @@ package cache
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -51,6 +52,56 @@ func New(ctx context.Context, opts Options) (*Client, error) {
 
 // Redis exposes the underlying client for packages that need it directly.
 func (c *Client) Redis() *redis.Client { return c.rdb }
+
+// Get reads a key, reporting whether it was present.
+//
+// A missing key is not an error: absence is the ordinary case for a cache, and
+// making callers distinguish redis.Nil from a real failure invites treating
+// both the same way, which is how a cache miss turns into a request failure.
+func (c *Client) Get(ctx context.Context, key string) ([]byte, bool, error) {
+	value, err := c.rdb.Get(ctx, key).Bytes()
+	if errors.Is(err, redis.Nil) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("cache: get %s: %w", key, err)
+	}
+	return value, true, nil
+}
+
+// Set writes a key with an expiry.
+//
+// The TTL is required rather than optional. Everything here is a derived copy
+// of something in Postgres, so an entry that never expires is an entry that
+// can disagree with the source of truth indefinitely.
+func (c *Client) Set(ctx context.Context, key string, value []byte, ttl time.Duration) error {
+	if ttl <= 0 {
+		return fmt.Errorf("cache: set %s: ttl must be positive", key)
+	}
+	if err := c.rdb.Set(ctx, key, value, ttl).Err(); err != nil {
+		return fmt.Errorf("cache: set %s: %w", key, err)
+	}
+	return nil
+}
+
+// Delete removes a key. Removing an absent key is not an error, so a caller
+// invalidating something that was never cached needs no special case.
+func (c *Client) Delete(ctx context.Context, key string) error {
+	if err := c.rdb.Del(ctx, key).Err(); err != nil {
+		return fmt.Errorf("cache: delete %s: %w", key, err)
+	}
+	return nil
+}
+
+// TTL reports the remaining lifetime of a key. It exists so that callers, and
+// tests, can verify an entry cannot outlive what it describes.
+func (c *Client) TTL(ctx context.Context, key string) (time.Duration, error) {
+	ttl, err := c.rdb.TTL(ctx, key).Result()
+	if err != nil {
+		return 0, fmt.Errorf("cache: ttl %s: %w", key, err)
+	}
+	return ttl, nil
+}
 
 // Ping reports whether the cache is reachable. It backs the health endpoint.
 func (c *Client) Ping(ctx context.Context) error {
