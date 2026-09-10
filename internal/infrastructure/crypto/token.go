@@ -23,7 +23,8 @@ const TokenEntropyBytes = 32
 // always a deliberate act rather than a struct literal away.
 type Token struct {
 	plaintext string
-	digest    []byte
+	// This digest is computed on every authenticated request where Argon2id's ~50ms and 19 MiB would eat the latency budget
+	digest []byte
 }
 
 // NewToken mints a bearer token and its digest.

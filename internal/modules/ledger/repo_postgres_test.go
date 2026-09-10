@@ -1,6 +1,6 @@
 //go:build integration
 
-package ledger_test
+package ledger
 
 import (
 	"context"
@@ -12,7 +12,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/CleargateFinance/cleargate-core/internal/modules/ledger"
 	"github.com/CleargateFinance/cleargate-core/internal/shared/currency"
 	"github.com/CleargateFinance/cleargate-core/internal/shared/id"
 	"github.com/CleargateFinance/cleargate-core/test/fixtures"
@@ -22,7 +21,7 @@ import (
 // to move value between.
 type ledgerFixture struct {
 	db      *fixtures.TestDB
-	svc     *ledger.Service
+	svc     *Service
 	payer   id.LedgerAccountID
 	payee   id.LedgerAccountID
 	account id.AccountID
@@ -33,15 +32,15 @@ func newLedgerFixture(t *testing.T) *ledgerFixture {
 	ctx := context.Background()
 
 	db := fixtures.NewTestDB(t)
-	svc := ledger.New(db.DB, nil).Service()
+	svc := New(db.DB, nil).Service()
 
 	payerAccount := id.AccountID("11111111-1111-1111-1111-111111111111")
 	payeeAccount := id.AccountID("22222222-2222-2222-2222-222222222222")
 
-	payer, err := svc.EnsureAccount(ctx, &payerAccount, ledger.TypeCustomerFunds, currency.USDC)
+	payer, err := svc.EnsureAccount(ctx, &payerAccount, TypeCustomerFunds, currency.USDC)
 	require.NoError(t, err)
 
-	payee, err := svc.EnsureAccount(ctx, &payeeAccount, ledger.TypePayeePayable, currency.USDC)
+	payee, err := svc.EnsureAccount(ctx, &payeeAccount, TypePayeePayable, currency.USDC)
 	require.NoError(t, err)
 
 	return &ledgerFixture{db: db, svc: svc, payer: payer, payee: payee, account: payerAccount}
@@ -53,13 +52,13 @@ func (f *ledgerFixture) fund(t *testing.T, amount string) {
 	t.Helper()
 	ctx := context.Background()
 
-	float, err := f.svc.EnsureAccount(ctx, nil, ledger.TypeOnchainFloat, currency.USDC)
+	float, err := f.svc.EnsureAccount(ctx, nil, TypeOnchainFloat, currency.USDC)
 	require.NoError(t, err)
 
-	_, err = f.svc.Post(ctx, ledger.Entry{
-		Kind:  ledger.KindFunding,
+	_, err = f.svc.Post(ctx, Entry{
+		Kind:  KindFunding,
 		Asset: currency.USDC,
-		Lines: ledger.Transfer(float, f.payer, usd(t, amount)),
+		Lines: Transfer(float, f.payer, usd(t, amount)),
 	})
 	require.NoError(t, err)
 }
@@ -68,7 +67,7 @@ func TestEnsureAccount_IsIdempotent(t *testing.T) {
 	ctx := context.Background()
 	f := newLedgerFixture(t)
 
-	again, err := f.svc.EnsureAccount(ctx, &f.account, ledger.TypeCustomerFunds, currency.USDC)
+	again, err := f.svc.EnsureAccount(ctx, &f.account, TypeCustomerFunds, currency.USDC)
 	require.NoError(t, err)
 	assert.Equal(t, f.payer, again, "asking twice must return the same bucket, not create a second")
 }
@@ -79,13 +78,13 @@ func TestEnsureAccount_SeparateBucketPerAssetAndRole(t *testing.T) {
 
 	// A second asset is a different bucket, because two assets are never
 	// fungible with each other.
-	otherAsset, err := f.svc.EnsureAccount(ctx, &f.account, ledger.TypeCustomerFunds, currency.Asset("EURC"))
+	otherAsset, err := f.svc.EnsureAccount(ctx, &f.account, TypeCustomerFunds, currency.Asset("EURC"))
 	require.NoError(t, err)
 	assert.NotEqual(t, f.payer, otherAsset)
 
 	// The same customer acting as a payee is also a different bucket, since
 	// money owed to them is not money they can spend.
-	asPayee, err := f.svc.EnsureAccount(ctx, &f.account, ledger.TypePayeePayable, currency.USDC)
+	asPayee, err := f.svc.EnsureAccount(ctx, &f.account, TypePayeePayable, currency.USDC)
 	require.NoError(t, err)
 	assert.NotEqual(t, f.payer, asPayee)
 }
@@ -95,10 +94,10 @@ func TestPost_WritesEntryAndUpdatesBalances(t *testing.T) {
 	f := newLedgerFixture(t)
 	f.fund(t, "10.00")
 
-	entryID, err := f.svc.Post(ctx, ledger.Entry{
-		Kind:  ledger.KindPayment,
+	entryID, err := f.svc.Post(ctx, Entry{
+		Kind:  KindPayment,
 		Asset: currency.USDC,
-		Lines: ledger.Transfer(f.payer, f.payee, usd(t, "0.40")),
+		Lines: Transfer(f.payer, f.payee, usd(t, "0.40")),
 	})
 	require.NoError(t, err)
 	assert.NotEmpty(t, entryID)
@@ -116,12 +115,12 @@ func TestPost_RejectsUnbalancedEntryBeforeReachingTheDatabase(t *testing.T) {
 	ctx := context.Background()
 	f := newLedgerFixture(t)
 
-	_, err := f.svc.Post(ctx, ledger.Entry{
-		Kind:  ledger.KindPayment,
+	_, err := f.svc.Post(ctx, Entry{
+		Kind:  KindPayment,
 		Asset: currency.USDC,
-		Lines: []ledger.Line{
-			ledger.Debit(f.payer, usd(t, "0.40")),
-			ledger.Credit(f.payee, usd(t, "0.30")),
+		Lines: []Line{
+			Debit(f.payer, usd(t, "0.40")),
+			Credit(f.payee, usd(t, "0.30")),
 		},
 	})
 	require.Error(t, err)
@@ -190,10 +189,10 @@ func TestPost_RollsBackWithCallerTransaction(t *testing.T) {
 	sentinel := errors.New("a later step failed")
 
 	err := f.db.UoW.Do(ctx, func(ctx context.Context) error {
-		if _, err := f.svc.Post(ctx, ledger.Entry{
-			Kind:  ledger.KindPayment,
+		if _, err := f.svc.Post(ctx, Entry{
+			Kind:  KindPayment,
 			Asset: currency.USDC,
-			Lines: ledger.Transfer(f.payer, f.payee, usd(t, "2.50")),
+			Lines: Transfer(f.payer, f.payee, usd(t, "2.50")),
 		}); err != nil {
 			return err
 		}
@@ -222,7 +221,7 @@ func TestRecordSpend_CreatesCountersOnFirstSpend(t *testing.T) {
 		assert.Equal(t, "0.4", total.Amount.String())
 	}
 
-	day, err := f.svc.SpentIn(ctx, agent, ledger.DayPeriod(now), currency.USDC)
+	day, err := f.svc.SpentIn(ctx, agent, DayPeriod(now), currency.USDC)
 	require.NoError(t, err)
 	assert.Equal(t, "0.4", day.String())
 }
@@ -233,7 +232,7 @@ func TestSpentIn_IsZeroWhenNothingSpentYet(t *testing.T) {
 
 	spent, err := f.svc.SpentIn(ctx,
 		id.AgentID("44444444-4444-4444-4444-444444444444"),
-		ledger.DayPeriod(time.Now()), currency.USDC)
+		DayPeriod(time.Now()), currency.USDC)
 	require.NoError(t, err)
 	assert.True(t, spent.IsZero(), "an agent that has never spent must read as zero, not error")
 }
@@ -268,7 +267,7 @@ func TestRecordSpend_IsAtomicUnderConcurrency(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	spent, err := f.svc.SpentIn(ctx, agent, ledger.DayPeriod(now), currency.USDC)
+	spent, err := f.svc.SpentIn(ctx, agent, DayPeriod(now), currency.USDC)
 	require.NoError(t, err)
 	assert.Equal(t, "50", spent.String(), "every concurrent increment must be counted exactly once")
 }
@@ -278,10 +277,10 @@ func TestCheckBook_ReportsZeroForAConsistentBook(t *testing.T) {
 	f := newLedgerFixture(t)
 	f.fund(t, "10.00")
 
-	_, err := f.svc.Post(ctx, ledger.Entry{
-		Kind:  ledger.KindPayment,
+	_, err := f.svc.Post(ctx, Entry{
+		Kind:  KindPayment,
 		Asset: currency.USDC,
-		Lines: ledger.Transfer(f.payer, f.payee, usd(t, "3.25")),
+		Lines: Transfer(f.payer, f.payee, usd(t, "3.25")),
 	})
 	require.NoError(t, err)
 
@@ -298,10 +297,10 @@ func TestCheckSpendCounters_ReportsNoDriftWhenCountersMatchPostings(t *testing.T
 	agent := id.AgentID("66666666-6666-6666-6666-666666666666")
 	now := time.Now().UTC()
 
-	_, err := f.svc.Post(ctx, ledger.Entry{
-		Kind:       ledger.KindPayment,
+	_, err := f.svc.Post(ctx, Entry{
+		Kind:       KindPayment,
 		Asset:      currency.USDC,
-		Lines:      ledger.Transfer(f.payer, f.payee, usd(t, "0.40")),
+		Lines:      Transfer(f.payer, f.payee, usd(t, "0.40")),
 		AgentID:    &agent,
 		OccurredAt: now,
 	})
@@ -310,7 +309,7 @@ func TestCheckSpendCounters_ReportsNoDriftWhenCountersMatchPostings(t *testing.T
 	_, err = f.svc.RecordSpend(ctx, agent, usd(t, "0.40"), now)
 	require.NoError(t, err)
 
-	drifts, err := f.svc.CheckSpendCounters(ctx, ledger.DayPeriod(now))
+	drifts, err := f.svc.CheckSpendCounters(ctx, DayPeriod(now))
 	require.NoError(t, err)
 	assert.Empty(t, drifts, "a counter matching its postings must not be reported as drift")
 }
@@ -326,10 +325,10 @@ func TestCheckSpendCounters_DetectsDrift(t *testing.T) {
 	now := time.Now().UTC()
 
 	// A payment of 0.40 is recorded in the book.
-	_, err := f.svc.Post(ctx, ledger.Entry{
-		Kind:       ledger.KindPayment,
+	_, err := f.svc.Post(ctx, Entry{
+		Kind:       KindPayment,
 		Asset:      currency.USDC,
-		Lines:      ledger.Transfer(f.payer, f.payee, usd(t, "0.40")),
+		Lines:      Transfer(f.payer, f.payee, usd(t, "0.40")),
 		AgentID:    &agent,
 		OccurredAt: now,
 	})
@@ -339,7 +338,7 @@ func TestCheckSpendCounters_DetectsDrift(t *testing.T) {
 	_, err = f.svc.RecordSpend(ctx, agent, usd(t, "5.00"), now)
 	require.NoError(t, err)
 
-	drifts, err := f.svc.CheckSpendCounters(ctx, ledger.DayPeriod(now))
+	drifts, err := f.svc.CheckSpendCounters(ctx, DayPeriod(now))
 	require.NoError(t, err)
 	require.Len(t, drifts, 1)
 
@@ -365,10 +364,10 @@ func TestPost_AcrossPartitionBoundary(t *testing.T) {
 
 	lastMonth := time.Now().UTC().AddDate(0, -1, 0)
 
-	_, err := f.svc.Post(ctx, ledger.Entry{
-		Kind:       ledger.KindPayment,
+	_, err := f.svc.Post(ctx, Entry{
+		Kind:       KindPayment,
 		Asset:      currency.USDC,
-		Lines:      ledger.Transfer(f.payer, f.payee, usd(t, "1.00")),
+		Lines:      Transfer(f.payer, f.payee, usd(t, "1.00")),
 		OccurredAt: lastMonth,
 	})
 	require.NoError(t, err)

@@ -1,4 +1,4 @@
-package crypto_test
+package crypto
 
 import (
 	"regexp"
@@ -9,15 +9,13 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/CleargateFinance/cleargate-core/internal/infrastructure/crypto"
 )
 
 // cheapParams keep the unit tests fast. Cost is the one thing these tests are
 // not asserting, so paying the real 19 MiB per derivation would only make the
 // suite slow. The tests that do care about cost state their own parameters.
-func cheapParams() crypto.Params {
-	return crypto.Params{
+func cheapParams() Params {
+	return Params{
 		MemoryKiB:  8,
 		Iterations: 1,
 		Threads:    1,
@@ -29,7 +27,7 @@ func cheapParams() crypto.Params {
 func TestHashPassword_ProducesPHCString(t *testing.T) {
 	// This test asserts the real defaults, since the encoded parameters are
 	// the point of the format.
-	h := crypto.NewHasher(crypto.DefaultParams())
+	h := NewHasher(DefaultParams())
 
 	encoded, err := h.Hash("correct horse battery staple")
 	require.NoError(t, err)
@@ -49,7 +47,7 @@ func TestHashPassword_ProducesPHCString(t *testing.T) {
 }
 
 func TestHashPassword_SaltsEveryHash(t *testing.T) {
-	h := crypto.NewHasher(cheapParams())
+	h := NewHasher(cheapParams())
 
 	first, err := h.Hash("same password")
 	require.NoError(t, err)
@@ -62,7 +60,7 @@ func TestHashPassword_SaltsEveryHash(t *testing.T) {
 }
 
 func TestVerify_RejectsWrongPassword(t *testing.T) {
-	h := crypto.NewHasher(cheapParams())
+	h := NewHasher(cheapParams())
 
 	encoded, err := h.Hash("the right one")
 	require.NoError(t, err)
@@ -82,7 +80,7 @@ func TestVerify_RejectsWrongPassword(t *testing.T) {
 }
 
 func TestVerify_RejectsMalformedHash(t *testing.T) {
-	h := crypto.NewHasher(cheapParams())
+	h := NewHasher(cheapParams())
 
 	cases := map[string]string{
 		"empty":              "",
@@ -97,26 +95,26 @@ func TestVerify_RejectsMalformedHash(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			ok, err := h.Verify(encoded, "anything")
 			assert.False(t, ok)
-			assert.ErrorIs(t, err, crypto.ErrInvalidHash,
+			assert.ErrorIs(t, err, ErrInvalidHash,
 				"a hash we cannot parse must be an error, never a silent pass")
 		})
 	}
 }
 
 func TestVerify_RejectsOverlongPassword(t *testing.T) {
-	h := crypto.NewHasher(cheapParams())
+	h := NewHasher(cheapParams())
 
 	encoded, err := h.Hash("short enough")
 	require.NoError(t, err)
 
-	huge := strings.Repeat("x", crypto.MaxPasswordLength+1)
+	huge := strings.Repeat("x", MaxPasswordLength+1)
 
 	_, err = h.Hash(huge)
-	assert.ErrorIs(t, err, crypto.ErrPasswordTooLong,
+	assert.ErrorIs(t, err, ErrPasswordTooLong,
 		"unbounded input on an unauthenticated endpoint is unbounded work")
 
 	_, err = h.Verify(encoded, huge)
-	assert.ErrorIs(t, err, crypto.ErrPasswordTooLong)
+	assert.ErrorIs(t, err, ErrPasswordTooLong)
 }
 
 // TestVerify_UnknownEmailCostsSameTime guards the timing oracle that an early
@@ -128,7 +126,7 @@ func TestVerify_RejectsOverlongPassword(t *testing.T) {
 // immediately", which is orders of magnitude, not percentage points.
 func TestVerify_UnknownEmailCostsSameTime(t *testing.T) {
 	// Real parameters, because the cost being equal is the whole assertion.
-	h := crypto.NewHasher(crypto.DefaultParams())
+	h := NewHasher(DefaultParams())
 
 	encoded, err := h.Hash("a known user's password")
 	require.NoError(t, err)
@@ -159,10 +157,10 @@ func TestVerify_UnknownEmailCostsSameTime(t *testing.T) {
 }
 
 func TestNeedsRehash_WhenParamsChange(t *testing.T) {
-	weak := crypto.NewHasher(crypto.Params{
+	weak := NewHasher(Params{
 		MemoryKiB: 8, Iterations: 1, Threads: 1, SaltLength: 16, KeyLength: 32,
 	})
-	strong := crypto.NewHasher(crypto.Params{
+	strong := NewHasher(Params{
 		MemoryKiB: 16, Iterations: 2, Threads: 1, SaltLength: 16, KeyLength: 32,
 	})
 
@@ -195,8 +193,8 @@ func TestNeedsRehash_WhenParamsChange(t *testing.T) {
 func TestNewHasher_ZeroParamsFallBackToDefaults(t *testing.T) {
 	// A zero Params must never mean "no cost at all", which is what a plain
 	// struct literal would otherwise configure.
-	h := crypto.NewHasher(crypto.Params{})
-	assert.Equal(t, crypto.DefaultParams(), h.Params())
+	h := NewHasher(Params{})
+	assert.Equal(t, DefaultParams(), h.Params())
 }
 
 func median(ds []time.Duration) time.Duration {
