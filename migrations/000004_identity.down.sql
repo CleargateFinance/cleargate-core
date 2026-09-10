@@ -13,6 +13,8 @@ DROP TABLE IF EXISTS agent;
 DROP TABLE IF EXISTS user_consent;
 DROP TABLE IF EXISTS auth_event;
 
+DROP TABLE IF EXISTS notification;
+
 DROP TABLE IF EXISTS account_control_change;
 
 DROP TABLE IF EXISTS account_invitation;
@@ -29,9 +31,10 @@ DROP TABLE IF EXISTS user_session;
 
 DROP TABLE IF EXISTS account_membership;
 
-DROP TABLE IF EXISTS app_user;
-
+-- account before app_user: account.frozen_by references it.
 DROP TABLE IF EXISTS account;
+
+DROP TABLE IF EXISTS app_user;
 
 DROP TABLE IF EXISTS principal_identity;
 DROP TABLE IF EXISTS principal;
