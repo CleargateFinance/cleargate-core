@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 
 	"golang.org/x/crypto/argon2"
@@ -169,11 +170,6 @@ func (h *Hasher) NeedsRehash(encoded string) (bool, error) {
 		params.KeyLength < h.params.KeyLength, nil
 }
 
-// dummyVerifySink exists so the compiler cannot discard the work DummyVerify
-// does. Assigning to a package-level variable is an observable side effect,
-// which a local discarded value would not be.
-var dummyVerifySink int
-
 // dummyPassword is hashed by DummyVerify. Its value is irrelevant, only that
 // deriving from it costs what deriving from a real password costs.
 const dummyPassword = "cleargate-timing-equalisation"
@@ -200,7 +196,15 @@ func (h *Hasher) DummyVerify() {
 		h.params.Iterations, h.params.MemoryKiB, h.params.Threads, h.params.KeyLength,
 	)
 
-	dummyVerifySink = subtle.ConstantTimeCompare(key, key)
+	// The result is discarded on purpose: nothing here is compared against
+	// anything real. Go always executes a function call regardless of whether
+	// its result is kept, so discarding costs nothing — the derivation and the
+	// comparison both still run, spending the same time a real verification
+	// would. An earlier version routed this through a package-level variable
+	// to "keep the compiler from discarding the work"; Go never did that in
+	// the first place, and the variable only added an unsynchronised write
+	// that concurrent logins from unknown addresses would race on.
+	_ = subtle.ConstantTimeCompare(key, key)
 }
 
 // encodePHC renders parameters, salt and hash in the PHC string format.
@@ -261,8 +265,15 @@ func decodePHC(encoded string) (Params, []byte, []byte, error) {
 		return Params{}, nil, nil, ErrInvalidHash
 	}
 
-	p.SaltLength = uint32(len(salt))
-	p.KeyLength = uint32(len(key))
+	// A real salt or key is at most a few dozen bytes; either exceeding
+	// uint32 range means the row is corrupt, not that a legitimate hash grew
+	// enormous. Checking this explicitly is what lets the conversions below
+	// be a proven-safe narrowing rather than an assumed one.
+	if len(salt) > math.MaxUint32 || len(key) > math.MaxUint32 {
+		return Params{}, nil, nil, ErrInvalidHash
+	}
+	p.SaltLength = uint32(len(salt)) // #nosec G115 -- bounds-checked above
+	p.KeyLength = uint32(len(key))   // #nosec G115 -- bounds-checked above
 
 	return p, salt, key, nil
 }
