@@ -15,11 +15,15 @@ import (
 type PermissionRole string
 
 const (
-	// RoleOwner may do anything, including billing and closing the account.
-	// Exactly one exists per account, enforced by a partial unique index.
+	// RoleOwner may do anything an admin may, and is additionally the only
+	// role that manages admins, appoints or replaces the guardian, and
+	// proposes account control changes. Exactly one exists per account,
+	// enforced by a partial unique index.
 	RoleOwner PermissionRole = "owner"
 
-	// RoleAdmin manages agents and mandates, but not billing.
+	// RoleAdmin manages agents and mandates, but not billing, not other
+	// admins, and not the guardian. Two admins able to remove each other is a
+	// lockout race that an attacker wins by acting first.
 	RoleAdmin PermissionRole = "admin"
 
 	// RoleGuardian can cancel and freeze, and can propose nothing. Its power
