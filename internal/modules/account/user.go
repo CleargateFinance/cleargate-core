@@ -74,6 +74,7 @@ const (
 // attempt. The set matches what the database will accept.
 type AuthEventType string
 
+// An authentication recorded outcome.
 const (
 	EventSignup                 AuthEventType = "signup"
 	EventEmailVerified          AuthEventType = "email_verified"
