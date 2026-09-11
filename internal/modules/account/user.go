@@ -87,6 +87,7 @@ const (
 	EventMFASucceeded           AuthEventType = "mfa_succeeded"
 	EventMFAFailed              AuthEventType = "mfa_failed"
 	EventRecoveryCodeUsed       AuthEventType = "recovery_code_used"
+	EventInviteAccepted         AuthEventType = "invite_accepted"
 )
 
 // AuthEvent is one recorded authentication outcome.

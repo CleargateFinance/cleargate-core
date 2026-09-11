@@ -121,6 +121,66 @@ type Repository interface {
 	// MarkSessionMFASatisfied stamps a session as having presented a second
 	// factor, which is what starts the step-up window.
 	MarkSessionMFASatisfied(ctx context.Context, digest []byte, at time.Time) error
+
+	// MembershipRole returns what a user may do inside one account. It reports
+	// ErrNotPermitted when they are not a member, so a non-member and a member
+	// whose role is too low take the same path.
+	MembershipRole(ctx context.Context, accountID id.AccountID, userID id.UserID) (PermissionRole, error)
+
+	// AccountHasGuardian reports whether a guardian is already appointed,
+	// which is what separates appointing the first one from replacing it.
+	AccountHasGuardian(ctx context.Context, accountID id.AccountID) (bool, error)
+
+	// UserByID loads a login by its identifier.
+	UserByID(ctx context.Context, userID id.UserID) (User, error)
+
+	// IsMember reports whether an address already belongs to the account, so
+	// an invitation to somebody already present can be refused before a link
+	// is sent to them.
+	IsMember(ctx context.Context, accountID id.AccountID, email string) (bool, error)
+
+	// CreateInvitation stores an offer of membership and the digest of its
+	// token, returning it with the account's name filled in for the message.
+	CreateInvitation(ctx context.Context, inv Invitation, digest []byte) (Invitation, error)
+
+	// InvitationByDigest reads an invitation without claiming it, reporting
+	// ErrInvitationInvalid unless it may still be accepted.
+	//
+	// Callers use it to decide what to say before claiming. It is never the
+	// authority for whether acceptance may proceed: the claim below is, because
+	// only the claim is atomic.
+	InvitationByDigest(ctx context.Context, digest []byte) (Invitation, error)
+
+	// AcceptInvitationAsMember claims an invitation and grants the membership,
+	// in one transaction.
+	//
+	// Claiming and validating are a single statement inside it, so two people
+	// opening the same forwarded link cannot both be let in, and the membership
+	// either accompanies the claim or neither happens.
+	AcceptInvitationAsMember(ctx context.Context, digest []byte, userID id.UserID, at time.Time) (Invitation, error)
+
+	// AcceptInvitationAsNewUser claims an invitation, creates the login the
+	// invitee does not yet have, and grants the membership, in one transaction.
+	//
+	// The address is recorded as verified: the person arrived by opening a link
+	// sent to it, which is the proof a verification email asks for, so sending
+	// one would be asking them to prove the same thing twice.
+	//
+	// No account of their own is created. They are joining somebody else's
+	// account, and an empty unfunded account per invited viewer is noise that
+	// reporting and compliance would carry forever.
+	AcceptInvitationAsNewUser(ctx context.Context, digest []byte, p CreateUserParams, at time.Time) (User, Invitation, error)
+
+	// RevokeInvitation withdraws an outstanding offer, reporting whether there
+	// was one to withdraw.
+	RevokeInvitation(ctx context.Context, invitationID string, accountID id.AccountID, at time.Time) (bool, error)
+
+	// RemoveMembership revokes a role, reporting whether there was one.
+	RemoveMembership(ctx context.Context, accountID id.AccountID, userID id.UserID) (bool, error)
+
+	// UpdateMembershipRole changes an existing member's role, reporting
+	// whether they were a member.
+	UpdateMembershipRole(ctx context.Context, accountID id.AccountID, userID id.UserID, role PermissionRole) (bool, error)
 }
 
 // SecretSealer encrypts the few secrets that must be recoverable rather than
@@ -192,6 +252,11 @@ type SessionCache interface {
 type Mailer interface {
 	SendEmailVerification(ctx context.Context, to, token string) error
 	SendPasswordReset(ctx context.Context, to, token string) error
+
+	// SendInvitation delivers an offer of membership. accountName is included
+	// because the recipient may not be expecting it, and an unexplained link
+	// asking for a password is indistinguishable from a phish.
+	SendInvitation(ctx context.Context, to, token, accountName string) error
 }
 
 // Throttle rate-limits repeated attempts against one identity.

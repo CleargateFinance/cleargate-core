@@ -270,21 +270,34 @@ func (r *postgresRepo) UserByEmail(ctx context.Context, email string) (User, err
 		FROM app_user
 		WHERE email = $1`
 
+	u, err := r.scanUser(r.db.QueryRow(ctx, q, email))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return User{}, ErrCredentialsInvalid
+	}
+	if err != nil {
+		return User{}, fmt.Errorf("account: load user: %w", err)
+	}
+	return u, nil
+}
+
+// scanUser reads one app_user row.
+//
+// It passes pgx.ErrNoRows through untouched, because callers disagree about
+// what an absent user means: on the login path it must be indistinguishable
+// from a wrong password, while a session pointing at one is simply an invalid
+// session.
+func (r *postgresRepo) scanUser(row pgx.Row) (User, error) {
 	var (
 		u         User
 		userID    string
 		principal string
 	)
 
-	err := r.db.QueryRow(ctx, q, email).Scan(
+	if err := row.Scan(
 		&userID, &principal, &u.Email, &u.EmailVerifiedAt, &u.PasswordHash,
 		&u.PasswordChangedAt, &u.Status, &u.CreatedAt,
-	)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return User{}, ErrCredentialsInvalid
-	}
-	if err != nil {
-		return User{}, fmt.Errorf("account: load user: %w", err)
+	); err != nil {
+		return User{}, err
 	}
 
 	u.ID = id.UserID(userID)
@@ -682,6 +695,367 @@ func (r *postgresRepo) MarkSessionMFASatisfied(ctx context.Context, digest []byt
 		return fmt.Errorf("account: mark session mfa satisfied: %w", err)
 	}
 	return nil
+}
+
+// MembershipRole returns what a user may do inside one account.
+//
+// A user who is not a member at all gets ErrNotPermitted rather than a
+// not-found, because the two are the same answer to the only question a caller
+// is asking, and distinguishing them would let somebody probe which accounts a
+// colleague belongs to.
+func (r *postgresRepo) MembershipRole(ctx context.Context, accountID id.AccountID, userID id.UserID) (PermissionRole, error) {
+	const q = `SELECT role FROM account_membership WHERE account_id = $1 AND user_id = $2`
+
+	var role string
+	err := r.db.QueryRow(ctx, q, string(accountID), string(userID)).Scan(&role)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrNotPermitted
+	}
+	if err != nil {
+		return "", fmt.Errorf("account: load membership role: %w", err)
+	}
+	return PermissionRole(role), nil
+}
+
+// AccountHasGuardian reports whether a guardian is already appointed.
+func (r *postgresRepo) AccountHasGuardian(ctx context.Context, accountID id.AccountID) (bool, error) {
+	const q = `
+		SELECT EXISTS (
+			SELECT 1 FROM account_membership
+			WHERE account_id = $1 AND role = 'guardian'
+		)`
+
+	var exists bool
+	if err := r.db.QueryRow(ctx, q, string(accountID)).Scan(&exists); err != nil {
+		return false, fmt.Errorf("account: check guardian: %w", err)
+	}
+	return exists, nil
+}
+
+// IsMember reports whether an address already belongs to the account.
+func (r *postgresRepo) IsMember(ctx context.Context, accountID id.AccountID, email string) (bool, error) {
+	const q = `
+		SELECT EXISTS (
+			SELECT 1 FROM account_membership m
+			JOIN app_user u ON u.id = m.user_id
+			WHERE m.account_id = $1 AND u.email = $2
+		)`
+
+	var exists bool
+	if err := r.db.QueryRow(ctx, q, string(accountID), email).Scan(&exists); err != nil {
+		return false, fmt.Errorf("account: check membership: %w", err)
+	}
+	return exists, nil
+}
+
+// UserByID loads a login by its identifier.
+func (r *postgresRepo) UserByID(ctx context.Context, userID id.UserID) (User, error) {
+	const q = `
+		SELECT id, principal_id, email, email_verified_at, password_hash,
+		       password_changed_at, status, created_at
+		FROM app_user
+		WHERE id = $1`
+
+	u, err := r.scanUser(r.db.QueryRow(ctx, q, string(userID)))
+	if errors.Is(err, pgx.ErrNoRows) {
+		// A session naming a user who is not there is not a user problem, it is
+		// a session that cannot authorise anything.
+		return User{}, ErrSessionInvalid
+	}
+	if err != nil {
+		return User{}, fmt.Errorf("account: load user: %w", err)
+	}
+	return u, nil
+}
+
+// CreateInvitation stores an offer of membership and the digest of its token.
+func (r *postgresRepo) CreateInvitation(ctx context.Context, inv Invitation, digest []byte) (Invitation, error) {
+	const q = `
+		WITH created AS (
+			INSERT INTO account_invitation
+				(account_id, email, role, invited_by, token_hash, expires_at)
+			VALUES ($1, $2, $3, $4, $5, $6)
+			RETURNING id, account_id, created_at
+		)
+		SELECT created.id, created.created_at, a.display_name
+		FROM created JOIN account a ON a.id = created.account_id`
+
+	err := r.db.QueryRow(ctx, q,
+		string(inv.AccountID), inv.Email, string(inv.Role),
+		string(inv.InvitedBy), digest, inv.ExpiresAt,
+	).Scan(&inv.ID, &inv.CreatedAt, &inv.AccountName)
+	if err != nil {
+		if isUniqueViolation(err) {
+			// The partial unique index refused a second outstanding invitation
+			// for this address. Resending is revoke-then-invite, so that the
+			// first link stops working rather than both staying live.
+			return Invitation{}, ErrAlreadyInvited
+		}
+		return Invitation{}, fmt.Errorf("account: create invitation: %w", err)
+	}
+
+	return inv, nil
+}
+
+// InvitationByDigest reads an invitation without claiming it.
+func (r *postgresRepo) InvitationByDigest(ctx context.Context, digest []byte) (Invitation, error) {
+	const q = `
+		SELECT i.id, i.account_id, i.email, i.role, i.invited_by, a.display_name,
+		       i.expires_at, i.accepted_at, i.revoked_at, i.created_at
+		FROM account_invitation i
+		JOIN account a ON a.id = i.account_id
+		WHERE i.token_hash = $1
+		  AND i.accepted_at IS NULL
+		  AND i.revoked_at IS NULL
+		  AND i.expires_at > now()`
+
+	return r.scanInvitation(r.db.QueryRow(ctx, q, digest))
+}
+
+// AcceptInvitationAsMember claims an invitation and grants the membership.
+func (r *postgresRepo) AcceptInvitationAsMember(
+	ctx context.Context,
+	digest []byte,
+	userID id.UserID,
+	at time.Time,
+) (Invitation, error) {
+	var invitation Invitation
+
+	err := r.db.UoW.Do(ctx, func(ctx context.Context) error {
+		claimed, err := r.claimInvitation(ctx, digest, at)
+		if err != nil {
+			return err
+		}
+
+		if err := r.insertMembershipFor(ctx, claimed, userID); err != nil {
+			return err
+		}
+
+		invitation = claimed
+		return nil
+	})
+	if err != nil {
+		return Invitation{}, err
+	}
+
+	return invitation, nil
+}
+
+// AcceptInvitationAsNewUser claims an invitation, creates the invitee's login,
+// and grants the membership, all together.
+func (r *postgresRepo) AcceptInvitationAsNewUser(
+	ctx context.Context,
+	digest []byte,
+	p CreateUserParams,
+	at time.Time,
+) (User, Invitation, error) {
+	var (
+		user       User
+		invitation Invitation
+	)
+
+	err := r.db.UoW.Do(ctx, func(ctx context.Context) error {
+		claimed, err := r.claimInvitation(ctx, digest, at)
+		if err != nil {
+			return err
+		}
+
+		var principalID string
+		if err := r.db.QueryRow(ctx,
+			`INSERT INTO principal (kind) VALUES ('person') RETURNING id`,
+		).Scan(&principalID); err != nil {
+			return fmt.Errorf("account: create principal: %w", err)
+		}
+
+		if _, err := r.db.Exec(ctx,
+			`INSERT INTO principal_identity (principal_id) VALUES ($1)`, principalID,
+		); err != nil {
+			return fmt.Errorf("account: create principal identity: %w", err)
+		}
+
+		// email_verified_at is stamped here rather than left for a separate
+		// message. Opening a link sent to this address is the proof that
+		// verification asks for, and asking again would be asking twice.
+		var userID string
+		err = r.db.QueryRow(ctx, `
+			INSERT INTO app_user (principal_id, email, password_hash,
+			                      password_changed_at, email_verified_at)
+			VALUES ($1, $2, $3, $4, $4)
+			RETURNING id, email_verified_at, password_changed_at, status, created_at`,
+			principalID, p.Email, p.PasswordHash, p.PasswordChangedAt,
+		).Scan(&userID, &user.EmailVerifiedAt, &user.PasswordChangedAt,
+			&user.Status, &user.CreatedAt)
+		if err != nil {
+			if isUniqueViolation(err) {
+				// Somebody registered this address between the invitation being
+				// read and this transaction. They should accept as themselves.
+				return ErrEmailTaken
+			}
+			return fmt.Errorf("account: create user: %w", err)
+		}
+
+		user.ID = id.UserID(userID)
+		user.PrincipalID = id.PrincipalID(principalID)
+		user.Email = p.Email
+		user.PasswordHash = p.PasswordHash
+
+		claimed.Email = p.Email
+		if err := r.insertMembershipFor(ctx, claimed, user.ID); err != nil {
+			return err
+		}
+
+		invitation = claimed
+		return nil
+	})
+	if err != nil {
+		return User{}, Invitation{}, err
+	}
+
+	return user, invitation, nil
+}
+
+// claimInvitation marks an invitation accepted, in one statement.
+//
+// Every condition is in the UPDATE rather than in a preceding SELECT. Reading
+// first and writing second would let two people opening the same forwarded link
+// both pass the check before either wrote, and both end up inside the account.
+func (r *postgresRepo) claimInvitation(ctx context.Context, digest []byte, at time.Time) (Invitation, error) {
+	const q = `
+		UPDATE account_invitation
+		SET accepted_at = $2
+		WHERE token_hash = $1
+		  AND accepted_at IS NULL
+		  AND revoked_at IS NULL
+		  AND expires_at > $2
+		RETURNING id, account_id, email, role, invited_by, expires_at,
+		          accepted_at, revoked_at, created_at`
+
+	var (
+		inv       Invitation
+		accountID string
+		invitedBy string
+		role      string
+	)
+
+	err := r.db.QueryRow(ctx, q, digest, at).Scan(
+		&inv.ID, &accountID, &inv.Email, &role, &invitedBy, &inv.ExpiresAt,
+		&inv.AcceptedAt, &inv.RevokedAt, &inv.CreatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// Unknown, expired, revoked and already accepted are indistinguishable
+		// here, which is what stops a link from being probed.
+		return Invitation{}, ErrInvitationInvalid
+	}
+	if err != nil {
+		return Invitation{}, fmt.Errorf("account: accept invitation: %w", err)
+	}
+
+	inv.AccountID = id.AccountID(accountID)
+	inv.InvitedBy = id.UserID(invitedBy)
+	inv.Role = PermissionRole(role)
+	return inv, nil
+}
+
+// insertMembershipFor grants an invitation's role to a specific user.
+func (r *postgresRepo) insertMembershipFor(ctx context.Context, inv Invitation, userID id.UserID) error {
+	// ON CONFLICT DO NOTHING covers somebody who was already a member by
+	// another route. The invitation is still spent, which is correct: it was
+	// used, and leaving it live would let it be used again.
+	const q = `
+		INSERT INTO account_membership (account_id, user_id, role, invited_by)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (account_id, user_id) DO NOTHING`
+
+	if _, err := r.db.Exec(ctx, q,
+		string(inv.AccountID), string(userID), string(inv.Role), string(inv.InvitedBy),
+	); err != nil {
+		if isUniqueViolation(err) {
+			// The partial unique index refused a second guardian, which means
+			// one was appointed between the check and this write.
+			return ErrGuardianRequiresControlChange
+		}
+		return fmt.Errorf("account: create membership: %w", err)
+	}
+	return nil
+}
+
+// RevokeInvitation withdraws an outstanding offer.
+//
+// Scoped to the account as well as the identifier, so an identifier guessed or
+// leaked from one account cannot be used to cancel another's invitations.
+func (r *postgresRepo) RevokeInvitation(
+	ctx context.Context,
+	invitationID string,
+	accountID id.AccountID,
+	at time.Time,
+) (bool, error) {
+	const q = `
+		UPDATE account_invitation
+		SET revoked_at = $3
+		WHERE id = $1 AND account_id = $2
+		  AND accepted_at IS NULL AND revoked_at IS NULL`
+
+	tag, err := r.db.Exec(ctx, q, invitationID, string(accountID), at)
+	if err != nil {
+		return false, fmt.Errorf("account: revoke invitation: %w", err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// RemoveMembership revokes a role.
+func (r *postgresRepo) RemoveMembership(ctx context.Context, accountID id.AccountID, userID id.UserID) (bool, error) {
+	const q = `DELETE FROM account_membership WHERE account_id = $1 AND user_id = $2`
+
+	tag, err := r.db.Exec(ctx, q, string(accountID), string(userID))
+	if err != nil {
+		return false, fmt.Errorf("account: remove membership: %w", err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// UpdateMembershipRole changes an existing member's role.
+func (r *postgresRepo) UpdateMembershipRole(
+	ctx context.Context,
+	accountID id.AccountID,
+	userID id.UserID,
+	role PermissionRole,
+) (bool, error) {
+	const q = `
+		UPDATE account_membership SET role = $3
+		WHERE account_id = $1 AND user_id = $2`
+
+	tag, err := r.db.Exec(ctx, q, string(accountID), string(userID), string(role))
+	if err != nil {
+		if isUniqueViolation(err) {
+			return false, ErrGuardianRequiresControlChange
+		}
+		return false, fmt.Errorf("account: update membership role: %w", err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// scanInvitation reads one invitation row.
+func (r *postgresRepo) scanInvitation(row pgx.Row) (Invitation, error) {
+	var (
+		inv       Invitation
+		accountID string
+		invitedBy string
+		role      string
+	)
+
+	err := row.Scan(&inv.ID, &accountID, &inv.Email, &role, &invitedBy,
+		&inv.AccountName, &inv.ExpiresAt, &inv.AcceptedAt, &inv.RevokedAt, &inv.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Invitation{}, ErrInvitationInvalid
+	}
+	if err != nil {
+		return Invitation{}, fmt.Errorf("account: load invitation: %w", err)
+	}
+
+	inv.AccountID = id.AccountID(accountID)
+	inv.InvitedBy = id.UserID(invitedBy)
+	inv.Role = PermissionRole(role)
+	return inv, nil
 }
 
 // isUniqueViolation reports whether err is Postgres rejecting a duplicate.

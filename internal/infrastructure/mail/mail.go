@@ -59,6 +59,17 @@ func (m *LoggingMailer) SendPasswordReset(_ context.Context, to, token string) e
 	return nil
 }
 
+// SendInvitation delivers the link that joins an account.
+func (m *LoggingMailer) SendInvitation(_ context.Context, to, token, accountName string) error {
+	m.log.Warn("invitation not sent, logging the link instead",
+		slog.String("to", to),
+		slog.String("account", accountName),
+		slog.String("link", m.link("/accept-invite", token)),
+		slog.String("mailer", "logging"),
+	)
+	return nil
+}
+
 // link builds the URL a recipient would click.
 //
 // The token goes in the query string escaped, because it is base64url and a
@@ -78,3 +89,6 @@ func (DiscardMailer) SendEmailVerification(context.Context, string, string) erro
 
 // SendPasswordReset does nothing and reports success.
 func (DiscardMailer) SendPasswordReset(context.Context, string, string) error { return nil }
+
+// SendInvitation does nothing and reports success.
+func (DiscardMailer) SendInvitation(context.Context, string, string, string) error { return nil }
