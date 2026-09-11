@@ -31,6 +31,7 @@ func (s *Service) Login(ctx context.Context, p LoginParams) (crypto.Token, Sessi
 	email := NormalizeEmail(p.Email)
 	key := ThrottleKey("login", p.IP, email)
 
+	// the throttle check runs before anything touches the database or hashes a password
 	if wait, err := s.throttle.RetryAfter(ctx, key); err == nil && wait > 0 {
 		return crypto.Token{}, Session{}, newThrottled(wait)
 	}
@@ -56,6 +57,8 @@ func (s *Service) Login(ctx context.Context, p LoginParams) (crypto.Token, Sessi
 		return crypto.Token{}, Session{}, err
 	}
 	if !ok {
+		// `failLogin` calls `s.throttle.Fail(ctx, key)`, which increments the counter and — past 5 free tries — sets a penalty
+
 		s.failLogin(ctx, key, AuthEvent{
 			UserID: user.ID, Email: email, Type: EventLoginFailed,
 			IP: p.IP, UserAgent: p.UserAgent,
