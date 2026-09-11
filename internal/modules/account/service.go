@@ -51,6 +51,7 @@ type Service struct {
 	stepUpWindow       time.Duration
 	emailTokenLifetime time.Duration
 	resetTokenLifetime time.Duration
+	invitationLifetime time.Duration
 
 	// mfaIssuer is the label an authenticator app shows beside the code, so a
 	// person with several accounts can tell which one it belongs to.
@@ -70,6 +71,7 @@ type Options struct {
 	StepUpWindow       time.Duration
 	EmailTokenLifetime time.Duration
 	ResetTokenLifetime time.Duration
+	InvitationLifetime time.Duration
 
 	// ConsentVersions carries the document versions in force, keyed by
 	// DocumentTermsOfService and DocumentPrivacyPolicy. A document missing
@@ -120,6 +122,9 @@ func NewService(
 	if opts.ResetTokenLifetime <= 0 {
 		opts.ResetTokenLifetime = DefaultResetTokenLifetime
 	}
+	if opts.InvitationLifetime <= 0 {
+		opts.InvitationLifetime = DefaultInvitationLifetime
+	}
 	if opts.ConsentVersions == nil {
 		opts.ConsentVersions = map[string]string{}
 	}
@@ -141,6 +146,7 @@ func NewService(
 		stepUpWindow:       opts.StepUpWindow,
 		emailTokenLifetime: opts.EmailTokenLifetime,
 		resetTokenLifetime: opts.ResetTokenLifetime,
+		invitationLifetime: opts.InvitationLifetime,
 		consentVersions:    opts.ConsentVersions,
 		mfaIssuer:          opts.MFAIssuer,
 	}

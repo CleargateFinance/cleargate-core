@@ -23,13 +23,26 @@ import (
 type captureMailer struct {
 	verifications map[string]string
 	resets        map[string]string
+	invitations   map[string]string
+
+	// invitationAccounts records which account each invitation named, so a test
+	// can check the recipient is told what they are being invited to.
+	invitationAccounts map[string]string
 }
 
 func newCaptureMailer() *captureMailer {
 	return &captureMailer{
-		verifications: map[string]string{},
-		resets:        map[string]string{},
+		verifications:      map[string]string{},
+		resets:             map[string]string{},
+		invitations:        map[string]string{},
+		invitationAccounts: map[string]string{},
 	}
+}
+
+func (m *captureMailer) SendInvitation(_ context.Context, to, token, accountName string) error {
+	m.invitations[to] = token
+	m.invitationAccounts[to] = accountName
+	return nil
 }
 
 func (m *captureMailer) SendEmailVerification(_ context.Context, to, token string) error {
