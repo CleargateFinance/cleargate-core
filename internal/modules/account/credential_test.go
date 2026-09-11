@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/CleargateFinance/cleargate-core/internal/infrastructure/crypto"
+	"github.com/CleargateFinance/cleargate-core/internal/infrastructure/mail"
 	"github.com/CleargateFinance/cleargate-core/internal/shared/id"
 	"github.com/CleargateFinance/cleargate-core/test/fixtures"
 )
@@ -82,7 +83,8 @@ func newAccountFixtureWithCache(t *testing.T, override SessionCache) *accountFix
 		sessionCache = override
 	}
 
-	svc := NewService(repo, cheapHasher(), sessionCache, nil, nil, Options{})
+	svc := NewService(repo, cheapHasher(), sessionCache,
+		mail.DiscardMailer{}, NewCacheThrottle(sessionCache, redis.Client, nil), nil, nil, Options{})
 
 	f := &accountFixture{db: db, cache: redis, svc: svc, repo: repo}
 	f.user = f.createUser(t, ctx, "founder@example.com")
@@ -312,9 +314,10 @@ func TestCacheEntryNeverOutlivesSession(t *testing.T) {
 
 		// A session shorter than the cache window: the entry must expire with
 		// the session, not outlive it.
-		svc := NewService(repo, cheapHasher(), redis.Client, nil, nil, Options{
-			SessionLifetime: 10 * time.Second,
-		})
+		svc := NewService(repo, cheapHasher(), redis.Client,
+			mail.DiscardMailer{}, NewCacheThrottle(redis.Client, redis.Client, nil), nil, nil, Options{
+				SessionLifetime: 10 * time.Second,
+			})
 
 		f := &accountFixture{db: db, cache: redis, svc: svc, repo: repo}
 		f.user = f.createUser(t, ctx, "shortlived@example.com")

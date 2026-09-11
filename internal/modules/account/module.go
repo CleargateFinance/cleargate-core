@@ -23,6 +23,11 @@ type Deps struct {
 	Clock  Clock
 	Log    *slog.Logger
 
+	// Mailer is required. There is deliberately no default: the only
+	// implementation that needs no configuration is the one that writes live
+	// credentials to the log, and nothing should get that by omission.
+	Mailer Mailer
+
 	Options Options
 }
 
@@ -37,9 +42,10 @@ func New(d Deps) *Module {
 	}
 
 	repo := NewPostgresRepository(d.DB)
+	throttle := NewCacheThrottle(d.Cache, d.Cache, d.Log)
 
 	return &Module{
-		svc: NewService(repo, hasher, d.Cache, d.Clock, d.Log, d.Options),
+		svc: NewService(repo, hasher, d.Cache, d.Mailer, throttle, d.Clock, d.Log, d.Options),
 	}
 }
 
