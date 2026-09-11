@@ -90,19 +90,6 @@ func (f *authFixture) signupAndVerify(t *testing.T, email string) id.UserID {
 
 	user, err := f.repo.UserByEmail(ctx, email)
 	require.NoError(t, err)
-
-	// Sign-up left password_changed_at at the database's now(), while any
-	// session these tests open takes its issued_at from the application clock.
-	// A session is valid only when issued_at >= password_changed_at, so with
-	// the two instants milliseconds apart the comparison turns on however far
-	// the container's clock has drifted from the host's. Backdating removes
-	// the coincidence, and matches real use, where somebody reads an email
-	// between setting a password and signing in.
-	_, err = f.db.Exec(ctx,
-		`UPDATE app_user SET password_changed_at = now() - interval '1 minute' WHERE id = $1`,
-		string(user.ID))
-	require.NoError(t, err)
-
 	return user.ID
 }
 
@@ -510,6 +497,43 @@ func TestResetToken_IsSingleUse(t *testing.T) {
 		Email: "single@example.com", Password: "the first new passphrase",
 	})
 	assert.NoError(t, err)
+}
+
+// TestSignup_StampsPasswordChangedFromTheApplicationClock pins which clock
+// writes that column.
+//
+// It is the one half of a comparison whose other half, a session's issued_at,
+// the application always supplies. Letting the database default this column
+// would put the two on different machines' clocks, and a login issued within
+// the skew between them would be rejected for no reason a user could act on.
+// The window is only wide enough to matter when a session is opened moments
+// after the password is set, which is exactly what auto-login after sign-up
+// would do.
+func TestSignup_StampsPasswordChangedFromTheApplicationClock(t *testing.T) {
+	ctx := context.Background()
+
+	db := fixtures.NewTestDB(t)
+	redis := fixtures.NewTestCache(t)
+	repo := NewPostgresRepository(db.DB)
+	mailer := newCaptureMailer()
+	clock := newTestClock()
+
+	// A clock deliberately far from the database's, so a row taking its value
+	// from Postgres cannot pass this by coincidence.
+	clock.Set(time.Now().UTC().Add(-72 * time.Hour))
+
+	svc := NewService(repo, cheapHasher(), redis.Client, mailer, testSealer(t),
+		NewCacheThrottle(redis.Client, redis.Client, nil), clock, nil, Options{})
+
+	require.NoError(t, svc.Signup(ctx, SignupParams{
+		Email: "stamped@example.com", Password: goodPassword,
+	}))
+
+	user, err := repo.UserByEmail(ctx, "stamped@example.com")
+	require.NoError(t, err)
+
+	assert.WithinDuration(t, clock.Now(), user.PasswordChangedAt, time.Second,
+		"password_changed_at must come from the service clock, not the database")
 }
 
 // testClock is a time source a test can move forward, so expiry can be

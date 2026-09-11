@@ -142,6 +142,13 @@ type CreateUserParams struct {
 	Email        string
 	PasswordHash string
 	DisplayName  string
+
+	// PasswordChangedAt is supplied by the caller rather than defaulted by the
+	// database, so that it and a session's issued_at come from the same clock.
+	// A session is valid only when issued_at >= password_changed_at, and
+	// deciding that comparison across two machines' clocks means a new login
+	// can be rejected by nothing worse than a few milliseconds of NTP skew.
+	PasswordChangedAt time.Time
 }
 
 // PasswordHasher derives and checks password hashes.

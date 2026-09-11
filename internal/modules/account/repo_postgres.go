@@ -214,10 +214,10 @@ func (r *postgresRepo) CreateUserWithAccount(ctx context.Context, p CreateUserPa
 
 		var userID string
 		err := r.db.QueryRow(ctx, `
-			INSERT INTO app_user (principal_id, email, password_hash)
-			VALUES ($1, $2, $3)
+			INSERT INTO app_user (principal_id, email, password_hash, password_changed_at)
+			VALUES ($1, $2, $3, $4)
 			RETURNING id, password_changed_at, status, created_at`,
-			principalID, p.Email, p.PasswordHash,
+			principalID, p.Email, p.PasswordHash, p.PasswordChangedAt,
 		).Scan(&userID, &user.PasswordChangedAt, &user.Status, &user.CreatedAt)
 		if err != nil {
 			if isUniqueViolation(err) {
