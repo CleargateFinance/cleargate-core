@@ -181,6 +181,48 @@ type Repository interface {
 	// UpdateMembershipRole changes an existing member's role, reporting
 	// whether they were a member.
 	UpdateMembershipRole(ctx context.Context, accountID id.AccountID, userID id.UserID, role PermissionRole) (bool, error)
+
+	// CreateAgent registers an agent against an account.
+	CreateAgent(ctx context.Context, accountID id.AccountID, name string, createdBy id.UserID) (Agent, error)
+
+	// Agent loads one registration, reporting ErrAgentNotFound when there is
+	// none.
+	Agent(ctx context.Context, agentID id.AgentID) (Agent, error)
+
+	// RevokeAgent retires an agent and every credential it holds, together.
+	//
+	// One transaction, because an agent marked revoked while its keys stay live
+	// is the exact state somebody containing an incident believes they have
+	// just eliminated.
+	RevokeAgent(ctx context.Context, agentID id.AgentID, at time.Time) error
+
+	// CreateAgentCredential stores a new key's handle and the digest of its
+	// secret.
+	CreateAgentCredential(ctx context.Context, agentID id.AgentID, name, prefix string, digest []byte, createdBy id.UserID) (AgentCredential, error)
+
+	// ActiveCredentialByPrefix resolves a non-secret handle to the identity
+	// behind it, and to the digest the presented secret must match.
+	//
+	// Every condition that decides whether this credential may authenticate is
+	// in the query: the credential is not revoked, and the agent it belongs to
+	// is still active. It reports ErrCredentialInvalid when any of them fails,
+	// so no caller can forget one.
+	ActiveCredentialByPrefix(ctx context.Context, prefix string) (AgentIdentity, []byte, error)
+
+	// AgentCredentials lists an agent's keys, secrets excluded.
+	AgentCredentials(ctx context.Context, agentID id.AgentID) ([]AgentCredential, error)
+
+	// RevokeAgentCredential retires one key, reporting whether there was one to
+	// retire. Scoped to the agent, so an identifier from elsewhere cannot be
+	// used to retire a key that is not this agent's.
+	RevokeAgentCredential(ctx context.Context, agentID id.AgentID, credentialID string, at time.Time) (bool, error)
+
+	// TouchAgentCredential records that a key was used. Advisory: failing to
+	// record a use must never fail a request that was otherwise authenticated.
+	TouchAgentCredential(ctx context.Context, credentialID string, at time.Time) error
+
+	// CreateAgentSession opens a run.
+	CreateAgentSession(ctx context.Context, agentID id.AgentID, taskRef, taskText string) (AgentSession, error)
 }
 
 // SecretSealer encrypts the few secrets that must be recoverable rather than
