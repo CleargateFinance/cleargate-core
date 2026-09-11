@@ -90,6 +90,19 @@ func (f *authFixture) signupAndVerify(t *testing.T, email string) id.UserID {
 
 	user, err := f.repo.UserByEmail(ctx, email)
 	require.NoError(t, err)
+
+	// Sign-up left password_changed_at at the database's now(), while any
+	// session these tests open takes its issued_at from the application clock.
+	// A session is valid only when issued_at >= password_changed_at, so with
+	// the two instants milliseconds apart the comparison turns on however far
+	// the container's clock has drifted from the host's. Backdating removes
+	// the coincidence, and matches real use, where somebody reads an email
+	// between setting a password and signing in.
+	_, err = f.db.Exec(ctx,
+		`UPDATE app_user SET password_changed_at = now() - interval '1 minute' WHERE id = $1`,
+		string(user.ID))
+	require.NoError(t, err)
+
 	return user.ID
 }
 
@@ -518,6 +531,16 @@ func (c *testClock) Advance(d time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.now = c.now.Add(d)
+}
+
+// Set moves the clock to an exact instant.
+//
+// Needed because some timestamps are written by Postgres rather than by this
+// clock, and a fixture that mixes the two has to reconcile them explicitly.
+func (c *testClock) Set(at time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = at
 }
 
 func TestResetToken_Expires(t *testing.T) {

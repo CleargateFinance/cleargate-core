@@ -53,6 +53,14 @@ func newMFAFixture(t *testing.T) *mfaFixture {
 	auth := &authFixture{db: db, cache: redis, svc: svc, repo: repo, mailer: mailer}
 	f.user = auth.signupAndVerify(t, f.email)
 
+	// Anchor the controllable clock to the database's own, so that the several
+	// tests below which advance it past a TOTP period or a step-up window are
+	// moving relative to a known instant rather than to wherever the host's
+	// clock happened to sit when this fixture was built.
+	var dbNow time.Time
+	require.NoError(t, db.QueryRow(context.Background(), `SELECT now()`).Scan(&dbNow))
+	clock.Set(dbNow)
+
 	return f
 }
 

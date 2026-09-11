@@ -111,6 +111,14 @@ func newAccountFixtureWithCache(t *testing.T, override SessionCache) *accountFix
 }
 
 // createUser inserts the principal and login a session needs to hang off.
+//
+// password_changed_at is backdated rather than left to default to now().
+// A session is only valid when issued_at >= password_changed_at, and those two
+// come from different clocks: the first from the application, the second from
+// Postgres. Real users have a gap of at least an email round trip between the
+// two, so sub-second skew between a container and its host never matters. A
+// test that creates a user and opens a session in the same instant has no such
+// gap, and would otherwise pass or fail on which way the drift happened to go.
 func (f *accountFixture) createUser(t *testing.T, ctx context.Context, email string) id.UserID {
 	t.Helper()
 
@@ -123,8 +131,9 @@ func (f *accountFixture) createUser(t *testing.T, ctx context.Context, email str
 
 	var userID string
 	require.NoError(t, f.db.QueryRow(ctx, `
-		INSERT INTO app_user (principal_id, email, password_hash, email_verified_at)
-		VALUES ($1, $2, $3, now())
+		INSERT INTO app_user (principal_id, email, password_hash, email_verified_at,
+		                      password_changed_at)
+		VALUES ($1, $2, $3, now(), now() - interval '1 minute')
 		RETURNING id`, principalID, email, hash).Scan(&userID))
 
 	return id.UserID(userID)
