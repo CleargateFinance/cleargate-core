@@ -4,6 +4,7 @@ package account
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -62,6 +63,23 @@ func cheapHasher() *crypto.Hasher {
 	return crypto.NewHasher(crypto.Params{MemoryKiB: 8, Iterations: 1, Threads: 1})
 }
 
+// testSealer builds a real keyring over a throwaway key rather than a fake.
+//
+// AES costs nothing, so there is no speed argument for a stub, and using the
+// real implementation means these tests exercise the encoding that will
+// actually be written to the database.
+func testSealer(t *testing.T) SecretSealer {
+	t.Helper()
+
+	key := make([]byte, crypto.MasterKeySize)
+	_, err := rand.Read(key)
+	require.NoError(t, err)
+
+	ring, err := crypto.NewKeyring(map[byte][]byte{1: key}, 1)
+	require.NoError(t, err)
+	return ring
+}
+
 func newAccountFixture(t *testing.T) *accountFixture {
 	t.Helper()
 	return newAccountFixtureWithCache(t, nil)
@@ -84,7 +102,8 @@ func newAccountFixtureWithCache(t *testing.T, override SessionCache) *accountFix
 	}
 
 	svc := NewService(repo, cheapHasher(), sessionCache,
-		mail.DiscardMailer{}, NewCacheThrottle(sessionCache, redis.Client, nil), nil, nil, Options{})
+		mail.DiscardMailer{}, testSealer(t),
+		NewCacheThrottle(sessionCache, redis.Client, nil), nil, nil, Options{})
 
 	f := &accountFixture{db: db, cache: redis, svc: svc, repo: repo}
 	f.user = f.createUser(t, ctx, "founder@example.com")
@@ -315,7 +334,8 @@ func TestCacheEntryNeverOutlivesSession(t *testing.T) {
 		// A session shorter than the cache window: the entry must expire with
 		// the session, not outlive it.
 		svc := NewService(repo, cheapHasher(), redis.Client,
-			mail.DiscardMailer{}, NewCacheThrottle(redis.Client, redis.Client, nil), nil, nil, Options{
+			mail.DiscardMailer{}, testSealer(t),
+			NewCacheThrottle(redis.Client, redis.Client, nil), nil, nil, Options{
 				SessionLifetime: 10 * time.Second,
 			})
 

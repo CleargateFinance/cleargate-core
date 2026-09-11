@@ -81,6 +81,60 @@ type Repository interface {
 
 	// RecordAuthEvent appends to the authentication audit trail.
 	RecordAuthEvent(ctx context.Context, e AuthEvent) error
+
+	// CreateMFAFactor stores a new, unconfirmed factor, replacing any earlier
+	// enrolment of the same type that was never completed. Restarting an
+	// enrolment is ordinary behaviour, usually because the first QR code was
+	// scanned on a device the person no longer has in front of them.
+	CreateMFAFactor(ctx context.Context, userID id.UserID, factorType MFAFactorType, secretEnc []byte) (MFAFactor, error)
+
+	// MFAFactor returns the live factor of a type, confirmed or not.
+	// It reports ErrMFANotEnrolled when there is none.
+	MFAFactor(ctx context.Context, userID id.UserID, factorType MFAFactorType) (MFAFactor, error)
+
+	// ConfirmMFAFactor completes enrolment and replaces the recovery codes in
+	// one transaction.
+	//
+	// The two belong together: codes issued without a confirmed factor protect
+	// nothing, and a factor confirmed without codes turns a lost phone into a
+	// lost account.
+	ConfirmMFAFactor(ctx context.Context, factorID string, userID id.UserID, at time.Time, codeHashes []string) error
+
+	// ClaimTOTPStep records that a counter step has been used, and reports
+	// whether this caller was the one that claimed it.
+	//
+	// Claiming and checking are one statement. Reading the last step and then
+	// writing it would let two requests carrying the same captured code both
+	// pass the check before either wrote.
+	ClaimTOTPStep(ctx context.Context, factorID string, step int64) (bool, error)
+
+	// HasConfirmedMFA reports whether a user holds any usable second factor.
+	HasConfirmedMFA(ctx context.Context, userID id.UserID) (bool, error)
+
+	// UnusedRecoveryCodes returns the hashes still available to a user.
+	UnusedRecoveryCodes(ctx context.Context, userID id.UserID) ([]RecoveryCode, error)
+
+	// ConsumeRecoveryCode claims one code and reports whether this caller got
+	// it, single-statement for the same reason ClaimTOTPStep is.
+	ConsumeRecoveryCode(ctx context.Context, codeID string, at time.Time) (bool, error)
+
+	// MarkSessionMFASatisfied stamps a session as having presented a second
+	// factor, which is what starts the step-up window.
+	MarkSessionMFASatisfied(ctx context.Context, digest []byte, at time.Time) error
+}
+
+// SecretSealer encrypts the few secrets that must be recoverable rather than
+// merely comparable.
+//
+// A port rather than a direct dependency so tests need no real key material,
+// and so moving the master key into a managed KMS later is a change of
+// implementation rather than a change to any of these flows.
+//
+// context identifies what the ciphertext belongs to and is re-supplied at Open.
+// It is what makes a sealed value non-transferable between rows.
+type SecretSealer interface {
+	Seal(plaintext []byte, context string) ([]byte, error)
+	Open(sealed []byte, context string) ([]byte, error)
 }
 
 // CreateUserParams is everything sign-up needs to write in one transaction.

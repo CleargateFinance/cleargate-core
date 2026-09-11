@@ -61,7 +61,7 @@ func newAuthFixture(t *testing.T) *authFixture {
 	repo := NewPostgresRepository(db.DB)
 	mailer := newCaptureMailer()
 
-	svc := NewService(repo, cheapHasher(), redis.Client, mailer,
+	svc := NewService(repo, cheapHasher(), redis.Client, mailer, testSealer(t),
 		NewCacheThrottle(redis.Client, redis.Client, nil), nil, nil, Options{
 			ConsentVersions: map[string]string{
 				DocumentTermsOfService: "2026-01-01",
@@ -529,7 +529,7 @@ func TestResetToken_Expires(t *testing.T) {
 	mailer := newCaptureMailer()
 	clock := newTestClock()
 
-	svc := NewService(repo, cheapHasher(), redis.Client, mailer,
+	svc := NewService(repo, cheapHasher(), redis.Client, mailer, testSealer(t),
 		NewCacheThrottle(redis.Client, redis.Client, nil), clock, nil, Options{
 			ResetTokenLifetime: time.Hour,
 		})

@@ -83,6 +83,10 @@ const (
 	EventPasswordResetRequested AuthEventType = "password_reset_requested"
 	EventPasswordChanged        AuthEventType = "password_changed"
 	EventSessionRevoked         AuthEventType = "session_revoked"
+	EventMFAEnrolled            AuthEventType = "mfa_enrolled"
+	EventMFASucceeded           AuthEventType = "mfa_succeeded"
+	EventMFAFailed              AuthEventType = "mfa_failed"
+	EventRecoveryCodeUsed       AuthEventType = "recovery_code_used"
 )
 
 // AuthEvent is one recorded authentication outcome.
