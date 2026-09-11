@@ -3,10 +3,12 @@
 package config
 
 import (
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -17,6 +19,7 @@ type Config struct {
 	Server   Server
 	Database Database
 	Cache    Cache
+	Crypto   Crypto
 	Log      Log
 }
 
@@ -54,6 +57,18 @@ type Cache struct {
 	Addr     string
 	Password string
 	DB       int
+}
+
+// Crypto holds the master keys used to encrypt the few secrets the server has
+// to be able to read back, such as a TOTP shared secret.
+type Crypto struct {
+	// MasterKeys maps a key id to a 32-byte key. More than one is loaded only
+	// during a rotation, so ciphertext written under a retired key can still be
+	// opened while it is being rewrapped.
+	MasterKeys map[byte][]byte
+
+	// ActiveKeyID names the key new ciphertexts are sealed under.
+	ActiveKeyID byte
 }
 
 // Log holds logging settings.
@@ -96,10 +111,69 @@ func Load() (*Config, error) {
 		},
 	}
 
+	keys, activeID, err := loadMasterKeys()
+	if err != nil {
+		return nil, err
+	}
+	cfg.Crypto = Crypto{MasterKeys: keys, ActiveKeyID: activeID}
+
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
 	return cfg, nil
+}
+
+// loadMasterKeys parses CRYPTO_MASTER_KEYS, a comma-separated list of
+// "id:base64key" pairs, and CRYPTO_ACTIVE_KEY_ID.
+//
+// The id travels in every ciphertext, which is what allows a key to be rotated
+// without a migration: new values are sealed under the active key while old
+// ones keep naming the key that can still open them.
+//
+// A parse failure is returned rather than defaulted. Everywhere else in this
+// file a bad value falls back to something sensible, but there is no sensible
+// fallback for a missing encryption key, and inventing one would mean either
+// refusing to enrol anybody or, far worse, a hardcoded key that ships to
+// production and makes every stored secret recoverable by anyone with the
+// source.
+func loadMasterKeys() (map[byte][]byte, byte, error) {
+	raw := os.Getenv("CRYPTO_MASTER_KEYS")
+	if raw == "" {
+		return nil, 0, nil
+	}
+
+	keys := map[byte][]byte{}
+	for _, pair := range strings.Split(raw, ",") {
+		pair = strings.TrimSpace(pair)
+		if pair == "" {
+			continue
+		}
+
+		idText, keyText, found := strings.Cut(pair, ":")
+		if !found {
+			return nil, 0, errors.New("CRYPTO_MASTER_KEYS entries must be id:base64key")
+		}
+
+		id, err := strconv.ParseUint(strings.TrimSpace(idText), 10, 8)
+		if err != nil {
+			return nil, 0, fmt.Errorf("CRYPTO_MASTER_KEYS has a bad key id %q", idText)
+		}
+
+		key, err := base64.StdEncoding.DecodeString(strings.TrimSpace(keyText))
+		if err != nil {
+			// The key itself is never echoed, here or anywhere else.
+			return nil, 0, fmt.Errorf("CRYPTO_MASTER_KEYS key %d is not valid base64", id)
+		}
+
+		keys[byte(id)] = key
+	}
+
+	activeID, err := strconv.ParseUint(env("CRYPTO_ACTIVE_KEY_ID", "1"), 10, 8)
+	if err != nil {
+		return nil, 0, errors.New("CRYPTO_ACTIVE_KEY_ID must be a number from 0 to 255")
+	}
+
+	return keys, byte(activeID), nil
 }
 
 // validate checks the values that have no safe default and would otherwise
@@ -120,8 +194,34 @@ func (c *Config) validate() error {
 			"SERVER_MODE must be debug or release, got %q", c.Server.Mode))
 	}
 
+	// Every key is checked, not just the active one. A retired key that decodes
+	// to the wrong length would otherwise pass here and fail much later, at the
+	// one moment it is genuinely needed: opening an old row during a rotation.
+	if len(c.Crypto.MasterKeys) == 0 {
+		problems = append(problems, errors.New(
+			"CRYPTO_MASTER_KEYS is required, generate one with: openssl rand -base64 32"))
+	} else {
+		if _, ok := c.Crypto.MasterKeys[c.Crypto.ActiveKeyID]; !ok {
+			problems = append(problems, fmt.Errorf(
+				"CRYPTO_ACTIVE_KEY_ID is %d but CRYPTO_MASTER_KEYS has no key with that id",
+				c.Crypto.ActiveKeyID))
+		}
+		for keyID, key := range c.Crypto.MasterKeys {
+			if len(key) != masterKeySize {
+				problems = append(problems, fmt.Errorf(
+					"CRYPTO_MASTER_KEYS key %d must decode to %d bytes, got %d",
+					keyID, masterKeySize, len(key)))
+			}
+		}
+	}
+
 	return errors.Join(problems...)
 }
+
+// masterKeySize is the key length AES-256 requires. It is repeated here rather
+// than imported from the crypto package, because config is deliberately
+// depended upon by nothing and depends on nothing.
+const masterKeySize = 32
 
 // env returns the environment variable named key, or fallback when it is unset
 // or empty.

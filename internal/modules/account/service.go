@@ -31,6 +31,9 @@ const (
 	DefaultResetTokenLifetime = time.Hour
 )
 
+// DefaultMFAIssuer is the label shown in an authenticator app.
+const DefaultMFAIssuer = "Cleargate"
+
 // Service implements this module's use cases. It depends on the interfaces in
 // ports.go, never on the storage or transport implementations directly.
 type Service struct {
@@ -38,6 +41,7 @@ type Service struct {
 	hasher   PasswordHasher
 	cache    SessionCache
 	mailer   Mailer
+	sealer   SecretSealer
 	throttle Throttle
 	clock    Clock
 	log      *slog.Logger
@@ -47,6 +51,10 @@ type Service struct {
 	stepUpWindow       time.Duration
 	emailTokenLifetime time.Duration
 	resetTokenLifetime time.Duration
+
+	// mfaIssuer is the label an authenticator app shows beside the code, so a
+	// person with several accounts can tell which one it belongs to.
+	mfaIssuer string
 
 	// consentVersions maps a document to the version currently shown at
 	// sign-up, so what a person agreed to is recorded rather than assumed.
@@ -67,6 +75,10 @@ type Options struct {
 	// DocumentTermsOfService and DocumentPrivacyPolicy. A document missing
 	// from the map records no consent for it.
 	ConsentVersions map[string]string
+
+	// MFAIssuer labels the entry in a person's authenticator app. Empty
+	// selects DefaultMFAIssuer.
+	MFAIssuer string
 }
 
 // systemClock is the default time source, used when none is injected.
@@ -81,6 +93,7 @@ func NewService(
 	hasher PasswordHasher,
 	cache SessionCache,
 	mailer Mailer,
+	sealer SecretSealer,
 	throttle Throttle,
 	clock Clock,
 	log *slog.Logger,
@@ -110,12 +123,16 @@ func NewService(
 	if opts.ConsentVersions == nil {
 		opts.ConsentVersions = map[string]string{}
 	}
+	if opts.MFAIssuer == "" {
+		opts.MFAIssuer = DefaultMFAIssuer
+	}
 
 	return &Service{
 		repo:               repo,
 		hasher:             hasher,
 		cache:              cache,
 		mailer:             mailer,
+		sealer:             sealer,
 		throttle:           throttle,
 		clock:              clock,
 		log:                log,
@@ -125,6 +142,7 @@ func NewService(
 		emailTokenLifetime: opts.EmailTokenLifetime,
 		resetTokenLifetime: opts.ResetTokenLifetime,
 		consentVersions:    opts.ConsentVersions,
+		mfaIssuer:          opts.MFAIssuer,
 	}
 }
 

@@ -431,6 +431,259 @@ func (r *postgresRepo) RecordAuthEvent(ctx context.Context, e AuthEvent) error {
 	return nil
 }
 
+// CreateMFAFactor stores a new, unconfirmed factor.
+//
+// Any earlier enrolment of the same type that was never confirmed is removed
+// first, in the same transaction. Abandoning an enrolment halfway is ordinary —
+// a QR code scanned on a laptop the person has since closed — and leaving the
+// old rows behind would make "the pending factor" ambiguous.
+//
+// A confirmed factor is left untouched, and the partial unique index on
+// (user_id, type) refuses a second one, so this cannot quietly replace a
+// working second factor with one an attacker controls.
+func (r *postgresRepo) CreateMFAFactor(
+	ctx context.Context,
+	userID id.UserID,
+	factorType MFAFactorType,
+	secretEnc []byte,
+) (MFAFactor, error) {
+	factor := MFAFactor{UserID: userID, Type: factorType, SecretEnc: secretEnc}
+
+	err := r.db.UoW.Do(ctx, func(ctx context.Context) error {
+		if _, err := r.db.Exec(ctx, `
+			DELETE FROM user_mfa_factor
+			WHERE user_id = $1 AND type = $2
+			  AND confirmed_at IS NULL AND revoked_at IS NULL`,
+			string(userID), string(factorType),
+		); err != nil {
+			return fmt.Errorf("account: clear pending mfa factor: %w", err)
+		}
+
+		var factorID string
+		if err := r.db.QueryRow(ctx, `
+			INSERT INTO user_mfa_factor (user_id, type, secret_enc)
+			VALUES ($1, $2, $3)
+			RETURNING id, created_at`,
+			string(userID), string(factorType), secretEnc,
+		).Scan(&factorID, &factor.CreatedAt); err != nil {
+			if isUniqueViolation(err) {
+				return ErrMFAAlreadyEnrolled
+			}
+			return fmt.Errorf("account: create mfa factor: %w", err)
+		}
+
+		factor.ID = factorID
+		return nil
+	})
+	if err != nil {
+		return MFAFactor{}, err
+	}
+
+	return factor, nil
+}
+
+// MFAFactor returns the live factor of a type, confirmed or not.
+//
+// Ordering puts a confirmed factor first, so a pending enrolment started
+// alongside an existing one can never shadow the factor that actually works.
+func (r *postgresRepo) MFAFactor(
+	ctx context.Context,
+	userID id.UserID,
+	factorType MFAFactorType,
+) (MFAFactor, error) {
+	const q = `
+		SELECT id, user_id, type, secret_enc, last_used_step, confirmed_at,
+		       created_at, revoked_at
+		FROM user_mfa_factor
+		WHERE user_id = $1 AND type = $2 AND revoked_at IS NULL
+		ORDER BY confirmed_at DESC NULLS LAST, created_at DESC
+		LIMIT 1`
+
+	var (
+		factor   MFAFactor
+		factorID string
+		ownerID  string
+		kind     string
+	)
+
+	err := r.db.QueryRow(ctx, q, string(userID), string(factorType)).Scan(
+		&factorID, &ownerID, &kind, &factor.SecretEnc, &factor.LastUsedStep,
+		&factor.ConfirmedAt, &factor.CreatedAt, &factor.RevokedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return MFAFactor{}, ErrMFANotEnrolled
+	}
+	if err != nil {
+		return MFAFactor{}, fmt.Errorf("account: load mfa factor: %w", err)
+	}
+
+	factor.ID = factorID
+	factor.UserID = id.UserID(ownerID)
+	factor.Type = MFAFactorType(kind)
+	return factor, nil
+}
+
+// ConfirmMFAFactor completes enrolment and installs the recovery codes.
+//
+// Both happen in one transaction because neither is any use alone: codes
+// without a confirmed factor protect nothing, and a confirmed factor without
+// codes turns a lost phone into a lost account.
+//
+// Any codes from a previous enrolment are discarded. Leaving them usable would
+// mean a list printed against an old factor still opens the account after the
+// factor it belonged to is gone.
+func (r *postgresRepo) ConfirmMFAFactor(
+	ctx context.Context,
+	factorID string,
+	userID id.UserID,
+	at time.Time,
+	codeHashes []string,
+) error {
+	return r.db.UoW.Do(ctx, func(ctx context.Context) error {
+		tag, err := r.db.Exec(ctx, `
+			UPDATE user_mfa_factor
+			SET confirmed_at = $2
+			WHERE id = $1 AND confirmed_at IS NULL AND revoked_at IS NULL`,
+			factorID, at)
+		if err != nil {
+			if isUniqueViolation(err) {
+				// The partial unique index refused a second confirmed factor of
+				// this type, which means one was confirmed by a concurrent
+				// request between this caller's check and this write.
+				return ErrMFAAlreadyEnrolled
+			}
+			return fmt.Errorf("account: confirm mfa factor: %w", err)
+		}
+		if tag.RowsAffected() == 0 {
+			return ErrMFAEnrolmentNotStarted
+		}
+
+		if _, err := r.db.Exec(ctx,
+			`DELETE FROM user_recovery_code WHERE user_id = $1`, string(userID),
+		); err != nil {
+			return fmt.Errorf("account: clear recovery codes: %w", err)
+		}
+
+		// One statement rather than ten round trips, which matters because this
+		// runs inside a transaction holding locks.
+		if _, err := r.db.Exec(ctx, `
+			INSERT INTO user_recovery_code (user_id, code_hash)
+			SELECT $1, hash FROM unnest($2::text[]) AS hash`,
+			string(userID), codeHashes,
+		); err != nil {
+			return fmt.Errorf("account: create recovery codes: %w", err)
+		}
+
+		return nil
+	})
+}
+
+// ClaimTOTPStep records a counter step and reports whether this caller claimed
+// it.
+//
+// The condition is what makes a code single-use. A code is valid for its whole
+// window, so somebody who observes one can present it again until the window
+// closes. Refusing any step at or below the highest already accepted turns that
+// window into a single opportunity.
+//
+// Checking and writing in one statement matters as much as the condition: two
+// requests carrying the same captured code would otherwise both read the old
+// step, both decide the code was fresh, and both be let through.
+func (r *postgresRepo) ClaimTOTPStep(ctx context.Context, factorID string, step int64) (bool, error) {
+	const q = `
+		UPDATE user_mfa_factor
+		SET last_used_step = $2
+		WHERE id = $1
+		  AND revoked_at IS NULL
+		  AND (last_used_step IS NULL OR last_used_step < $2)`
+
+	tag, err := r.db.Exec(ctx, q, factorID, step)
+	if err != nil {
+		return false, fmt.Errorf("account: claim totp step: %w", err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// HasConfirmedMFA reports whether a user holds any usable second factor.
+func (r *postgresRepo) HasConfirmedMFA(ctx context.Context, userID id.UserID) (bool, error) {
+	const q = `
+		SELECT EXISTS (
+			SELECT 1 FROM user_mfa_factor
+			WHERE user_id = $1 AND confirmed_at IS NOT NULL AND revoked_at IS NULL
+		)`
+
+	var enrolled bool
+	if err := r.db.QueryRow(ctx, q, string(userID)).Scan(&enrolled); err != nil {
+		return false, fmt.Errorf("account: check mfa enrolment: %w", err)
+	}
+	return enrolled, nil
+}
+
+// UnusedRecoveryCodes returns the hashes still available to a user.
+//
+// Only hashes come back. Verification is a linear scan over these, which is
+// deliberate: the codes are argon2id-hashed, so there is no digest to index by,
+// and the alternative — a cheap lookup hash — would put a fast-to-brute-force
+// value in the same table as the slow one.
+func (r *postgresRepo) UnusedRecoveryCodes(ctx context.Context, userID id.UserID) ([]RecoveryCode, error) {
+	const q = `
+		SELECT id, code_hash
+		FROM user_recovery_code
+		WHERE user_id = $1 AND used_at IS NULL
+		ORDER BY created_at`
+
+	rows, err := r.db.Query(ctx, q, string(userID))
+	if err != nil {
+		return nil, fmt.Errorf("account: load recovery codes: %w", err)
+	}
+	defer rows.Close()
+
+	var codes []RecoveryCode
+	for rows.Next() {
+		var code RecoveryCode
+		if err := rows.Scan(&code.ID, &code.Hash); err != nil {
+			return nil, fmt.Errorf("account: scan recovery code: %w", err)
+		}
+		codes = append(codes, code)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("account: load recovery codes: %w", err)
+	}
+
+	return codes, nil
+}
+
+// ConsumeRecoveryCode claims one code and reports whether this caller got it.
+//
+// Conditional on the code still being unused, so two requests carrying the same
+// code cannot both be let through.
+func (r *postgresRepo) ConsumeRecoveryCode(ctx context.Context, codeID string, at time.Time) (bool, error) {
+	const q = `
+		UPDATE user_recovery_code
+		SET used_at = $2
+		WHERE id = $1 AND used_at IS NULL`
+
+	tag, err := r.db.Exec(ctx, q, codeID, at)
+	if err != nil {
+		return false, fmt.Errorf("account: consume recovery code: %w", err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// MarkSessionMFASatisfied stamps the moment a second factor was presented,
+// which is what the step-up window is measured from.
+func (r *postgresRepo) MarkSessionMFASatisfied(ctx context.Context, digest []byte, at time.Time) error {
+	const q = `
+		UPDATE user_session
+		SET mfa_satisfied_at = $2
+		WHERE token_hash = $1 AND revoked_at IS NULL`
+
+	if _, err := r.db.Exec(ctx, q, digest, at); err != nil {
+		return fmt.Errorf("account: mark session mfa satisfied: %w", err)
+	}
+	return nil
+}
+
 // isUniqueViolation reports whether err is Postgres rejecting a duplicate.
 //
 // The code is checked rather than the message, because messages are localised
