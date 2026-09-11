@@ -65,9 +65,10 @@ func (s *Service) Signup(ctx context.Context, p SignupParams) error {
 	}
 
 	user, accountID, err := s.repo.CreateUserWithAccount(ctx, CreateUserParams{
-		Email:        email,
-		PasswordHash: hash,
-		DisplayName:  displayName,
+		Email:             email,
+		PasswordHash:      hash,
+		DisplayName:       displayName,
+		PasswordChangedAt: s.clock.Now(),
 	})
 	if err != nil {
 		if errors.Is(err, ErrEmailTaken) {
