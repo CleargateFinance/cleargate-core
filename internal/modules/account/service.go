@@ -4,6 +4,8 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/CleargateFinance/cleargate-core/internal/shared/currency"
+
 	"github.com/CleargateFinance/cleargate-core/internal/shared/apperr"
 )
 
@@ -60,6 +62,14 @@ type Service struct {
 	// consentVersions maps a document to the version currently shown at
 	// sign-up, so what a person agreed to is recorded rather than assumed.
 	consentVersions map[string]string
+
+	// tierLimits is the funding ceiling per verification tier.
+	tierLimits TierLimits
+
+	// funding reports how much a principal has funded to date. Nil until the
+	// funding flow is wired, which is why RequireFundingAllowed refuses rather
+	// than assuming zero — a cap measured against an assumption is not a cap.
+	funding FundingHistory
 }
 
 // Options configures a Service. Zero values select the defaults above, so a
@@ -81,6 +91,15 @@ type Options struct {
 	// MFAIssuer labels the entry in a person's authenticator app. Empty
 	// selects DefaultMFAIssuer.
 	MFAIssuer string
+
+	// TierLimits overrides the funding ceilings. A zero value selects the
+	// defaults, so a deployment that does not care cannot accidentally
+	// configure an unverified account with no cap at all.
+	TierLimits *TierLimits
+
+	// FundingHistory supplies funded-to-date from the ledger. Required before
+	// any funding path runs, and deliberately absent until one exists.
+	FundingHistory FundingHistory
 }
 
 // systemClock is the default time source, used when none is injected.
@@ -132,6 +151,18 @@ func NewService(
 		opts.MFAIssuer = DefaultMFAIssuer
 	}
 
+	limits, err := defaultTierLimits()
+	if err != nil {
+		// The defaults are compile-time constants, so this cannot fail unless
+		// somebody edits them into something unparseable. Panicking at
+		// construction is the right answer: a service with no funding ceiling
+		// must never start.
+		panic("account: default tier limits are invalid: " + err.Error())
+	}
+	if opts.TierLimits != nil {
+		limits = *opts.TierLimits
+	}
+
 	return &Service{
 		repo:               repo,
 		hasher:             hasher,
@@ -149,7 +180,26 @@ func NewService(
 		invitationLifetime: opts.InvitationLifetime,
 		consentVersions:    opts.ConsentVersions,
 		mfaIssuer:          opts.MFAIssuer,
+		tierLimits:         limits,
+		funding:            opts.FundingHistory,
 	}
+}
+
+// defaultTierLimits parses the compile-time ceilings into exact amounts.
+func defaultTierLimits() (TierLimits, error) {
+	basic, err := currency.Parse(DefaultBasicFundingCap, currency.USDC)
+	if err != nil {
+		return TierLimits{}, err
+	}
+	verified, err := currency.Parse(DefaultVerifiedFundingCap, currency.USDC)
+	if err != nil {
+		return TierLimits{}, err
+	}
+	business, err := currency.Parse(DefaultBusinessFundingCap, currency.USDC)
+	if err != nil {
+		return TierLimits{}, err
+	}
+	return TierLimits{Basic: basic, Verified: verified, Business: business}, nil
 }
 
 // StepUpWindow reports how recently a second factor must have been satisfied

@@ -4,6 +4,8 @@ import (
 	"context"
 	"time"
 
+	"github.com/CleargateFinance/cleargate-core/internal/shared/currency"
+
 	"github.com/CleargateFinance/cleargate-core/internal/shared/id"
 )
 
@@ -223,6 +225,45 @@ type Repository interface {
 
 	// CreateAgentSession opens a run.
 	CreateAgentSession(ctx context.Context, agentID id.AgentID, taskRef, taskText string) (AgentSession, error)
+
+	// VerificationTier returns what a principal is currently entitled to do.
+	VerificationTier(ctx context.Context, principalID id.PrincipalID) (VerificationTier, error)
+
+	// SetVerificationTier records a new entitlement.
+	//
+	// A tier above basic is refused by the database unless kyc_status is
+	// verified, so a caller cannot grant entitlement it has not actually
+	// established.
+	SetVerificationTier(ctx context.Context, principalID id.PrincipalID, tier VerificationTier) error
+
+	// ScreenedAddress returns the verdict on one address for one principal,
+	// reporting ErrAddressNotScreened when there is none yet.
+	ScreenedAddress(ctx context.Context, principalID id.PrincipalID, chain, address string) (ScreenedAddress, error)
+
+	// RecordScreening stores a screening verdict, creating the record if this
+	// address has not been seen for this principal before.
+	RecordScreening(ctx context.Context, a ScreenedAddress) (ScreenedAddress, error)
+
+	// MarkAddressFunded stamps the first deposit from an address, which is what
+	// return-to-source withdrawal is checked against.
+	MarkAddressFunded(ctx context.Context, principalID id.PrincipalID, chain, address string, at time.Time) error
+
+	// FundingAddresses lists the addresses that have actually funded a
+	// principal, which is the full set an unverified account may withdraw to.
+	FundingAddresses(ctx context.Context, principalID id.PrincipalID) ([]ScreenedAddress, error)
+}
+
+// FundingHistory is what this module needs from the ledger to enforce a tier
+// cap: how much a principal has funded to date.
+//
+// A port rather than a query of our own, because the ledger owns that data and
+// reading its tables directly from this module's repository would couple two
+// modules through a shared database — the exact coupling module boundaries
+// exist to prevent. The ledger is also the right authority: it is the system of
+// record for money that actually moved, so a cap measured against anything else
+// is a cap measured against a number that can disagree with the books.
+type FundingHistory interface {
+	FundedToDate(ctx context.Context, principalID id.PrincipalID) (currency.Amount, error)
 }
 
 // SecretSealer encrypts the few secrets that must be recoverable rather than

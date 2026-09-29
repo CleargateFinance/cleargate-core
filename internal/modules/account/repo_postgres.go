@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/CleargateFinance/cleargate-core/internal/infrastructure/database"
+	"github.com/CleargateFinance/cleargate-core/internal/shared/apperr"
 	"github.com/CleargateFinance/cleargate-core/internal/shared/id"
 )
 
@@ -1305,6 +1306,176 @@ func (r *postgresRepo) scanInvitation(row pgx.Row) (Invitation, error) {
 	inv.InvitedBy = id.UserID(invitedBy)
 	inv.Role = PermissionRole(role)
 	return inv, nil
+}
+
+// VerificationTier returns what a principal is currently entitled to do.
+func (r *postgresRepo) VerificationTier(ctx context.Context, principalID id.PrincipalID) (VerificationTier, error) {
+	const q = `SELECT verification_tier FROM principal_identity WHERE principal_id = $1`
+
+	var tier string
+	err := r.db.QueryRow(ctx, q, string(principalID)).Scan(&tier)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// No compliance record means nothing has been established, which is
+		// exactly what the basic tier means. Treating it as an error would make
+		// every caller handle a case that is simply the starting state.
+		return TierBasic, nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("account: load verification tier: %w", err)
+	}
+	return VerificationTier(tier), nil
+}
+
+// SetVerificationTier records a new entitlement.
+func (r *postgresRepo) SetVerificationTier(ctx context.Context, principalID id.PrincipalID, tier VerificationTier) error {
+	const q = `UPDATE principal_identity SET verification_tier = $2 WHERE principal_id = $1`
+
+	tag, err := r.db.Exec(ctx, q, string(principalID), string(tier))
+	if err != nil {
+		// The database refuses a tier above basic without a verified kyc_status,
+		// so this is a caller claiming entitlement it has not established.
+		return fmt.Errorf("account: set verification tier: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return apperr.NotFound("account: no compliance record for this principal")
+	}
+	return nil
+}
+
+// ScreenedAddress returns the verdict on one address for one principal.
+func (r *postgresRepo) ScreenedAddress(
+	ctx context.Context,
+	principalID id.PrincipalID,
+	chain, address string,
+) (ScreenedAddress, error) {
+	const q = `
+		SELECT id, principal_id, chain, address, status, provider, reference,
+		       screened_at, first_funded_at, created_at
+		FROM screened_address
+		WHERE principal_id = $1 AND chain = $2 AND address = $3`
+
+	screened, err := r.scanScreenedAddress(r.db.QueryRow(ctx, q, string(principalID), chain, address))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ScreenedAddress{}, ErrAddressNotScreened
+	}
+	if err != nil {
+		return ScreenedAddress{}, fmt.Errorf("account: load screened address: %w", err)
+	}
+	return screened, nil
+}
+
+// RecordScreening stores a screening verdict.
+//
+// Upserted on (principal, chain, address) because screening is periodic: an
+// address clear last month can be flagged today, and the current verdict is
+// what governs. first_funded_at is preserved across a re-screen, since whether
+// an address funded this principal is a historical fact that a later verdict
+// does not change.
+func (r *postgresRepo) RecordScreening(ctx context.Context, a ScreenedAddress) (ScreenedAddress, error) {
+	const q = `
+		INSERT INTO screened_address
+			(principal_id, chain, address, status, provider, reference, screened_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		ON CONFLICT (principal_id, chain, address) DO UPDATE
+		SET status      = EXCLUDED.status,
+		    provider    = EXCLUDED.provider,
+		    reference   = EXCLUDED.reference,
+		    screened_at = EXCLUDED.screened_at
+		RETURNING id, principal_id, chain, address, status, provider, reference,
+		          screened_at, first_funded_at, created_at`
+
+	var provider, reference any
+	if a.Provider != "" {
+		provider = a.Provider
+	}
+	if a.Reference != "" {
+		reference = a.Reference
+	}
+
+	screened, err := r.scanScreenedAddress(r.db.QueryRow(ctx, q,
+		string(a.PrincipalID), a.Chain, a.Address, string(a.Status),
+		provider, reference, a.ScreenedAt))
+	if err != nil {
+		return ScreenedAddress{}, fmt.Errorf("account: record screening: %w", err)
+	}
+	return screened, nil
+}
+
+// MarkAddressFunded stamps the first deposit from an address.
+//
+// Only the first: the column answers "has this address ever funded us", and
+// moving it on every later deposit would lose the answer to when the
+// relationship began without gaining anything.
+func (r *postgresRepo) MarkAddressFunded(
+	ctx context.Context,
+	principalID id.PrincipalID,
+	chain, address string,
+	at time.Time,
+) error {
+	const q = `
+		UPDATE screened_address SET first_funded_at = $4
+		WHERE principal_id = $1 AND chain = $2 AND address = $3
+		  AND first_funded_at IS NULL`
+
+	if _, err := r.db.Exec(ctx, q, string(principalID), chain, address, at); err != nil {
+		return fmt.Errorf("account: mark address funded: %w", err)
+	}
+	return nil
+}
+
+// FundingAddresses lists the addresses that have actually funded a principal.
+func (r *postgresRepo) FundingAddresses(ctx context.Context, principalID id.PrincipalID) ([]ScreenedAddress, error) {
+	const q = `
+		SELECT id, principal_id, chain, address, status, provider, reference,
+		       screened_at, first_funded_at, created_at
+		FROM screened_address
+		WHERE principal_id = $1 AND first_funded_at IS NOT NULL
+		ORDER BY first_funded_at`
+
+	rows, err := r.db.Query(ctx, q, string(principalID))
+	if err != nil {
+		return nil, fmt.Errorf("account: list funding addresses: %w", err)
+	}
+	defer rows.Close()
+
+	var addresses []ScreenedAddress
+	for rows.Next() {
+		screened, err := r.scanScreenedAddress(rows)
+		if err != nil {
+			return nil, fmt.Errorf("account: scan funding address: %w", err)
+		}
+		addresses = append(addresses, screened)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("account: list funding addresses: %w", err)
+	}
+	return addresses, nil
+}
+
+// scanScreenedAddress reads one screening row.
+func (r *postgresRepo) scanScreenedAddress(row pgx.Row) (ScreenedAddress, error) {
+	var (
+		a           ScreenedAddress
+		principalID string
+		status      string
+		provider    *string
+		reference   *string
+	)
+
+	if err := row.Scan(&a.ID, &principalID, &a.Chain, &a.Address, &status,
+		&provider, &reference, &a.ScreenedAt, &a.FirstFundedAt, &a.CreatedAt); err != nil {
+		return ScreenedAddress{}, err
+	}
+
+	a.PrincipalID = id.PrincipalID(principalID)
+	a.Status = ScreeningStatus(status)
+	if provider != nil {
+		a.Provider = *provider
+	}
+	if reference != nil {
+		a.Reference = *reference
+	}
+	return a, nil
 }
 
 // isUniqueViolation reports whether err is Postgres rejecting a duplicate.
