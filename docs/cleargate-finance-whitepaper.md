@@ -162,14 +162,13 @@ Roles are not new entities; they describe how an entity participates in a given 
 
 - **Payer** — the account whose agent is spending. Exactly one per payment.
 - **Payee** — the party receiving payment and expected to deliver. This is what was historically called "the merchant." Reputation attaches to this role. A payee may be an on-platform account or an external endpoint — the role is identical either way.
-- **Approver** *(later, with escalation)* — a user who signs off when a payment escalates. Distinct from the guardian below: an approver releases a *single payment* in real time, a guardian vetoes a *change to spending authority* over hours.
 - **Backer** *(later)* — whoever underwrites guarantees for a class of counterparties.
+
+There is no separate transaction role for signing off on an escalated payment. When §12.3's approval flow fires, it is answered by whichever **owner or admin** the account has configured to receive it — the same two permission roles that manage agents and mandates day to day, not a role of its own. Introducing one would mean a sixth thing to explain for a case the existing roles already cover.
 
 The key consequence: **"merchant" is not an entity type — it is an account acting in the payee role.** Any account can occupy it. This is what makes agent-to-agent payment the same code path as agent-to-merchant payment.
 
-**Permission roles**, governing what a user may do within an account: **owner** (everything, including billing and the commercial relationship), **admin** (manage agents and mandates, not billing), **guardian** (stop things — veto a pending change to spending authority, freeze the account — and propose nothing), **approver** (release an escalated payment in real time, and nothing else), **viewer** (read-only console and reports).
-
-Approver and guardian are easy to confuse and are deliberately distinct: an **approver** releases *one payment* in seconds, a **guardian** vetoes *a change to spending authority* over hours. A business may hand approver to an on-call operator without handing them the power to widen a mandate.
+**Permission roles**, governing what a user may do within an account: **owner** (everything, including billing and the commercial relationship), **admin** (manage agents and mandates, not billing), **guardian** (stop things — veto a pending change to spending authority, freeze the account — and propose nothing), **viewer** (read-only console and reports). Four roles, deliberately no fifth: every permission an account needs is a combination of propose, operate, stop, or read, and stretching to a role for every named use case (releasing an escalated payment, say) buys precision nobody asked for at the cost of a role system nobody can hold in their head.
 
 Two separations do the work. *Propose versus stop* — owner and admin against guardian — is the security boundary: on a guarded account no single compromised human can widen what an agent may spend, because raising a cap waits out a delay in which a second person holding separate hardware can veto it. *Own versus operate* — owner against admin — is the organisational one, so a business can hire someone to run its agents without handing them the power to close the account or move its billing.
 
@@ -713,7 +712,7 @@ Webhooks: `payment.approved`, `payment.held`, `payment.declined`, `approval.requ
 
 ### 9.2 Enterprise
 
-Enterprises require: dual control above thresholds with named approvers, policy as code within existing change management, budget attribution by agent and cost centre reconciled into ERP, immutable audit trail with SIEM export, segregation of duties between policy author and exception approver, and SOC 2 Type II.
+Enterprises require: dual control above thresholds — a second admin's sign-off before an exception proceeds — policy as code within existing change management, budget attribution by agent and cost centre reconciled into ERP, immutable audit trail with SIEM export, segregation of duties between the admin who authors a policy and the admin who signs off on an exception to it, and SOC 2 Type II.
 
 The risk question shifts. The developer product asks "did I receive my API response." The enterprise product asks "did the agent spend in accordance with a mandate a human genuinely authorized, and can that be proven to an auditor." Less fraud detection, more **provable authorization chains**.
 
@@ -1051,7 +1050,7 @@ Outside the core:
 
 **Principal** — the human or legal entity ultimately responsible for an account; where liability and identity verification attach.
 **Account** — the container holding a balance, users, agents and services; neither buyer nor seller by nature.
-**User** — a human who logs into an account at a defined permission level (owner, admin, approver, viewer).
+**User** — a human who logs into an account at a defined permission level (owner, admin, guardian, viewer).
 **Agent** — the autonomous actor connected to an account that initiates payments under a mandate.
 **Mandate** — signed grant of spending authority to an agent, enforced below the model and versioned.
 **Counterparty** — any party an agent transacts with; may be an external endpoint or another account. Reputation attaches here.
@@ -1099,6 +1098,8 @@ The 78% financial-institution fraud expectation figure, the Unit 42 refund-farm 
 ---
 
 ## Revision notes
+
+**v1.2.1 — 29 September 2026.** Removed the `approver` permission role introduced in v1.2. The four roles (owner, admin, guardian, viewer) already cover every case, including releasing an escalated payment — that is an owner or admin action, not a distinct role. Reworded §4.2's transaction-role list, §9.2's enterprise dual-control line, and the glossary's `User` entry accordingly. `guardian` is unaffected and remains exactly as built.
 
 **v1.2 — 28 September 2026.** This revision changes what the company leads with, and removes several claims that were true of the destination but not of the product.
 
