@@ -1,9 +1,9 @@
 # Cleargate Finance
 
-### Guaranteed stablecoin payments for autonomous agents
+### The stablecoin-native authorization layer for autonomous agent payments
 
-**Whitepaper v1.1**
-*August 2026*
+**Whitepaper v1.2**
+*September 2026*
 
 ---
 
@@ -13,9 +13,13 @@ Autonomous agents can now pay for things. Protocols such as x402, ACP and AP2, s
 
 Today an agent's purchase is a push payment: irreversible, unverified, and unbacked. If the agent is hijacked, the money is gone. If the merchant does not deliver, the money is gone. And when a purchase is disputed, no participant in the current stack accepts the loss — not the payment scheme, not the model provider, not the issuer. The merchant absorbs it, without any of the fraud signals that historically protected them.
 
-Cleargate Finance sits between agents and merchants and guarantees the transaction. Agent owners connect their agents through a simple account, fund it with a card or bank transfer, and set spending rules — never touching a wallet, a chain, or a gas token. Merchants integrate once and receive guaranteed settlement: if a Cleargate-approved payment is disputed, Cleargate covers the loss, not the merchant.
+Cleargate Finance is the control and authorization layer on the buyer's side of that transaction. Agent owners connect their agents through a simple account, fund it, and set spending rules — never touching a wallet, a chain, or a gas token. Every payment is authorized before it executes, checked against a signed mandate, a counterparty risk model, and the task the agent was actually given. Every decision is recorded in human-readable form.
 
-Every payment is authorized before it executes, checked against a signed mandate, a merchant risk model, and the task the agent was actually given. Every decision is recorded in human-readable form. The result is a payment that both sides can trust in a transaction where no human was present.
+**This works on day one with zero merchants integrated.** Buyer-side control protects an agent paying any endpoint on the open web, because the checks run before the money leaves. That is the product, and it is why the company does not need a two-sided network before it is useful to anybody.
+
+Merchant-side features come second, once integration is worth a merchant's time: instant netted settlement, no gas, and a **hold** — payment withheld until delivery is confirmed, auto-refunded if it is not. A hold is a settlement mechanic, not a promise to absorb losses; it only ever controls the timing of money already held.
+
+Bearing liability — guaranteeing a disputed payment out of Cleargate's own capital — is a later act still, and is deliberately not offered at launch. It cannot be priced before real loss data exists, so the platform measures what a guarantee *would* have cost from the first transaction and sells nothing against that number until it is real.
 
 ---
 
@@ -25,9 +29,11 @@ Cleargate Finance exists to make agent commerce safe enough that both sides part
 
 Three outcomes define the system:
 
-1. **An agent cannot spend outside the authority its owner granted it.** Authority is enforced below the model, where a compromised prompt cannot reach it.
-2. **A merchant who accepts an agent payment keeps the money.** Disputes are absorbed by Cleargate, not passed back to the merchant.
+1. **An agent cannot spend outside the authority its owner granted it.** Authority is enforced below the model, where a compromised prompt cannot reach it. This is the outcome that needs no merchant, no network and no counterparty consent, which is why it is first.
+2. **A buyer does not pay for something that never arrived.** Where Cleargate controls settlement timing, payment is held until delivery is confirmed and returned automatically if it is not. Where it does not — a one-off payment to an endpoint on the open web — the protection is everything that runs *before* the money moves, and the platform says so plainly rather than implying recourse it does not have.
 3. **Both sides can see and prove what happened.** Every decision — including the payments that were blocked — is recorded, signed, and readable.
+
+Absorbing a disputed loss onto Cleargate's own balance sheet is a fourth outcome the company intends to reach and does not claim today. Section 7 sets out why, and what is being measured in the meantime.
 
 A secondary purpose becomes the durable business: operating this layer produces the delivery and default record of the machine economy, a dataset that does not currently exist.
 
@@ -53,7 +59,9 @@ Stablecoin rails make this materially worse. They settle with finality and no re
 
 Critically, **recognition and authorization are separate problems that the current stack conflates**. Trusted Agent Protocol establishes whether an agent is real. Tokenized credentials establish what it is permitted to spend. Neither establishes what happens when the purchase is disputed.
 
-Liability cannot be solved by a protocol. A protocol has no balance sheet. It can only be solved by a legal entity with capital that agrees to absorb the loss — which is the opening Cleargate Finance occupies.
+Liability cannot be solved by a protocol. A protocol has no balance sheet. It can only be solved by a legal entity with capital that agrees to absorb the loss.
+
+That is the opening Cleargate Finance intends to occupy, and the reason it is a durable position: a competitor can copy a rules engine in a quarter, but cannot copy a capitalised loss book. It is explicitly **not** the launch product. Underwriting requires loss data that does not yet exist anywhere, and pricing a guarantee without it is underwriting blind. What ships first is the control layer that prevents the loss, plus the measurement that will eventually make the guarantee priceable.
 
 ### 2.3 Security is genuinely unsolved
 
@@ -89,23 +97,42 @@ Agent payment volume today is small. Protocol-level activity measures in the ten
 
 ## 3. What Cleargate Finance is
 
-Cleargate Finance is a company that sits between agents and merchants, guarantees the payments that pass through it, and gives both sides a reason to trust a transaction where no human was present.
+Cleargate Finance is the company that controls and protects what an autonomous agent is allowed to spend, and gives both sides of the transaction a reason to trust a purchase where no human was present.
 
-**To the agent owner:** an account with agents in it. Each agent has spending rules, a balance, and a readable log of everything it bought and everything it was prevented from buying. No wallet, no chain, no gas.
+There are two altitudes to the description, and both are true. **Near term it is the trust and authorization layer for agent payments.** Long term it is **the financial platform for the machine economy** — authorization, then holding funds, then credit, then underwriting. Stablecoins and x402 are the mechanism that makes the near term possible; they are not the headline, and a customer never needs to know they are there.
+
+**To the agent owner:** an account with agents in it. Each agent has spending rules, a share of one pooled balance, and a readable log of everything it bought and everything it was prevented from buying. No wallet, no chain, no gas.
 
 **To the developer:** one SDK that wraps the agent's HTTP client. Any payment request is handled automatically.
 
-**To the merchant:** guaranteed settlement. Accept agent payments, get paid daily, keep the money if a dispute occurs.
-
 **To an enterprise:** a policy and audit layer over agent spending, with attribution, approval workflows and exportable records.
+
+**To the merchant:** instant settlement with no gas and no chain handling, fiat payout if wanted, hold-based protection against disputes, and a place in the directory that buyers' mandates prefer. Note what this list does not say: it does not promise that Cleargate absorbs a loss. That comes later, on real data, and Section 7 is explicit about it.
+
+The ordering above is the ordering of the build. Buyer-side control is useful with **zero merchants integrated**, because the checks that matter run before the money leaves the account, whether the payee is on the platform or an arbitrary endpoint on the open web. Merchant-side features require a merchant to integrate, so they are the second act, and the buyers routing payments are what makes that integration worth doing.
 
 ### 3.1 What it is not
 
 - **Not a payment rail.** It routes over x402 and, later, ACP, AP2 and card rails.
-- **Not a wallet.** Key management is commoditized and outsourced.
+- **Not a wallet.** Key custody is commoditized and bought from a specialist provider (§8.8).
 - **Not an identity registry.** External registries are consumed as weak signals.
-- **Not a marketplace.** Discovery is a different business.
-- **Not a DeFi product.** Transfers, swaps and treasury management are explicitly out of scope.
+- **Not a marketplace.** It does build a **directory and trust registry** (§11) — who the payees are, what they charge, and whether they actually deliver — because x402 settles payment and says nothing about discovery. What it does not do is take a cut of matching buyers to sellers, hold inventory, or own the commercial relationship. A registry that reports verified delivery is a trust product; a marketplace is a different business.
+- **Not a treasury or trading product today.** Transfers, swaps and yield are out of scope for the agent-payments product. The authorization engine is deliberately generic, though — it authorizes *movements of value against a signed policy* — and the same engine with different checks (approval caps, transaction simulation, slippage bounds, protocol allowlists) is what a DeFi-acting agent needs. That adjacency is noted as a possible second product (§14.3), not built now, and nothing in the engine should assume a payment is a purchase.
+
+### 3.2 Where this sits in a crowded market
+
+The honest starting point is that **the wallet-plus-spend-controls layer is crowded.** Skyfire, Nekuda, Prava, PayOS, Proxy and Nevermined are all building some version of it, most of them oriented to card rails, and at least one of them already uses the word "mandate" for what it issues. Positioning Cleargate as "an agent wallet with spending controls" would be a claim to occupied ground, and the vocabulary is taken.
+
+The defensible lane is the **intersection** of three things, and it is the intersection rather than any single one that is hard to copy:
+
+1. **Stablecoin-native, on x402 and Base.** Less contested than card rails, and it is the right fit for the segment that is actually transacting today: sub-dollar, high-frequency, machine-to-machine, crypto-native. Card-oriented competitors are optimising for a $40 consumer purchase; this is optimising for eight thousand payments of half a cent.
+2. **Buyer-side control *and* merchant-side trust and settlement.** Most of the field picks one. Holding both is what turns a control panel into a network, because the delivery outcomes observed on the merchant side are what make the buyer-side counterparty check worth anything.
+3. **A path to bearing liability.** Requires capital and a loss book, which is precisely why a protocol cannot follow. This is a *future* differentiator and is stated as one — see §7.3 — not a claim about what ships first.
+
+**Position, in one line:** the stablecoin-native authorization layer that controls and protects agent payments.
+
+**On incumbents.** Coinbase, Stripe and Visa are more likely acquirers than competitors, and that shapes strategy rather than threatening it. Each of them already owns rails and distribution; none of them owns the risk and authorization record for autonomous buyers, and each would rather buy that than build it. The implication is to own the layer they have not built — the decision log, the delivery graph, the loss book — rather than to compete on payment plumbing they are better placed to commoditize.
+
 
 ---
 
@@ -135,12 +162,13 @@ Roles are not new entities; they describe how an entity participates in a given 
 
 - **Payer** — the account whose agent is spending. Exactly one per payment.
 - **Payee** — the party receiving payment and expected to deliver. This is what was historically called "the merchant." Reputation attaches to this role. A payee may be an on-platform account or an external endpoint — the role is identical either way.
-- **Approver** *(later, with escalation)* — a user who signs off when a payment escalates. Distinct from the guardian below: an approver releases a *single payment* in real time, a guardian vetoes a *change to spending authority* over hours.
 - **Backer** *(later)* — whoever underwrites guarantees for a class of counterparties.
+
+There is no separate transaction role for signing off on an escalated payment. When §12.3's approval flow fires, it is answered by whichever **owner or admin** the account has configured to receive it — the same two permission roles that manage agents and mandates day to day, not a role of its own. Introducing one would mean a sixth thing to explain for a case the existing roles already cover.
 
 The key consequence: **"merchant" is not an entity type — it is an account acting in the payee role.** Any account can occupy it. This is what makes agent-to-agent payment the same code path as agent-to-merchant payment.
 
-**Permission roles**, governing what a user may do within an account: **owner** (everything, including billing and the commercial relationship), **admin** (manage agents and mandates, not billing), **guardian** (stop things — veto a pending change to spending authority, freeze the account — and propose nothing), **viewer** (read-only console and reports).
+**Permission roles**, governing what a user may do within an account: **owner** (everything, including billing and the commercial relationship), **admin** (manage agents and mandates, not billing), **guardian** (stop things — veto a pending change to spending authority, freeze the account — and propose nothing), **viewer** (read-only console and reports). Four roles, deliberately no fifth: every permission an account needs is a combination of propose, operate, stop, or read, and stretching to a role for every named use case (releasing an escalated payment, say) buys precision nobody asked for at the cost of a role system nobody can hold in their head.
 
 Two separations do the work. *Propose versus stop* — owner and admin against guardian — is the security boundary: on a guarded account no single compromised human can widen what an agent may spend, because raising a cap waits out a delay in which a second person holding separate hardware can veto it. *Own versus operate* — owner against admin — is the organisational one, so a business can hire someone to run its agents without handing them the power to close the account or move its billing.
 
@@ -152,11 +180,17 @@ This is also the enterprise segregation-of-duties mechanism: the user who sets a
 
 **Decision record** — the immutable, signed log entry for every evaluated payment, including the mandate version in force at the time. This is the evidence that makes the guarantee credible.
 
-**Hold** — a conditional settlement where funds are committed but released only on confirmed delivery, with automatic return to the buyer on expiry.
+**Hold** — a conditional settlement where funds are committed but released only on confirmed delivery, with automatic return to the buyer on expiry. Available only where Cleargate controls settlement timing, which means the on-platform netted flow (§8.6). It is a settlement mechanic, not an underwriting product: it risks no capital, because the money being withheld is money already held.
 
-**Guarantee** — Cleargate's contractual commitment that an approved payment, if disputed under defined conditions, is covered by Cleargate rather than by the payee.
+**Guarantee** *(future — not offered at launch)* — a contractual commitment that an approved payment, if disputed under defined conditions, is covered by Cleargate rather than by the payee. Deferred deliberately; §7.3 sets out the conditions under which it becomes offerable.
 
-**Internal ledger** — the double-entry record of all balances and obligations. Payments authorize instantly against the ledger; the chain is settled periodically in aggregate.
+**Loss observation** — an internal record of what *would* have been a covered loss had a guarantee been in force. Written from the first transaction, paid out to nobody. This is the dataset that makes §7.3 possible and it is free to collect (§7.2).
+
+**Voucher** — an off-chain, signed message asserting the *cumulative* total owed to one payee on one payment channel. Each request produces a new voucher carrying a new running total; the latest one supersedes all before it. Vouchers are the per-payment audit evidence behind a netted settlement.
+
+**Channel** — the on-chain escrow and its associated voucher series for one (account, payee) pair, under x402's batch-settlement scheme. It has a balance, a latest voucher, and a lifecycle of open, top up, and close.
+
+**Internal ledger** — the double-entry record of all balances and obligations, and the system of record for what each individual payment was. Payments authorize instantly against the ledger; the chain is settled either per payment or in aggregate depending on the scheme in force (§8.6).
 
 ---
 
@@ -190,9 +224,11 @@ This is also the enterprise segregation-of-duties mechanism: the user who sets a
 2. Add one call to the server: on successful delivery, notify Cleargate.
 3. Provide payout details.
 
-**Ongoing:** agents pay. Settlement arrives daily. If a payment is disputed, Cleargate absorbs it.
+**Ongoing:** agents pay. Settlement arrives daily, netted into one on-chain transfer, with no gas to fund and no chain to handle. Payout can be stablecoin or fiat through an off-ramp.
 
-The merchant proposition is one sentence: **accept agent payments with zero risk — if it goes wrong, we pay.**
+The merchant proposition is: **get paid instantly for agent traffic, without touching crypto, and be the verified option buyers' mandates prefer.** Where a payment is held pending delivery, confirming delivery releases it — so a merchant that delivers is paid and a merchant that does not was never paid in the first place.
+
+Two things the proposition deliberately does *not* say. It does not offer aggregation as a merchant benefit: netting is a cost mechanic that serves Cleargate's economics, and dressing it up as a merchant feature invites the obvious question of who it is really for. And it does not promise that Cleargate absorbs a disputed loss — that is a later product, on real loss data (§7.3).
 
 ### 5.3 Connection models — one account, three ways to use it
 
@@ -234,13 +270,31 @@ sequenceDiagram
 
 Steps three and four are the entire company. Everything else is plumbing.
 
-### 5.5 Failure cases
+### 5.5 Two settlement flows, one set of checks
+
+Whether the payee has integrated with Cleargate changes *how the money moves*. It does not change what is checked before it moves, and that distinction is the whole reason the product works before a network exists.
+
+| | On-platform payee | Off-platform payee |
+|---|---|---|
+| Settlement | Netted — many payments, one on-chain transfer, via x402's `batch-settlement` scheme | Individual real on-chain payment, via x402's `exact` scheme |
+| Buyer-side checks | Mandate, counterparty, intent, behaviour | **Identical** |
+| Protection | Pre-payment checks **plus** a hold until delivery is confirmed | Pre-payment checks only |
+| Recourse after payment | Hold expiry auto-refunds | Effectively none — a raw x402 payment is final |
+
+**The same four checks run in both flows.** An agent buying from a random endpoint it discovered mid-task gets the same mandate enforcement, the same counterparty scoring, the same intent and behaviour checks as one buying from an integrated partner. Only the settlement scheme differs, and it is chosen automatically by whether the payee is integrated — never by the agent, and never by the owner.
+
+**Holds require control over timing, which is why they are on-platform only.** A hold works by not releasing money Cleargate already holds. Once an `exact` payment lands on chain it is final and there is nothing to withhold. The platform therefore does two things rather than pretending otherwise: it discloses coverage honestly in the console, marking off-platform payees as *unverified, not covered*, and where it is worth doing it can proxy the request itself so that delivery is observed rather than assumed.
+
+This is also the answer to the cold-start problem. Off-platform payees are not a gap in the product — they are the top of the funnel, and §15 explains how their accumulated traffic is what converts them.
+
+### 5.6 Failure cases
 
 | What happens | System response | Loss |
 |---|---|---|
-| Merchant takes payment, delivers nothing | No confirmation arrives; buyer auto-refunded; amount deducted from merchant's next payout; merchant flagged network-wide | Merchant's |
+| On-platform merchant takes payment, delivers nothing | The payment was held, not released. No confirmation arrives, the hold expires, the buyer is refunded automatically and the merchant is flagged network-wide. Nothing was ever paid out, so nothing must be clawed back | None |
+| Off-platform merchant takes payment, delivers nothing | Pre-payment checks ran and the payment was still made, because a raw x402 `exact` payment is final. The buyer bears it, the outcome is recorded against that counterparty, and the loss is written to the internal loss-observation ledger (§7.2). The console states plainly which payees are outside hold coverage | Buyer's, and disclosed as such |
 | Agent hijacked, attempts a large transfer | Blocked at the mandate check — over limit, unknown destination; owner alerted | None |
-| Owner disputes a purchase the agent made | Signed mandate and decision record checked. Inside mandate: owner pays. Outside mandate: Cleargate approved it in error and covers it | Determined by record |
+| Owner disputes a purchase the agent made | Signed mandate and decision record checked. Inside mandate: the owner authorized it and the record proves so. Outside mandate: Cleargate approved it in error — today that is recorded as an observed loss and handled case by case, and it is the category a future guarantee would cover first | Determined by record |
 | Coordinated refund farm against one merchant | Pattern visible across all merchants simultaneously; blocked centrally | None |
 | Agent retries after timeout | Idempotency key returns the original result; no second payment | None |
 
@@ -295,9 +349,11 @@ Merchants are scored in four layers:
 
 **Layer 3 — Merchant opt-in.** Merchants seeking instant settlement register and, later, post a bond. This is how a legitimate new merchant escapes cold-start in days rather than months.
 
-**Layer 4 — The hold, which is the actual answer to cold start.** An unknown merchant is **held, not declined**. Funds are committed, delivery is verified, funds release. Exposure approaches zero regardless of who the merchant turns out to be, the agent still completes its task, and the transaction produces the first data point for Layer 2.
+**Layer 4 — The hold, where it is available.** An unknown *on-platform* merchant is **held, not declined**. Funds are committed, delivery is verified, funds release. Exposure approaches zero regardless of who the merchant turns out to be, the agent still completes its task, and the transaction produces the first data point for Layer 2.
 
-Cold start ceases to be a problem the moment the system stops trying to solve it through detection.
+For an **off-platform** payee there is no hold to apply, because a raw `exact` payment is final the moment it settles (§5.5). Layers 1 to 3 still run, the decision is still recorded, and the counterparty still accumulates a delivery record — but the protection is entirely pre-payment, and the console says so rather than implying recourse that does not exist. Where the exposure justifies it, the request can be proxied so delivery is observed directly instead of assumed.
+
+Cold start ceases to be a problem the moment the system stops trying to solve it through detection — and where the hold is unavailable, the honest answer is disclosure plus a bounded limit, not a silent hope.
 
 Two asymmetries make this work: **trust accrues slowly, distrust propagates instantly** — one confirmed non-delivery flags a merchant network-wide within seconds — and **the cost of being wrong is bounded by the hold, not by the payment value.**
 
@@ -340,7 +396,9 @@ Stated plainly, because overclaiming creates legal exposure under a guarantee:
 
 ---
 
-## 7. Disputes and liability
+## 7. Disputes, protection and liability
+
+**Read this section for what it does not promise.** Cleargate launches with a *settlement mechanic* that protects buyers at zero capital risk, and with *measurement* of what a guarantee would have cost. It does not launch with a guarantee. §7.3 is explicitly a future act, and it is written down so the sequencing is deliberate rather than accidental.
 
 ### 7.1 Disputes are a design failure, not a process to optimise
 
@@ -350,33 +408,49 @@ Cleargate Finance stands in the transaction as it happens. It holds the mandate 
 
 | Dispute type | Why it should not occur | Residual |
 |---|---|---|
-| "The agent shouldn't have bought this" | The purchase was checked against a signed mandate before approval. Inside it, the owner authorized it and the record proves so. Outside it, Cleargate erred and absorbs the loss | Becomes a lookup, not a debate |
-| "The merchant didn't deliver" | Unproven merchants are held; release requires confirmation; expiry auto-refunds | Near zero |
+| "The agent shouldn't have bought this" | The purchase was checked against a signed mandate before approval. Inside it, the owner authorized it and the record proves so. Outside it, Cleargate erred | Becomes a lookup, not a debate |
+| "The merchant didn't deliver" | On-platform, the payment was held and release requires confirmation, so expiry auto-refunds. Off-platform, the pre-payment checks are the protection and the payment is final | Near zero on-platform; disclosed off-platform |
 | "Delivered but useless" | Cannot be designed away — requires human judgement | The only category needing real process |
 
-**The operating metric is loss rate as a percentage of guaranteed volume.** Card fraud runs roughly 0.05–0.1%. Above approximately 0.5%, the economics do not work. This is tracked from the first transaction.
+**The operating metric is observed loss rate as a percentage of routed volume.** Card fraud runs roughly 0.05–0.1%. Above approximately 0.5%, a guarantee business would not work. This is tracked from the first transaction — not because anything is being covered yet, but because the number is the precondition for §7.3.
 
-### 7.2 How losses are covered
+### 7.2 What ships at launch: holds, and silent loss observation
 
-The model evolves in three stages. Cleargate Finance does not begin as an insurance company.
+Two things, and neither of them risks capital.
 
-**Stage 1 — Own reserve (months 0–12).** A fixed reserve from the seed round backs guarantees capped at a low per-transaction limit with a hard monthly aggregate ceiling. The purpose is not profit. **The purpose is to buy loss data** — what fraction of transactions fail, which merchant categories are risky, what a typical loss costs. This is budgeted as customer acquisition cost.
+**The hold.** In the netted on-platform flow, Cleargate controls when money reaches the payee. A payment can therefore be committed but not released, verified against delivery, and returned automatically to the buyer if delivery never comes. This is real, meaningful buyer protection — it is what makes an unknown merchant safe to transact with — and it costs nothing to offer, because the money being withheld is money Cleargate already holds. **Controlling the timing of money you hold is not underwriting.** No reserve, no coverage promise, no loss absorbed anywhere.
 
-**Stage 2 — Merchant-funded (months 12–24).** Three standard payments mechanisms shift merchant-side losses onto merchant-side money:
+**The silent loss-observation ledger.** From the first transaction, every event that *would* have been a covered loss under a guarantee is recorded internally: non-deliveries, disputes, approvals that turned out to be wrong. Full context per event — payee, category, amount, reason, which check passed it. **Nothing is paid out against these records.** They are observations, and the console never shows a customer a number that implies coverage.
 
-- **Delayed settlement.** New merchants settle T+7; merchants with clean history settle same-day. The delay *is* the protection — an undelivered order has not yet been paid out.
-- **Rolling reserve.** 5% of every merchant's payouts held on a trailing basis, forming their own clawback buffer.
-- **Netting.** A refund owed is deducted from the next payout. Economically identical to a chargeback, requiring no reversibility.
+The reason to build this on day one is that the measurement is nearly free while the data is unrecoverable. Deferring the guarantee *product* does not require deferring the *measurement*, and the measurement is the entire thing that turns §7.3 from a hope into a decision that can be made on evidence. A competitor starting two years later can copy the rules engine in a quarter and cannot copy two years of observed delivery failure.
 
-Remaining exposure at this stage is Cleargate's own errors — payments approved that should not have been.
+### 7.3 Future: guarantees and insurance — deliberately not in the MVP
 
-**Stage 3 — Reinsured (year 2+).** With real loss data, a reinsurer writes a policy. Cleargate operates as a **managing general agent**: performing pricing, underwriting and the customer relationship while the reinsurer holds the capital. The spread between premium cost and what merchants and owners pay is margin, captured without a large balance sheet.
+This is the destination, not the starting point, and the reason for the delay is simple: **a guarantee cannot be priced correctly until real loss data exists, so offering one at launch means underwriting blind.** One badly priced quarter can end the company. Nothing below is a build commitment; it is the shape the later product takes if the data supports it.
 
-**Governing rule:** never guarantee an amount that could not be lost entirely. Limits widen only on observed data, never on customer request.
+**The loss waterfall**, in the order losses would be absorbed. Each layer exists so the one below it is rarely touched:
 
-### 7.3 Why this cannot be copied by a protocol
+1. **The hold** — the payment was never released, so there is no loss to cover. This is where the overwhelming majority should land, and it is already live.
+2. **Netting** — a refund owed is deducted from that payee's next payout. Economically a chargeback, requiring no reversibility.
+3. **Merchant rolling reserve** — a trailing percentage of payouts retained, forming the payee's own clawback buffer.
+4. **Cleargate's capped reserve** — the rare residual, hard-capped per transaction and in monthly aggregate.
 
-A protocol has no balance sheet and cannot accept liability. Only a capitalised legal entity can. This is the structural reason the position is defensible against open standards, and the reason the loss dataset — which unlocks reinsurance — is the company's core asset.
+**The coverage boundary**, stated before anything is sold rather than argued afterwards:
+
+| Covered | Not covered |
+|---|---|
+| Verifiable non-delivery under defined, machine-checkable conditions | Subjective quality — "the analysis was poor" |
+| Cleargate's own approval errors — a payment approved that the mandate did not permit | Spending the owner authorized that turned out to be unwise |
+| | Off-platform payments Cleargate could neither hold nor verify |
+| | Anything above the stated per-transaction and aggregate caps |
+
+**Reserve stages.** Own reserve first, funded as a customer-acquisition cost rather than as profit; then merchant-funded mechanisms as above; then, with a real loss book, a reinsurer writes the policy and Cleargate operates as a **managing general agent** — pricing, underwriting and owning the customer relationship while the reinsurer holds the capital. Guarantee fees are risk-priced from observed data, never flat.
+
+**The hard risk note, stated plainly.** One bad underwriting quarter can kill the company, and this failure mode does not announce itself in advance. Start with embarrassingly low caps. Widen only on proven loss data. Never guarantee an amount that a bad month could not survive, and never widen a limit because a customer asked.
+
+### 7.4 Why the liability position cannot be copied by a protocol
+
+A protocol has no balance sheet and cannot accept liability. Only a capitalised legal entity can. This is the structural reason the eventual position is defensible against open standards, and the reason the loss dataset built in §7.2 — which is what unlocks reinsurance — is the company's core long-term asset, even though it earns nothing on the day it is collected.
 
 ---
 
@@ -405,33 +479,46 @@ flowchart TB
         ENG["Authorization engine"]
         LED["Double-entry ledger"]
         LOG["Signed decision log"]
+        DIR["Directory and trust registry"]
     end
 
     subgraph offline["Background"]
-        RISK["Merchant scoring"]
+        RISK["Counterparty scoring"]
         BASE["Agent baselining"]
         NOTIF["Alerts and approvals"]
         SETTLE["Settlement worker"]
+        LOSS["Loss observation"]
     end
 
     subgraph rails["Rail adapters"]
-        X["x402 / Base"]
+        X["x402 / Base<br/>exact · upto · batch-settlement"]
         FUTURE["ACP, AP2, other chains"]
+    end
+
+    subgraph ext["Bought, not built"]
+        CDP["Coinbase CDP<br/>custody · policies · gas · KYT"]
+        RAMP["On-ramp<br/>Coinbase / MoonPay"]
     end
 
     SDK --> GW
     MER --> GW
     CON --> GW
+    MCP["Directory MCP server"] --> DIR
     GW --> ENG
     ENG --> LED
     ENG --> LOG
+    ENG --> DIR
     ENG -.cached scores.-> RISK
     LOG --> RISK
     LOG --> BASE
+    LOG --> LOSS
+    DIR --> RISK
     ENG --> NOTIF
     LED --> SETTLE
     SETTLE --> X
     SETTLE --> FUTURE
+    SETTLE --> CDP
+    LED --> RAMP
 ```
 
 ### 8.3 The ledger
@@ -466,13 +553,33 @@ Without this, a timeout inside a retry loop produces thousands of duplicate paym
 
 Two simultaneous requests against an agent with $10 remaining will both observe $10 and both approve $8 unless locked. Balance reads on the money path use row-level locking or atomic conditional updates.
 
-### 8.6 Settlement and multi-rail
+### 8.6 Settlement, schemes, and multi-rail
 
-Payments authorize against the internal ledger; the chain settles periodically in aggregate. An agent paying the same merchant 800 times daily at $0.02 requires one net settlement, not 800 transactions.
+Payments authorize against the internal ledger in under 100ms, independent of block time. How they reach the chain depends on which **x402 scheme** is in force.
 
-This produces three benefits simultaneously: sub-100ms authorization independent of block time, gas cost amortized to near zero, and the ability to hold funds at all — which requires controlling timing.
+**Netting is not a Cleargate invention, and should never be described as one.** It is x402's official `batch-settlement` scheme: the buyer deposits once into an on-chain escrow, then signs an off-chain **cumulative voucher** per request — each voucher carrying a new running total that supersedes the last — and the seller or facilitator redeems many vouchers in a single on-chain transaction through stateless unidirectional payment channels. The implementation comes from the x402-foundation Go SDK. Building a proprietary netting layer would mean maintaining a worse version of a standard our own merchants' other counterparties already speak.
 
-**Cross-chain is solved by float, not bridges.** If a merchant is paid on a different chain than the buyer funded, no cross-chain transaction occurs. The ledger debits and credits internally; the daily payout is drawn from float held on the merchant's preferred chain. Rebalancing between chains is an occasional treasury operation, not a per-transaction concern. Bridges never enter the payment path.
+Three schemes, selected per situation by the rail adapter:
+
+| Scheme | When | Why |
+|---|---|---|
+| `exact` | One-off payments, and every off-platform payee | Nothing to amortise; the payment is the settlement |
+| `upto` | Variable-cost or metered calls where the final price is not known up front | Authorize a ceiling, settle the actual |
+| `batch-settlement` | High-frequency repeated calls to the same payee | 800 payments of $0.02 become one on-chain transfer |
+
+Selection is per **(account, payee)** pair and **promotes**: a payee starts on `exact` and moves to `batch-settlement` once repeat volume appears and the channel is worth opening. Nothing about this is visible to the agent.
+
+**Reconciliation, and what counts as evidence.** Three artifacts with three different jobs:
+
+- the **internal ledger** holds per-payment truth and is the system of record;
+- **signed cumulative vouchers** are the per-payment audit evidence, each one a signed assertion of what was owed at that moment;
+- the **on-chain batch** is proof of net settlement, and nothing finer.
+
+> **Never treat on-chain data as the audit trail.** In a batch settlement the chain records the *facilitator or executor* firing a transaction — not the payer, not the individual payments, not the purpose. Anyone reconciling against block explorers will reconcile against the wrong thing, and any demand to produce on-chain evidence of a specific payment cannot be met because that evidence does not exist on chain. Our books are the record: ledger plus vouchers plus batch hashes. Solvency is proved by an hourly invariant — payables never exceed holdings — not by publishing per-payment hashes.
+
+**Running batch-settlement makes Cleargate the facilitator, which is a concentration of trust worth naming.** A facilitator that is compromised can misauthorize or misdirect across many services at once, so its blast radius is the whole channel set rather than one payment. This sits alongside platform compromise in §8.10 and is treated with the same controls: no unilateral movement, dual approval above thresholds, and independent verification of what was signed.
+
+**Cross-chain is solved by float, not bridges.** If a payee is paid on a different chain than the buyer funded, no cross-chain transaction occurs. The ledger debits and credits internally; the payout is drawn from float held on the payee's preferred chain. Rebalancing between chains is an occasional treasury operation, not a per-transaction concern. Bridges never enter the payment path.
 
 ### 8.7 Cryptography
 
@@ -482,18 +589,64 @@ Three concrete uses, no exotic primitives:
 - **Signed decision records.** Both parties can verify a record was not altered after the fact. A guarantee is only as credible as its evidence.
 - **Hash-chained audit log.** Each entry includes the previous entry's hash, making historical tampering detectable.
 
-### 8.8 Security of the platform itself
+### 8.8 Wallets, custody and gas
+
+Key custody is bought, not built. The provider is **Coinbase CDP**.
+
+The reasoning is fit rather than preference. CDP is Base-native, authored by the same team as x402, and bundles most of this layer in one provider: TEE-backed key custody, Spend Permissions, Policies, gas sponsorship, native x402 support, built-in KYT address screening, and a Coinbase on-ramp. Assembling the same capability from separate vendors means integrating four relationships and reconciling their failure modes.
+
+**Two control models, mapped to two audiences.** CDP offers both on one infrastructure, and Cleargate uses both:
+
+| Model | Who it is for | Control | Note |
+|---|---|---|---|
+| **Server Wallet** — server-controlled, API-key auth | Retail and non-crypto users | Cleargate's backend holds the keys | The "bank for agents" experience. **Custodial in the regulatory sense**, with the licensing consequences that implies |
+| **Embedded Wallet** — user-controlled, email or social login | Crypto-native users who want their own custody | The user holds the keys, delegating time-bound authority to our backend | The non-custodial path |
+
+Wallets are created from email, SMS or social login with no seed phrase, in under half a second, and can be **pre-generated and pre-funded before the user first logs in**. A web2-style signup that provisions a wallet invisibly behind it is a confirmed capability, not an aspiration — which is what makes "no wallet, no chain, no gas" true rather than marketing.
+
+**The provider sits behind a `WalletProvider` interface.** CDP is the implementation, not the architecture. CDP has no Go SDK, so the adapter is either direct REST calls from Go for the handful of endpoints used, or a thin TypeScript sidecar behind the same interface. That choice is an implementation detail sealed inside the adapter and must not leak into any module that authorizes payments.
+
+**Mandates map onto CDP primitives where they can.** Agents remain spend *scopes* against one pooled account wallet — never per-agent wallets (§9.3). Per-agent limits are expressed as CDP **Spend Permissions** (an allowance per spender per period) and **Policies** (value caps, address allow and blocklists, USD limits, network and function restrictions). This puts part of the mandate *below the model and below our own backend*: where a CDP policy covers a rule, a compromise of Cleargate's servers still cannot exceed it. Our engine enforces everything CDP cannot express — intent, behaviour, category, provenance.
+
+**Voucher signing deliberately does not run through CDP, and the reason is cost.** CDP prices wallet operations — creation, signing, broadcasting, policy evaluation — at $0.005 each, with the first 5,000 per month free and reads free. High-frequency batch-settlement signing would collide with that: 8,000 vouchers a day at $0.005 is $40 of signing against roughly $32 of payments, which inverts the economics of the whole netted flow. Vouchers are therefore signed server-side with **Cleargate's own delegated EOA** — x402's `payerAuthorizer` — outside CDP's meter, where the marginal cost is an ECDSA operation.
+
+This makes the delegated key a **cost boundary, not merely a throughput optimisation**, and it has a schema consequence: two key roles per agent — the CDP account wallet, and the delegated voucher-signing EOA — plus the channel linkage between them. CDP is used for what it is priced for: account-wallet custody, funding operations, on-chain settlement and redemption transactions, and Spend Permission and Policy enforcement.
+
+**Gas.** CDP gas sponsorship covers on-chain agent actions and `exact` payments, so no separate paymaster is needed in the common path. In the netted flow agents mostly do not transact on chain at all — only settlement does. One operational requirement survives regardless: monitor and auto-refill the settlement wallet's native gas balance. A settlement failing because our own wallet ran dry is a preventable outage and an embarrassing one.
+
+**Address screening.** CDP's built-in KYT screening is used on deposits and payouts.
+
+### 8.9 KYC, funding and withdrawal
+
+**Verification is gated by spend limit, never by funding method.** Tying KYC to *how* money arrives produces the wrong shape — a user funding $20 by card faces more friction than one funding $20,000 in stablecoin. Tiers instead:
+
+| Tier | Requires | Unlocks |
+|---|---|---|
+| **Basic** | Email | Low cap, trial-sized spending |
+| **Verified** | Identity verification | Standard limits |
+| **Business** | Legal entity plus beneficial ownership | High limits |
+
+Where the money comes from then determines what is *unavoidable* on top:
+
+- **Card and bank funding through an on-ramp.** The on-ramp is the regulated party and sets its own minimum verification even for small amounts. We inherit their floor and their tiers; there is no version of this with less friction, and pretending otherwise wastes the user's time.
+- **Direct stablecoin funding.** Here we set the terms. A low-cap trial runs with **no formal KYC** but **mandatory on-chain address screening**. Screening is not KYC and the two are not interchangeable: screening asks whether this address is associated with sanctioned or criminal activity, KYC asks who the person is.
+- **Withdrawals mirror it.** To a crypto wallet, we control the path, screen the address, and keep friction low for small amounts. To a bank account, an off-ramp is involved and KYC is unavoidable.
+
+**The principle:** a frictionless trial is direct crypto in and out with screening, while every fiat path carries the regulated floor. AML responsibility remains ours on both — screening is precisely what makes the low-friction path non-reckless rather than merely non-compliant.
+
+### 8.10 Security of the platform itself
 
 Sitting in the payment path makes Cleargate Finance a target.
 
-- Private keys are never held in-house; key management is delegated to a specialist provider.
+- Private keys are never held in-house; custody is delegated to Coinbase CDP (§8.8), with TEE-backed key storage.
+- Running x402 `batch-settlement` makes Cleargate the facilitator for its own channels, and a compromised facilitator can misauthorize or misdirect across many payees at once (§8.6). Voucher-signing authority is treated as a production secret of the same class as the settlement wallet.
 - No single individual can move funds; payouts above a threshold require dual approval.
 - Secrets in a managed vault, never in source control.
 - All actions logged with actor, action and timestamp, including internal administration.
 - Rate limits per agent and per account.
 - Alerting on spend spikes, new merchants with unusual volume, elevated refund rates, and ledger imbalance.
 
-### 8.9 Engineering practice
+### 8.11 Engineering practice
 
 CI on every commit; automated deployment to staging; one-click production deploy and rollback. Feature flags to disable behaviour without deploying. Structured logging with a trace ID spanning every step of a request. Load testing before launch. Written runbooks for incident response.
 
@@ -559,7 +712,7 @@ Webhooks: `payment.approved`, `payment.held`, `payment.declined`, `approval.requ
 
 ### 9.2 Enterprise
 
-Enterprises require: dual control above thresholds with named approvers, policy as code within existing change management, budget attribution by agent and cost centre reconciled into ERP, immutable audit trail with SIEM export, segregation of duties between policy author and exception approver, and SOC 2 Type II.
+Enterprises require: dual control above thresholds — a second admin's sign-off before an exception proceeds — policy as code within existing change management, budget attribution by agent and cost centre reconciled into ERP, immutable audit trail with SIEM export, segregation of duties between the admin who authors a policy and the admin who signs off on an exception to it, and SOC 2 Type II.
 
 The risk question shifts. The developer product asks "did I receive my API response." The enterprise product asks "did the agent spend in accordance with a mandate a human genuinely authorized, and can that be proven to an auditor." Less fraud detection, more **provable authorization chains**.
 
@@ -599,15 +752,54 @@ The single schema decision that keeps this cheap: **model payee as a role, not a
 
 ---
 
-## 11. The console
+## 11. Discovery and the directory
 
-### 10.1 The decision log is the product
+x402 settles payment. It says nothing about **discovery** — how an agent finds a payee worth paying in the first place, and whether that payee delivers. That layer does not exist, and it is not a marketplace.
 
-Transactions are visible on-chain. What exists only inside Cleargate Finance are the **declines and holds** — and those are the proof of value. A monthly summary reading *"blocked 14 payments, $3,200 at risk, 2 unknown merchants held for review"* is the renewal justification. Most infrastructure struggles to demonstrate value; this system generates the evidence as a byproduct.
+**What is built: a directory and trust registry.** Heterogeneous payees — HTTP endpoints, MCP servers, and service-providing agents — each with a description, a category, a price, and **verified statistics**: delivery rate, transaction count, age. The statistics are the product. Anyone can publish a description of themselves; only a party sitting in the payment path can report what actually happened afterwards.
 
-### 10.2 Contents
+**Two listing tiers**, which is what lets the directory be useful before anyone has signed up:
 
-- **Human-readable events, never hashes.** Transaction identifiers sit behind a disclosure control.
+| Tier | How it gets there | What it shows |
+|---|---|---|
+| **Registered** | The payee claimed it | Full statistics, verified delivery record |
+| **Observed** | Agents paid it; we recorded the outcome | Limited display, plus a *claim this listing* hook |
+
+Observed listings are the conversion mechanism described in §15: a payee discovers it already has a record here, built from real traffic, and claiming it is the path of least resistance.
+
+**Two facts are kept rigorously distinct: payment observed, and delivery observed.** We always know the first. We know the second only where delivery was confirmed or the request was proxied. A listing never implies quality we did not witness, and an observed-only listing says so.
+
+### 11.1 Who can read it, and why that is deliberately open
+
+**The directory is broadly readable — open, rate-limited against bulk exfiltration — and not gated to registered agents.** What is gated is *protection*: mandate enforcement, holds, netted settlement and key safety require an account. Write access — claiming and editing a listing — requires a verified merchant.
+
+| Surface | Access |
+|---|---|
+| Read the directory and reputation | Open, rate-limited |
+| Claim or edit a listing | Verified payee only |
+| Mandate checks, holds, netted settlement, key safety | Registered agents only |
+
+The temptation is to lock the directory and make it a reason to sign up. That is the wrong trade. A widely-read registry pulls both sides — merchants come for reach, agents come for inbound — and it makes *Cleargate-verified* a trust standard that carries beyond our own customers, which is the seed of the reputation bureau in §14.3. A locked directory converts a compounding network effect into a modest signup incentive, and starves the thing that eventually becomes the most valuable asset the company owns.
+
+### 11.2 How an agent uses it
+
+The directory is exposed as something agents query directly — an MCP server is the natural surface, since it makes consulting it a configuration line rather than an integration. A connected agent checks the directory first, and the buyer's mandate can express a preference — *prefer verified payees* — which biases selection **without coercing it**. If nothing in the directory fits, the agent falls back to the open web and is still protected by every buyer-side check in §6.
+
+That ordering matters: the directory improves outcomes, it does not gate them. An agent that can only buy from a registry is an agent whose owner has been locked into ours.
+
+---
+
+## 12. The console
+
+### 12.1 The decision log is the product
+
+It is tempting to assume the chain already shows what happened. It does not. In the netted flow an individual agent payment **never touches the chain and has no transaction hash** — it is a ledger entry plus a signed voucher (§8.6). What exists only inside Cleargate Finance is therefore nearly everything a customer wants to see: the individual payments, and the **declines and holds** that are the proof of value. A monthly summary reading *"blocked 14 payments, $3,200 at risk, 2 unknown merchants held for review"* is the renewal justification. Most infrastructure struggles to demonstrate value; this system generates the evidence as a byproduct.
+
+### 12.2 Contents
+
+- **Ledger events, not hashes.** Each row is an event identifier, a time, a payee, a stated purpose, the mandate version in force, and the outcome. There is no transaction hash to show for an individual payment because none exists. Hashes appear in exactly three places — **funding, withdrawal, and batch settlement** — and showing one anywhere else would be inventing evidence.
+- **On the payee side, a payout carries one hash** with its constituent payments listed beneath it. The payout-to-payments join is what lets a merchant reconcile a single on-chain receipt against hundreds of individual sales.
+- **"Payment observed" and "delivery observed" are shown as separate facts**, never merged into one status.
 - **Every decision, including those where no money moved**, with the reason and the mandate version in force.
 - **Causal chain**: payment → the task that triggered it → the agent's stated purpose. This makes a hijack visible in retrospect.
 - **Burn-down** against daily and monthly caps.
@@ -615,15 +807,21 @@ Transactions are visible on-chain. What exists only inside Cleargate Finance are
 - **Attribution**: which customer, task or workflow caused which spend.
 - **Export**: CSV, accounting integrations, SIEM formats.
 
-### 10.3 Approvals are a latency problem
+### 12.3 Human control is set once, not requested every time
 
-When a payment requires sign-off, the agent is blocked and waiting. The flow must be near-instant: push or Slack notification, one-tap decision, hard timeout. If approval takes ten minutes, customers raise their thresholds until the control is meaningless — the standard way security features die.
+**The design principle: control is configured in advance and enforced automatically.** A mandate is set once and then applies to thousands of payments without anybody being asked anything. Synchronous human approval is the *exception*, reserved for genuinely unusual events — not a routine step, and never a design default. An agent that needs a human for ordinary work is an agent nobody will deploy unattended, which defeats the point of it.
 
-Auto-decline is the default on timeout. Auto-approve must be explicitly chosen, never discovered.
+**The default on suspicion is hold and notify, not block and wait.** Blocking strands an unattended agent mid-task with nobody watching; holding lets the task continue while the money stays under control and a human is told. That asymmetry matters more here than with cards: a blocked human retries with another card, a blocked agent simply fails.
+
+**Where approval genuinely is required, it is a latency problem.** The agent is stopped and waiting, so the flow must be near-instant: push or Slack notification, one-tap decision, hard timeout. If approval takes ten minutes, customers raise their thresholds until the control is meaningless — the standard way security features die. Auto-decline is the default on timeout; auto-approve must be explicitly chosen, never discovered.
+
+**Strictness is configurable per account**, because the right answer differs by customer. A crypto-native trading agent wants wide autonomy and few interruptions; an enterprise wants four-eyes on anything unusual. Strict is the default and can be relaxed by users who knowingly accept more autonomy.
+
+**Every synchronous human step in an agent's operating path is audited as a friction risk.** Those are the places where the product either works unattended or quietly stops being used.
 
 ---
 
-## 12. Adjacent problems the platform solves
+## 13. Adjacent problems the platform solves
 
 These are finance-operations problems rather than security problems, which matters commercially: security sells after an incident, finance operations sells on an ordinary Tuesday. All are byproducts of data the system already collects.
 
@@ -639,23 +837,36 @@ These are finance-operations problems rather than security problems, which matte
 
 ---
 
-## 13. Business model
+## 14. Business model
 
-**Revenue is charged for authorization and assurance, not as a percentage of payment value.** This makes the business viable before agent volume is meaningful — and it is correct regardless, since the rails themselves are free.
+**The governing principle: charge for authorization and risk reduction, never a cut of payment value.** Moving money is already commoditized — x402 charges no protocol fee and stablecoin transfer costs are negligible — so a percentage of value is rent on something free, and it prices the company out of exactly the sub-dollar, high-frequency traffic it is built for. What is scarce is the decision: whether this payment should happen, and what it is worth to know that.
 
-| Line | Basis | Timing |
+Revenue arrives in three layers, and the first one is deliberately **independent of transaction volume**, because the market is small today (§2.6) and a plan that needs it to be large fails.
+
+**Now — pays the bills, volume-independent.**
+
+| Line | Basis |
+|---|---|
+| Per agent or per seat, monthly | Mandate enforcement, controls, alerts, visibility |
+| Enterprise tier | SSO, audit export, SOC 2, attribution, higher limits |
+
+**Transition — scales with activity, not with payment value.**
+
+| Line | Basis |
+|---|---|
+| Per decision or per authorization | Each payment evaluated, regardless of its size |
+| Merchant settlement fee | Instant netted settlement, no gas, fiat payout |
+
+**At scale — future, and gated on evidence.**
+
+| Line | Basis | Gate |
 |---|---|---|
-| Free tier | Logging, console, visibility | The wedge |
-| Per agent per month | Mandate enforcement, controls, alerts | **Primary revenue, months 0–18** |
-| Merchant settlement fee | Guaranteed daily settlement | From merchant launch |
-| Per protected transaction | Buyer protection on held volume | Scales later |
-| Enterprise | SSO, SOC 2, attribution, audit export | Highest ACV |
-| Guarantee spread | Basis points on guaranteed volume | Requires loss data first |
-| Merchant data | Delivery reputation, category benchmarks | Year 3+ |
+| Guarantee spread | Basis points on guaranteed volume, risk-priced | Requires the loss book from §7.2. An option on 2028+, not a plan |
+| Reputation and data licensing | Delivery reputation, category benchmarks, sold to parties who route no payments through us | Detached from our own volume, which is the point |
 
-Pricing is designed so the company remains viable if agent payment volume grows ten times more slowly than expected.
+**Pricing is not led with a guarantee percentage, and neither is positioning.** A guarantee-spread model implies a product that does not exist yet and invites a comparison — "what percentage do you take" — against rails that take nothing. The lead is a subscription for control, which is honest about what is being sold today and survives agent payment volume growing ten times more slowly than expected.
 
-### 12.1 Growth path
+### 14.1 Growth path
 
 **Down the financial stack** — authorization → holding funds → credit → underwriting. Each rung unlocked by data from the one below. Once a million transactions are observed, spending limits can be extended without prefunding; once default can be priced, coverage can be sold.
 
@@ -665,13 +876,13 @@ Pricing is designed so the company remains viable if agent payment volume grows 
 
 **Into compliance** — when regulators require proof of who authorized a machine to spend, every regulated entity running agents needs precisely this audit trail.
 
-### 12.2 End state
+### 14.2 End state
 
 Two engines operating together: an **authorization network**, where every machine payment above a trivial size is checked before executing, and a **merchant bureau**, the delivery and default record of the machine economy, licensed at near-zero marginal cost to parties who never route a payment through the platform.
 
 Rails commoditize; reputation compounds.
 
-### 13.3 Expansion opportunities
+### 14.3 Expansion opportunities
 
 Every product the platform can build stands on one of two assets: **the position** (sitting in the payment path) or **the data** (the verified delivery and default record). The strongest use both. The organizing insight is that **payments is the wedge, not the destination** — the payment product exists to collect behavioural truth about machine actors, which is what gets sold, in different forms, to different buyers, for the next decade.
 
@@ -685,11 +896,13 @@ Every product the platform can build stands on one of two assets: **the position
 
 **Compliance (a price-insensitive byproduct).** When regulators require proof that a human authorized a machine to spend, every regulated entity running agents needs exactly the audit trail the platform already produces. Sold on the regulator's timeline, so treated as upside rather than a roadmap commitment.
 
-The ranking by strength and timing: build the *data* for the bureau, analytics, and price intelligence from day one, since capturing it is nearly free and it compounds; build the *products* — the reputation API, credit, guarantees-as-a-service — once scale makes them credible; and hold discovery, compliance tooling, and any DeFi transaction-guarding as options rather than chasing them, since each is a different business that would fragment focus.
+**DeFAI, as a deliberate second product.** The authorization engine does not actually know that a payment is a purchase — it authorizes a movement of value against a signed policy. An agent acting in DeFi needs the same engine with a different check set: approval caps, transaction simulation, slippage bounds, protocol allowlists. That is a real second product on the same core, and the only thing required to keep the option open is to not let "this is a purchase" leak into the engine. It is **not built now**, and §3.1's line about treasury and trading being out of scope refers to the agent-payments product, not to the engine's eventual reach.
+
+The ranking by strength and timing: build the *data* for the bureau, analytics, and price intelligence from day one, since capturing it is nearly free and it compounds; build the *products* — the reputation API, credit, guarantees-as-a-service — once scale makes them credible; ship **discovery as the directory of §11**, which is no longer held as an option because it is what converts merchants; and hold compliance tooling and DeFAI as deliberate later products rather than chasing them now, since each would fragment focus today.
 
 ---
 
-## 14. Distribution
+## 15. Distribution
 
 **Ship as an MCP server.** This is the highest-leverage distribution move available. Adoption becomes one line of configuration rather than an SDK integration.
 
@@ -697,13 +910,22 @@ The ranking by strength and timing: build the *data* for the bureau, analytics, 
 
 **Platforms over individual developers.** One integration with an agent platform or marketplace reaches thousands of agents and populates the merchant graph far faster than individual signups.
 
-**Merchant cold-start via bounded guarantee.** Approach the first twenty merchants and offer to cover losses on agent transactions at zero cost to them, capped at an affordable level. This buys merchant integration with a small amount of risk capital rather than waiting for volume. Once merchants accept backed agents preferentially, the buyer side has a reason to exist.
+**Merchant cold-start is solved by winning buyers first, not by buying merchants.** This is the sequencing that falls out of §3: buyer-side control is useful with zero merchants integrated, so there is no chicken-and-egg problem to bribe our way out of.
+
+The mechanism is:
+
+1. **Win buyers.** Control, visibility and key safety are worth paying for on their own, and work against any endpoint on the open web.
+2. **Route their payments,** including to merchants who have never heard of Cleargate, over the `exact` scheme.
+3. **Accumulate per-merchant demand data** — who is being paid, how much, how often, and whether they delivered.
+4. **Convert merchants with their own traffic.** The pitch is not a hypothetical: *agents already paid you $X through Cleargate this quarter — claim your listing, settle instantly, stop handling gas.* The observed-tier directory listing (§11) is where they land.
+
+Off-platform merchants are therefore **the top of the funnel, not a hole in the product**. Earlier drafts proposed buying the first twenty merchants with a bounded guarantee; that is superseded. It spends risk capital to solve a problem the buyer-first sequence does not have, and it would put the company in the underwriting business before it has any loss data to underwrite from (§7.3).
 
 **Publish the loss data.** Becoming the authoritative public source on agent payment fraud generates inbound and establishes the category.
 
 ---
 
-## 15. Customers
+## 16. Customers
 
 The buying persona is whoever is financially liable when the agent is wrong.
 
@@ -715,23 +937,29 @@ The buying persona is whoever is financially liable when the agent is wrong.
 | **Enterprises running internal agents** | Governance and audit pressure | Highest ACV | 2027, SOC 2 gated |
 | **Consumers** | 14% trust rate | Negligible | Not a near-term market |
 
----
+**Scope guardrail: physical goods are out, for now.** Shopify-style e-commerce fails the test that selects for this product. Cards already serve a $100 pair of shoes well, the economics do not need sub-cent payments, and delivery is not machine-verifiable — which removes the hold, the delivery record and the counterparty score all at once. The focus is **digital services, endpoints, MCP servers and data**, where x402 wins on cost and delivery is verifiable. Physical commerce is reachable later as an authorization layer behind a *platform* connector, never merchant by merchant.
 
-## 16. Roadmap
+**Design-partner fit.** The strongest early partner is an *"internet of agents"* platform — one where non-technical users describe an agent in plain English and those agents buy capabilities from other agents. It concentrates exactly what this product is best at: agent-to-agent volume in the payee-as-a-role form that ships today (§10, Case A), non-technical users who must never see a wallet, and platform distribution that reaches thousands of agents through one integration. Cleargate embeds as the invisible payment and trust layer via API plus embedded components.
 
-**Phase 0 — Foundations (months 0–3).** Ledger and decision log schema. Mandate model and signing. Deterministic rules engine. TypeScript SDK and MCP server. Free logging tier. Three design partners routing live transactions. **Delivery outcomes instrumented from transaction one.**
-
-**Phase 1 — Control (months 3–9).** Mandate enforcement, caps, categories, approval workflow with sub-minute response. Owner console with full decision history. Python SDK. Per-agent baselining. First paid tier.
-
-**Phase 2 — Merchants (months 9–18).** Merchant SDK and delivery confirmation. Daily settlement, delayed settlement tiers, rolling reserves. Held payments with auto-refund. Merchant scoring from delivery data. Bounded guarantee programme with first twenty merchants.
-
-**Phase 3 — Assurance (months 18–36).** Guarantees at scale under an MGA structure with reinsurance. Enterprise features and SOC 2 Type II. Platform API, multi-tenancy, embeddable components. Additional rails.
-
-**Phase 4 — Bureau (year 3+).** Merchant reputation licensed externally. Credit extension against demonstrated history. Additional actor types.
+One thing to scope before committing to such a partner: whether their agent interactions are **simple request and response**, which is supported now, or **open-ended subcontracting**, which needs the deferred Case B machinery — milestone holds, an acceptance mechanism, and chained mandate enforcement.
 
 ---
 
-## 17. Risks
+## 17. Roadmap
+
+**Phase 0 — Foundations (months 0–3).** Ledger and decision log schema. Mandate model and signing. Deterministic rules engine. Wallet provider integration and `exact`-scheme payments. TypeScript SDK and MCP server. Free logging tier. Three design partners routing live transactions. **Delivery outcomes and the silent loss-observation ledger instrumented from transaction one.**
+
+**Phase 1 — Control (months 3–9).** Mandate enforcement, caps, categories, approval workflow with sub-minute response. Owner console with full decision history. Python SDK. Per-agent baselining. Directory in observed-listing form, populated by routed traffic. First paid tier. **This is the act that needs no merchants.**
+
+**Phase 2 — Merchants and netting (months 9–18).** Merchant SDK and delivery confirmation. `batch-settlement` channels with scheme promotion. Instant netted settlement, delayed settlement tiers, rolling reserves. **Held payments with auto-refund** — the buyer protection, still with no capital at risk. Registered directory listings and claim conversion. Counterparty scoring from delivery data.
+
+**Phase 3 — Assurance (months 18–36).** *Gated on the loss book, not on the calendar.* Guarantees under an MGA structure with reinsurance, opened at deliberately low caps (§7.3). Enterprise features and SOC 2 Type II. Platform API, multi-tenancy, embeddable components. Additional rails.
+
+**Phase 4 — Bureau (year 3+).** Payee reputation licensed externally. Credit extension against demonstrated history. Additional actor types.
+
+---
+
+## 18. Risks
 
 | Risk | Assessment | Mitigation |
 |---|---|---|
@@ -739,15 +967,18 @@ The buying persona is whoever is financially liable when the agent is wrong.
 | **Incumbent ships it as a feature** | Likely from wallet or CDN providers | They will not underwrite risk. Competing on rules loses; competing on loss data and guarantees does not |
 | **Underwriting losses exceed capacity** | Ends the company in one quarter | Conservative limits; guarantee only what can be lost entirely; reach MGA structure before scaling |
 | **False positives drive churn** | Blocking a legitimate agent costs more than the fraud prevented | Hold-and-notify default; publish false-positive rate |
-| **Custody structure decided late** | Discovery at month 18 means a rewrite plus a year of licensing | Decide before writing the ledger |
+| **Custody model decided late** | Discovery at month 18 means a rewrite plus a year of licensing. The question is now narrower — *which CDP control model is primary* (§8.8) — but not smaller, since it sets KYC, gas, licensing and schema | Decide before writing the ledger |
+| **Voucher signing runs through a metered API** | Batch-settlement economics invert if each signature costs $0.005 (§8.8) | Delegated EOA outside the provider's meter; verify the billing boundary before committing to the netted flow |
+| **Facilitator compromise** | Running batch-settlement concentrates authority across every open channel at once (§8.6) | Treat voucher-signing authority as a production secret; dual approval; independent verification of signed totals |
 | **Verification overreach** | Promising judgement on subjective quality creates legal exposure under a guarantee | Deterministic conditions only; explicit in contracts |
 | **Platform compromise** | High-value target in the payment path | External key management; no unilateral fund movement; signed mandates independently verifiable |
 | **Availability** | Downtime stops customers' agents | Four nines; real on-call; honest status page |
-| **Two-sided cold start** | Merchants need agents; agents need merchants | Bounded guarantee programme to buy the merchant side |
+| **Two-sided cold start** | Classically, merchants need agents and agents need merchants | Largely dissolved: buyer-side control is saleable with zero merchants (§3), and routed traffic converts merchants with their own demand data (§15) |
+| **Positioning collides with a crowded field** | Wallet-plus-spend-controls is contested, and the word "mandate" is already taken by a competitor | Lead on the intersection in §3.2 — stablecoin-native, both sides, path to liability — never on "agent wallet with controls" |
 
 ---
 
-## 18. Success factors
+## 19. Success factors
 
 1. **Surviving until volume arrives.** Organize around revenue independent of payment volume.
 2. **Distribution through platforms and MCP**, not individual developer signups.
@@ -760,19 +991,25 @@ The buying persona is whoever is financially liable when the agent is wrong.
 
 ---
 
-## 19. Open questions
+## 20. Open questions
 
 To be resolved before or during Phase 0:
 
-- **Custody structure** — non-custodial, licensed partner, or control-plane-only as the primary model. This determines licensing, geography and architecture.
-- **Verification scope** — the exact deterministic conditions supported at launch, and contractual language bounding liability outside them.
-- **Initial guarantee limits** — maximum exposure per transaction, per merchant and in aggregate.
-- **Pricing structure** — per-agent subscription versus per-decision versus hybrid, and whether guarantees are priced separately.
-- **Merchant bond mechanics** — sizing, slashing conditions, and pricing a merchant with no history.
+- **Custody model — the gating question, to be answered before the ledger is written.** Coinbase CDP is the provider (§8.8) and offers both control models, so the decision is which is *primary*: server-controlled wallets (custodial in the regulatory sense, the smoothest retail experience) or user-controlled embedded wallets with time-bound delegation (non-custodial, more friction, far lighter licensing). This determines KYC obligations, gas handling, licensing, geography and the schema.
+- **Whether CDP implements the x402 `batch-settlement` scheme**, or only `exact`. If only `exact`, CDP custody is paired with the x402-foundation Go SDK for channel and voucher logic.
+- **Whether off-chain voucher signing is a billable CDP wallet operation.** The netted flow's economics depend on it not being (§8.8); confirm before committing.
+- **Verification scope** — the exact deterministic conditions under which delivery counts as confirmed, since this bounds what a hold can release against.
+- **Pricing structure** — per-agent subscription versus per-decision versus hybrid for the launch product (§14).
+
+**Deferred with the guarantee, not blocking Phase 0.** These cannot be answered before the loss book of §7.2 exists, and attempting to answer them early is the underwriting-blind failure §7.3 describes:
+
+- Initial guarantee limits — maximum exposure per transaction, per payee and in aggregate.
+- Whether guarantees are priced separately from the subscription, and how risk-pricing is expressed.
+- Merchant bond mechanics — sizing, slashing conditions, and pricing a payee with no history.
 
 ---
 
-## 20. Immediate next step
+## 21. Immediate next step
 
 Ten conversations with companies running agents, asking what their agents spend monthly and whether they can attribute it. In parallel, ship the smallest thing that creates value at zero risk: an SDK and MCP server that logs every agent payment with merchant, amount, purpose and outcome, plus a dashboard. Give it away.
 
@@ -780,11 +1017,15 @@ Everything in this document — the guarantee, the bureau, the credit business �
 
 ---
 
-## 21. MVP
+## 22. MVP
 The MVP is:
 An agent owner funds an account, connects an agent with spending rules, that agent pays for things through Cleargate Finance platform, and the owner sees every payment and every block in a console.
 
-No guarantees, no holds, no merchant onboarding, no reputation. Just: authorize payments against a mandate, move the money, show what happened. That's what you build first, and it's already enough to get design partners routing real transactions — which is the only thing that matters at this stage.
+No guarantees, no holds, no merchant onboarding, no reputation scoring. Just: authorize payments against a mandate, move the money, show what happened. That's what you build first, and it's already enough to get design partners routing real transactions — which is the only thing that matters at this stage.
+
+Two things are in scope that look like they might not be, and both are cheap now and unrecoverable later. The **silent loss-observation ledger** (§7.2) is written from the first transaction and paid out to nobody. And **settlement is built behind a scheme-selecting rail adapter** from the start, so `exact` ships first and `batch-settlement` is a second implementation rather than a rewrite of the money path.
+
+One clarification on ordering: this MVP is the **buyer-side** product, and it is deliberately useful with zero merchants integrated. Every payment in it settles `exact` to whatever endpoint the agent found. Netting, holds and merchant onboarding arrive together in the second act, because all three require a merchant to have integrated.
 
 ### The MVP components
 
@@ -802,14 +1043,14 @@ Outside the core:
 1. The agent SDK (TypeScript first) — what the customer actually integrates. Wraps their HTTP client, catches 402s, calls your API.
 2. The MCP server — the one-line-config adoption path. Can be a thin wrapper over the same API the SDK uses.
 3. The console — a web dashboard. Read-heavy: show agents, balances, transactions, blocks. For MVP it can be genuinely simple.
-4. On-ramp integration — funding via a partner (MoonPay/Transak/Ramp). You integrate, you don't build.
-5. Key management — Turnkey or Privy. You integrate, you don't build.
+4. On-ramp integration — funding via a partner (Coinbase on-ramp or MoonPay, behind one abstraction so either works). You integrate, you don't build.
+5. Wallets, custody, gas sponsorship and KYT screening — Coinbase CDP, behind a `WalletProvider` interface (§8.8). You integrate, you don't build.
 
 ## Appendix: glossary
 
 **Principal** — the human or legal entity ultimately responsible for an account; where liability and identity verification attach.
 **Account** — the container holding a balance, users, agents and services; neither buyer nor seller by nature.
-**User** — a human who logs into an account at a defined permission level (owner, admin, approver, viewer).
+**User** — a human who logs into an account at a defined permission level (owner, admin, guardian, viewer).
 **Agent** — the autonomous actor connected to an account that initiates payments under a mandate.
 **Mandate** — signed grant of spending authority to an agent, enforced below the model and versioned.
 **Counterparty** — any party an agent transacts with; may be an external endpoint or another account. Reputation attaches here.
@@ -823,6 +1064,13 @@ Outside the core:
 **Netting** — deducting an owed refund from a payee's next payout.
 **MGA** — managing general agent; prices and writes risk while a reinsurer holds the capital.
 **Idempotency key** — client-supplied identifier ensuring a retried request cannot pay twice.
+**Scheme** — which x402 settlement mechanism a payment uses: `exact` (one-off, and every off-platform payee), `upto` (metered or variable cost), `batch-settlement` (netted, high-frequency, one payee).
+**Voucher** — signed off-chain message asserting the cumulative total owed on a channel; each supersedes the last, and it is the per-payment audit evidence behind a netted settlement.
+**Channel** — the on-chain escrow plus voucher series for one (account, payee) pair under `batch-settlement`.
+**Facilitator** — the party that redeems vouchers on chain. Running batch-settlement makes Cleargate the facilitator for its own channels, which concentrates trust (§8.6).
+**Loss observation** — internal record of what would have been a covered loss had a guarantee existed. Measured from transaction one, paid to nobody (§7.2).
+**Directory** — the readable trust registry of payees and their verified delivery statistics (§11). Not a marketplace.
+**Spend Permission / Policy** — Coinbase CDP primitives that enforce per-spender allowances and value, address and network restrictions below our own backend (§8.8).
 **Bust-out fraud** — building a clean transaction record over time, then exiting at maximum exposure.
 
 ---
@@ -849,4 +1097,24 @@ The 78% financial-institution fraud expectation figure, the Unit 42 refund-farm 
 
 ---
 
-*Whitepaper v1.1. This revision adds the full entity and role model (principal, account, user, agent, mandate, counterparty), the payee-as-a-role framing, the three connection models (buyer, seller, both under one account), money allocation across agents, agent-to-agent payments, and expansion opportunities. Regulatory statements are not legal advice and require review by qualified EU payments counsel.*
+## Revision notes
+
+**v1.2.1 — 29 September 2026.** Removed the `approver` permission role introduced in v1.2. The four roles (owner, admin, guardian, viewer) already cover every case, including releasing an escalated payment — that is an owner or admin action, not a distinct role. Reworded §4.2's transaction-role list, §9.2's enterprise dual-control line, and the glossary's `User` entry accordingly. `guardian` is unaffected and remains exactly as built.
+
+**v1.2 — 28 September 2026.** This revision changes what the company leads with, and removes several claims that were true of the destination but not of the product.
+
+- **Positioning reordered to buyer-side control** (title, abstract, §1, §3). Control works with zero merchants integrated and is now stated as the first act; merchant-side features are the second; liability is a third. Added §3.2 on competitive positioning — the field is crowded and card-oriented, the defensible lane is the intersection of stablecoin-native, both-sides, and a path to bearing liability, and incumbents are likelier acquirers than competitors.
+- **Guarantees moved out of the launch product** (§1, §5.2, §5.6, §7, §14, §15, §22). §7 is restructured into what ships (holds, which risk no capital, plus a silent loss-observation ledger) and what is deferred (§7.3 — guarantees, with a loss waterfall, an explicit coverage boundary, reserve stages and the reason for the delay). The bounded-guarantee merchant programme in §15 is superseded by buyer-first conversion.
+- **Netting correctly attributed to x402** (§4.3, §8.6). Aggregation is the official `batch-settlement` scheme, not a Cleargate invention; three schemes are selected per (account, payee) pair with promotion from `exact`. Added the reconciliation model and the warning that on-chain data shows the facilitator, not the payer, plus the facilitator blast-radius risk.
+- **Individual payments have no transaction hash** (§12.1, §12.2). The console shows ledger events; hashes appear only for funding, withdrawal and batch settlement.
+- **Wallet provider is Coinbase CDP** (§8.8), replacing the earlier Turnkey/Privy line in §22. Both CDP control models are used and mapped to two audiences; mandates map onto Spend Permissions and Policies; voucher signing deliberately runs on a delegated EOA outside CDP's metered signing, which is a cost boundary rather than a throughput optimisation.
+- **KYC gated by spend tier, not funding method** (§8.9), with screening distinguished from verification.
+- **New §11, Discovery and the directory.** A readable trust registry with two listing tiers, deliberately open to read and gated on protection rather than on access. Sections 11–21 renumbered to 12–22, and the pre-existing subsection mis-numbering in the console and business-model sections corrected.
+- **Human control clarified** (§12.3): set once and enforced automatically, hold-and-notify by default, strictness configurable per account.
+- **Scope guardrails** (§16): physical goods out for now; DeFAI noted as a deliberate later product on the same engine (§14.3), reconciled with §3.1.
+
+**Open decisions carried out of this revision:** which CDP control model is primary; whether CDP implements the `batch-settlement` scheme; whether off-chain voucher signing is billable. All three are in §20.
+
+**v1.1.** Added the full entity and role model (principal, account, user, agent, mandate, counterparty), the payee-as-a-role framing, the three connection models (buyer, seller, both under one account), money allocation across agents, agent-to-agent payments, and expansion opportunities.
+
+*Regulatory statements are not legal advice and require review by qualified EU payments counsel.*

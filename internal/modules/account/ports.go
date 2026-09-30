@@ -4,6 +4,8 @@ import (
 	"context"
 	"time"
 
+	"github.com/CleargateFinance/cleargate-core/internal/shared/currency"
+
 	"github.com/CleargateFinance/cleargate-core/internal/shared/id"
 )
 
@@ -181,6 +183,87 @@ type Repository interface {
 	// UpdateMembershipRole changes an existing member's role, reporting
 	// whether they were a member.
 	UpdateMembershipRole(ctx context.Context, accountID id.AccountID, userID id.UserID, role PermissionRole) (bool, error)
+
+	// CreateAgent registers an agent against an account.
+	CreateAgent(ctx context.Context, accountID id.AccountID, name string, createdBy id.UserID) (Agent, error)
+
+	// Agent loads one registration, reporting ErrAgentNotFound when there is
+	// none.
+	Agent(ctx context.Context, agentID id.AgentID) (Agent, error)
+
+	// RevokeAgent retires an agent and every credential it holds, together.
+	//
+	// One transaction, because an agent marked revoked while its keys stay live
+	// is the exact state somebody containing an incident believes they have
+	// just eliminated.
+	RevokeAgent(ctx context.Context, agentID id.AgentID, at time.Time) error
+
+	// CreateAgentCredential stores a new key's handle and the digest of its
+	// secret.
+	CreateAgentCredential(ctx context.Context, agentID id.AgentID, name, prefix string, digest []byte, createdBy id.UserID) (AgentCredential, error)
+
+	// ActiveCredentialByPrefix resolves a non-secret handle to the identity
+	// behind it, and to the digest the presented secret must match.
+	//
+	// Every condition that decides whether this credential may authenticate is
+	// in the query: the credential is not revoked, and the agent it belongs to
+	// is still active. It reports ErrCredentialInvalid when any of them fails,
+	// so no caller can forget one.
+	ActiveCredentialByPrefix(ctx context.Context, prefix string) (AgentIdentity, []byte, error)
+
+	// AgentCredentials lists an agent's keys, secrets excluded.
+	AgentCredentials(ctx context.Context, agentID id.AgentID) ([]AgentCredential, error)
+
+	// RevokeAgentCredential retires one key, reporting whether there was one to
+	// retire. Scoped to the agent, so an identifier from elsewhere cannot be
+	// used to retire a key that is not this agent's.
+	RevokeAgentCredential(ctx context.Context, agentID id.AgentID, credentialID string, at time.Time) (bool, error)
+
+	// TouchAgentCredential records that a key was used. Advisory: failing to
+	// record a use must never fail a request that was otherwise authenticated.
+	TouchAgentCredential(ctx context.Context, credentialID string, at time.Time) error
+
+	// CreateAgentSession opens a run.
+	CreateAgentSession(ctx context.Context, agentID id.AgentID, taskRef, taskText string) (AgentSession, error)
+
+	// VerificationTier returns what a principal is currently entitled to do.
+	VerificationTier(ctx context.Context, principalID id.PrincipalID) (VerificationTier, error)
+
+	// SetVerificationTier records a new entitlement.
+	//
+	// A tier above basic is refused by the database unless kyc_status is
+	// verified, so a caller cannot grant entitlement it has not actually
+	// established.
+	SetVerificationTier(ctx context.Context, principalID id.PrincipalID, tier VerificationTier) error
+
+	// ScreenedAddress returns the verdict on one address for one principal,
+	// reporting ErrAddressNotScreened when there is none yet.
+	ScreenedAddress(ctx context.Context, principalID id.PrincipalID, chain, address string) (ScreenedAddress, error)
+
+	// RecordScreening stores a screening verdict, creating the record if this
+	// address has not been seen for this principal before.
+	RecordScreening(ctx context.Context, a ScreenedAddress) (ScreenedAddress, error)
+
+	// MarkAddressFunded stamps the first deposit from an address, which is what
+	// return-to-source withdrawal is checked against.
+	MarkAddressFunded(ctx context.Context, principalID id.PrincipalID, chain, address string, at time.Time) error
+
+	// FundingAddresses lists the addresses that have actually funded a
+	// principal, which is the full set an unverified account may withdraw to.
+	FundingAddresses(ctx context.Context, principalID id.PrincipalID) ([]ScreenedAddress, error)
+}
+
+// FundingHistory is what this module needs from the ledger to enforce a tier
+// cap: how much a principal has funded to date.
+//
+// A port rather than a query of our own, because the ledger owns that data and
+// reading its tables directly from this module's repository would couple two
+// modules through a shared database — the exact coupling module boundaries
+// exist to prevent. The ledger is also the right authority: it is the system of
+// record for money that actually moved, so a cap measured against anything else
+// is a cap measured against a number that can disagree with the books.
+type FundingHistory interface {
+	FundedToDate(ctx context.Context, principalID id.PrincipalID) (currency.Amount, error)
 }
 
 // SecretSealer encrypts the few secrets that must be recoverable rather than

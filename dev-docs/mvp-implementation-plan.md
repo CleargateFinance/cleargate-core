@@ -2,13 +2,25 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** An agent owner funds an account, connects an agent with spending rules, that agent pays for things through Cleargate, and the owner sees every payment and every block. (Whitepaper §21)
+**Goal:** An agent owner funds an account, connects an agent with spending rules, that agent pays for things through Cleargate, and the owner sees every payment and every block. (Whitepaper §22)
 
-**Architecture:** One Go monolith, feature-first modules with clean-architecture layers inside each. Gin at the edge, Postgres as the system of record, Redis as a disposable cache. Two binaries — `api` (hot path) and `worker` (everything slow) — built from the same modules.
+**Architecture:** One Go modular monolith. **Module-first** — vertical slices by feature — with clean-architecture **layers inside each module** (domain, service, repository, handler). The domain defines its repository *interfaces*; dependencies point inward; cross-module calls go through service interfaces only; concrete infrastructure is wired in `main` and nowhere else. Gin at the edge, Postgres as the system of record, Redis as a disposable cache. Two binaries — `api` (hot path) and `worker` (everything slow) — built from the same modules.
 
-**Tech stack:** Go 1.26 · Gin · pgx/v5 · shopspring/decimal · golang-migrate · testcontainers-go · go-webauthn · Ed25519 · Base/USDC.
+**Tech stack:** Go 1.26 · Gin · pgx/v5 · shopspring/decimal · golang-migrate · testcontainers-go · go-webauthn · Ed25519 · **Coinbase CDP** (custody, policies, gas, KYT) · **x402-foundation Go SDK** (scheme logic) · on-ramp (Coinbase or MoonPay) · Base/USDC.
 
-**Explicitly out of scope for MVP** (whitepaper §21): guarantees, holds, merchant onboarding, reputation scoring, intent check, behaviour check, agent-to-agent. The pipeline *shape* for those exists; the logic is stubbed.
+**What this MVP is, in one line:** the **buyer-side** product. It is deliberately useful with **zero merchants integrated** (whitepaper §3), because every check that matters runs before money leaves the account, and every payment settles `exact` to whatever endpoint the agent found.
+
+**Explicitly out of scope for MVP** (whitepaper §22): **guarantees and any loss absorption**, merchant onboarding, reputation scoring, intent check, behaviour check, agent-to-agent subcontracting (Case B). The pipeline *shape* for those exists; the logic is stubbed.
+
+**In scope even though it looks deferrable.** Three things are cheap now and unrecoverable later, so they ship with the MVP rather than after it:
+
+| Item | Why now |
+|---|---|
+| **Silent loss-observation ledger** (§7.2) | Records what *would* have been a covered loss, pays nobody. Free to collect, impossible to backfill, and it is the entire precondition for the guarantee decision |
+| **Scheme-selecting rail adapter** (§8.6) | `exact` is the only implementation that ships, but netting arrives as a second implementation rather than a rewrite of the money path |
+| **Two key roles per account, not per agent** (§8.8, §7.2) | The CDP account wallet and the delegated voucher-signing EOA both draw on the pooled balance, so both are scoped to the account. Get the account-level tables shaped correctly in Task 7.2 and Task 8.x before Phase 7 needs them — retrofitting a key role into a live settlement schema touches every channel row |
+
+**Holds: mechanism now, activation later.** The hold is a settlement mechanic with zero capital at risk (§7.2), and its ledger states belong in Phase 1 where the ledger is being designed anyway. It cannot *function* until there is an on-platform payee whose settlement timing we control, which arrives with netting in the second act. Build the states, leave them dormant.
 
 **Separate repositories:** TypeScript SDK, MCP server, console frontend. This repo owns the API and the contract in `api/openapi.yaml`.
 
@@ -585,7 +597,21 @@ RETURNING spent;
 - [ ] Test: inject an imbalance in a test DB, assert the job reports it.
 - [ ] Commit `feat(worker): ledger zero-sum and counter reconciliation`
 
-**Phase 1 done when:** an unbalanced entry cannot be committed by any path, and the reconciliation job proves the book balances.
+### Task 1.5: Hold states — the mechanism, dormant
+
+A hold commits funds without releasing them, verifies delivery, and returns the money automatically if delivery never comes (§7.2). It **risks no capital**, because the money being withheld is money already held — it is a settlement mechanic, not underwriting.
+
+- [ ] Model the states on the ledger entry: `committed`, `released`, `refunded`, `expired`. Expiry is a timestamp, and the sweep is a worker job.
+- [ ] A hold that expires posts a reversing entry to the buyer. Append-only means a refund is a new entry, never an update (§8.3).
+- [ ] **Tests:** `TestHold_CommitsWithoutReleasing`, `TestHold_ReleaseRequiresDeliveryConfirmation`, `TestHold_ExpiryRefundsBuyer`, `TestHold_DoubleReleaseIsRefused`
+
+> **Why build it now if nothing can use it yet**
+> A hold requires controlling settlement timing, which means an on-platform payee, which arrives with netting in the second act — so in this MVP it is dormant. But these are *ledger states*, and the one moment to get ledger states right is while the ledger is being designed. Adding a fourth state to a live money table is a migration over every historical row, run against real balances.
+
+> **Why holds are not a guarantee, stated in the plan as well as the whitepaper**
+> They will be confused, repeatedly, by anyone reading quickly. A hold withholds money we already have. A guarantee pays out money we do not. The first costs nothing and ships; the second requires a loss book and does not (§7.3). No code in this task may reference a reserve, a coverage limit, or absorbing a loss.
+
+**Phase 1 done when:** an unbalanced entry cannot be committed by any path, the reconciliation job proves the book balances, and a hold can be committed, released and expired without any path releasing money twice.
 
 ---
 
@@ -902,7 +928,7 @@ CREATE TABLE agent_credential (
 );
 
 -- Groups payments into one agent run. Required for the per-session features of
--- §6.4 and the causal chain of §10.2. Cannot be inferred retroactively.
+-- §6.4 and the causal chain of §12.2. Cannot be inferred retroactively.
 CREATE TABLE agent_session (
   id         uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   agent_id   uuid NOT NULL REFERENCES agent(id),
@@ -1013,7 +1039,7 @@ Endpoints (Phase 6 registers these on an *unauthenticated* group):
 > It decides where money lands, which makes it authority-creating in exactly the sense a mandate is — and the step-up window is backed by TOTP, which is phishable. An attacker who relays one code through a convincing proxy holds a valid step-up for fifteen minutes and can point the payouts at themselves. The rule that removes the inconsistency: **anything that creates authority or redirects money is signed, never merely stepped up.** TOTP step-up remains proportionate for funding and invites, which add money or people rather than redirecting either.
 
 > **Why the TOTP secret is encrypted and the password is hashed**
-> Verifying a TOTP code means recomputing HMAC over the shared secret, so the server must be able to read it back — hashing it would make verification impossible. That makes the encryption key a real secret with a real blast radius, which is the argument for keeping it in the same managed store as the §8.8 signing keys rather than in an environment variable.
+> Verifying a TOTP code means recomputing HMAC over the shared secret, so the server must be able to read it back — hashing it would make verification impossible. That makes the encryption key a real secret with a real blast radius, which is the argument for keeping it in the same managed store as the §8.10 signing keys rather than in an environment variable.
 
 > **Why `last_used_step` exists**
 > A TOTP code is valid for a whole 30-second window, so an attacker who observes one — over the shoulder, in a phishing proxy, in a log — can replay it until the window closes. Recording the highest step already accepted makes each code usable exactly once.
@@ -1049,6 +1075,8 @@ Endpoints (Phase 6 registers these on an *unauthenticated* group):
 
 Three separate things, in order, and each is useless without the next: the **registration** is an identity (`agent`), the **credential** lets it authenticate (`agent_credential`), and the **mandate** lets it spend (Phase 3). Connecting an agent grants nothing on its own.
 
+**`agent_credential` stays authentication-only — it is not, and never becomes, a money-movement key.** It answers "who is asking," nothing more, exactly as built. Two other key roles exist in the finished system — the CDP account wallet and a delegated voucher-signing EOA (§8.8) — and **both are scoped to the account, not the agent**, because they draw against the same pooled balance spend counters already meter (§9.3): two agents calling the same payee share one wallet and, once a channel opens, one delegated key. Neither belongs on this table. The wallet is provisioned in Phase 8 (Task 8.x); the delegated key is generated lazily on first channel promotion in Task 7.2, sealed with the same `SecretSealer` built for TOTP secrets in Task 2.4.
+
 - [ ] **Tests:** `TestIssueCredential_ReturnsSecretOnlyOnce`, `TestGeneratedSecret_Is256BitsOfCSPRNG`, `TestVerify_RejectsRevoked`, `TestVerify_RejectsCredentialOfRevokedAgent`, `TestVerify_ConstantTimeOnMismatch`, `TestAgentCredentialCannotOpenUserSession`, `TestConnectedAgentWithoutMandateCannotSpend`, `TestRotateCredentialWithoutDowntime`
 
 > **Why credentials are separate objects from the agent**
@@ -1072,7 +1100,29 @@ Three separate things, in order, and each is useless without the next: the **reg
 
 - [ ] Register the on-ramp customer at first funding attempt; store `(provider, external_id) → principal_id` in `onramp_customer`.
 - [ ] Mirror the provider's verification verdict onto `principal_identity.kyc_status` with its `kyc_reference`.
-- [ ] **Gate:** a `funding` journal entry may only post for a principal whose `kyc_status = 'verified'`. Set `retention_hold_until` on the first successful funding.
+- [ ] Set `retention_hold_until` on the first successful funding.
+
+**Verification is gated by spend tier, never by funding method** (§8.9). Tying KYC to *how* money arrives produces the wrong shape: a $20 card top-up would face more friction than $20,000 in stablecoin.
+
+| Tier | Requires | Unlocks |
+|---|---|---|
+| `basic` | Email | Low cap, trial-sized spending |
+| `verified` | Identity verification | Standard limits |
+| `business` | Legal entity plus beneficial ownership | High limits |
+
+- [ ] Store the tier on `principal_identity` and enforce **limits** against it, not against the funding route.
+- [ ] **Card and bank funding:** the on-ramp is the regulated party and sets an unavoidable verification floor even for small amounts. Inherit their tiers; do not attempt to undercut them.
+- [ ] **Direct stablecoin funding:** we set the terms. Allow a low-cap trial with **no formal KYC** but **mandatory on-chain address screening** via CDP KYT. Screening is not KYC and the schema must not conflate them — screening asks whether an address is associated with sanctioned or criminal activity, KYC asks who the person is.
+- [ ] **Withdrawals mirror this:** to a crypto wallet we control the path, screen the address, and keep friction low for small amounts; to a bank an off-ramp is involved and KYC is unavoidable.
+- [ ] **Return-to-source withdrawal is what makes the unverified tier safe to offer.** A `basic` principal may only withdraw to an address that actually funded them, so an unverified account cannot move value between two addresses — only return what it brought. Without this, funding anonymously and withdrawing elsewhere is a laundering route, and repeated across accounts it is textbook structuring. Verification lifts the restriction, which is the honest trade: tell us who you are and you may send money where you like.
+- [ ] The destination is screened at **every** tier. Verification was never a claim about where somebody sends money.
+- [ ] **Tests:** `TestUnverifiedPrincipalCanFundSmallAmountWithoutKyc`, `TestUnverifiedFundingStillRequiresScreening`, `TestSpendLimitFollowsTierNotFundingMethod`, `TestTierAboveBasicRequiresVerifiedKyc`, `TestUnverifiedWithdrawalMustReturnToSource`, `TestVerifiedPrincipalMayWithdrawAnywhere`, `TestWithdrawalScreensDestinationAtEveryTier`, `TestAddressComparisonIgnoresCase`, `TestFundingRefusedWhenHistoryNotWired`
+
+> **Why funded-to-date comes from the ledger through a port, not from a column here**
+> A running total kept alongside the entries it summarises is a total that can disagree with them. The ledger is the system of record for money that moved, so the cap is measured against the ledger — reached through a `FundingHistory` port rather than by reading its tables, because a module reading another module's schema is the shared-database coupling that module boundaries exist to prevent. The gate **refuses** when that port is unwired rather than assuming zero: a missing dependency must not silently become an unbounded cap.
+
+> **Why screening rather than verification on the low-friction path**
+> A frictionless trial is the whole reason direct crypto funding exists as a route, and requiring identity documents for a $20 experiment kills it. AML responsibility remains ours on that path regardless of how the money arrived — **screening is precisely what makes low friction non-reckless rather than merely non-compliant.** Dropping it in the name of onboarding speed is the version of this decision that ends in an enforcement action.
 
 > **Why mirror the on-ramp's verdict rather than run our own KYC**
 > The provider must KYC the buyer to sell them stablecoin at all, so running a second verification duplicates the friction and doubles the sensitive documents we hold. Mirroring keeps the verdict authoritative where the obligation sits. The cost is that a user cannot be verified before their first funding attempt, and coverage is the provider's; `kyc_provider` and `kyc_reference` exist so that adding an owned provider later is a new row, not a schema change.
@@ -1460,7 +1510,7 @@ func Decide(req Request, s Snapshot) Decision {
 ```
 
 > **Why stub the three unbuilt checks rather than omit them**
-> §21 scopes MVP to the mandate check. But §6's pipeline is the product's shape. Leaving the call sites in place — each returning `Pass` and recording a `decision_check` row — means Phase 2 of the detection roadmap (§6.5) is a function body, and the decision record already has the right structure for the day it is filled in.
+> §22 scopes MVP to the mandate check. But §6's pipeline is the product's shape. Leaving the call sites in place — each returning `Pass` and recording a `decision_check` row — means Phase 2 of the detection roadmap (§6.5) is a function body, and the decision record already has the right structure for the day it is filled in.
 
 - [ ] **Step 4: Verify** — 9 subtests pass.
 - [ ] **Step 5: Commit** `feat(authz): pure mandate-check decision engine`
@@ -1487,7 +1537,7 @@ func Decide(req Request, s Snapshot) Decision {
 Schema per [data-architecture.md](data-architecture.md) §5.3.
 
 > **Why declines get a full `payment` row**
-> §10.1: *"What exists only inside Cleargate Finance are the declines and holds — and those are the proof of value."* If blocked attempts go to a log line or a side table, the console's headline report ("blocked 14 payments, $3,200 at risk") becomes a log-scraping exercise instead of a `SELECT`. Model them as first-class payments with a non-approving outcome.
+> §12.1: *"What exists only inside Cleargate Finance are the declines and holds — and those are the proof of value."* If blocked attempts go to a log line or a side table, the console's headline report ("blocked 14 payments, $3,200 at risk") becomes a log-scraping exercise instead of a `SELECT`. Model them as first-class payments with a non-approving outcome.
 
 ### Task 5.2: Idempotency
 
@@ -1612,6 +1662,35 @@ func (s *Service) Authorize(ctx context.Context, req Request) (*Result, error) {
 - [ ] **Tests:** `TestRecord_LinksToPreviousHash`, `TestVerifyChain_DetectsTampering`, `TestRecord_SignatureVerifies`
 - [ ] Commit `feat(decisionlog): hash-chained signed decision records`
 
+### Task 5.5: Counterparty records and observed directory listings
+
+Counterparty is its **own entity, never a column on an account** (§4.1). It may be an external endpoint or another account, and reputation attaches to the counterparty rather than to whoever it turns out to belong to — which is what lets a record accumulate before anyone signs up and be *linked* to an account later without losing its history.
+
+- [ ] Every payment resolves or creates a counterparty record, keyed by endpoint identity.
+- [ ] Two listing tiers (§11): `observed` — created by routed traffic, limited display — and `registered` — claimed by a verified payee, full statistics. An observed listing carries a claim hook.
+- [ ] Record **payment observed** and **delivery observed** as two distinct facts. Never collapse them into one status: we always know the first, and know the second only where delivery was confirmed.
+- [ ] Linking an observed record to an account later must preserve its accumulated history.
+- [ ] **Tests:** `TestCounterpartyCreatedOnFirstPayment`, `TestObservedListingShowsNoDeliveryStatsWithoutConfirmation`, `TestClaimingListingPreservesHistory`, `TestPaymentObservedIsNotDeliveryObserved`
+
+> **Why the directory is built from traffic rather than from signups**
+> This is the merchant conversion mechanism (§15). A payee is approached with its own demonstrated demand — *agents already paid you $X through Cleargate* — and an observed listing is what that pitch points at. Building the registry only from registered merchants means having nothing to show them, which is the cold-start problem the buyer-first sequence exists to avoid.
+
+> **Why read access is open rather than gated to customers** (§11.1)
+> The temptation is to lock the directory as a signup incentive. That trades a compounding network effect for a modest conversion bump: a widely-read registry pulls merchants (reach) and agents (inbound) and makes *Cleargate-verified* a standard that carries beyond our own customers. What is gated is **protection** — mandate checks, holds, netted settlement, key safety — not **information**. Write and claim access is gated to verified payees. The read surface needs rate limiting against bulk exfiltration, not authentication.
+
+### Task 5.6: Silent loss-observation ledger
+
+- [ ] Record every event that **would** have been a covered loss had a guarantee been in force: non-delivery, dispute, and approvals that turned out to be wrong.
+- [ ] Capture full context per event — payee, category, amount, reason, and which check let it through.
+- [ ] **Pay out nothing. Show the customer nothing.** This table has no user-facing surface and no settlement consequence in the MVP.
+- [ ] **Tests:** `TestNonDeliveryWritesLossObservation`, `TestLossObservationNeverAffectsBalance`, `TestLossObservationCapturesFailingCheck`
+
+> **Why measure something we have decided not to sell**
+> Deferring the guarantee *product* does not require deferring the *measurement*, and the two are constantly conflated. Collection is nearly free; the data is unrecoverable once the traffic has passed. Without it, the decision to offer a guarantee in 2028 has to be made on no evidence, which is underwriting blind — the specific failure mode §7.3 exists to prevent. A competitor starting two years later can copy the rules engine in a quarter and cannot copy two years of observed delivery failure.
+
+> **Why it must never surface to a customer**
+> A number that looks like coverage will be read as coverage. Nothing in the console, the API or an export may expose this table, because the first customer who sees *"$4,200 of losses observed"* will reasonably ask which of them we are paying.
+
 ---
 
 # Phase 6 — HTTP surface
@@ -1695,40 +1774,167 @@ accountMod.RegisterControlVetoRoute(guardianAPI)
 
 # Phase 7 — Settlement
 
-**Outcome:** ledger positions become real USDC movement on Base.
+**Outcome:** ledger positions become real USDC movement on Base, through the x402 scheme appropriate to each payee.
 
-### Task 7.1: Rail adapter interface
+**Netting is x402's, not ours.** Aggregation is the official **`batch-settlement` scheme** — escrow deposit, off-chain cumulative vouchers, one on-chain redemption — and the implementation comes from the **x402-foundation Go SDK**. Do not write a netting engine. A proprietary one would be a worse version of a standard our merchants' other counterparties already speak, and it would have to be maintained forever.
+
+**The two schemes are not a global mode — they are a property of one (account, payee) relationship, decided independently for every payee an account has ever dealt with.** An account can be paying `exact` to forty payees it bought from once and running a `batch-settlement` channel with three it calls constantly, in the same hour, with zero coordination between them. Nothing about this is visible to the agent, and nothing about it changes what the authorization engine decided — by the time settlement is involved, the ledger has already posted the payment as final (Task 5.1). Scheme selection only decides *how the money reaches the chain*, never *whether* it moves.
+
+**Both schemes are fast for the same reason: at payment time, neither touches the chain.** An `exact` payment is a signed transfer authorization (e.g. `transferWithAuthorization`) — that signature is the proof of payment the payee's endpoint accepts and delivers against. A `batch-settlement` payment is a signed voucher asserting a new cumulative total. Both are local signing operations, sub-millisecond, nothing broadcast yet. What differs is only *when* something eventually reaches the chain and *how often*: an `exact` authorization is submitted soon after, roughly one-to-one; a channel's vouchers are submitted only as the single latest one, periodically, no matter how many were signed in between. This is what makes the split compatible with the sub-100ms authorization budget in §6.6 — that budget was never a promise about block confirmation, and settlement of either kind is architected to never sit in the request path.
+
+### Task 7.1: Settlement profile and scheme selection
 
 ```go
-// internal/modules/settlement/ports.go
-type Rail interface {
-	Name() string
-	Transfer(ctx context.Context, req TransferRequest) (TransferReceipt, error)
-	Status(ctx context.Context, ref string) (TransferStatus, error)
+// internal/modules/settlement/domain.go
+type Scheme string
+
+const (
+	SchemeExact Scheme = "exact"            // one-off, and every off-platform payee
+	SchemeUpTo  Scheme = "upto"              // metered or variable cost, settle the actual
+	SchemeBatch Scheme = "batch-settlement"  // netted, high-frequency, one payee
+)
+
+type ProfileState string
+
+const (
+	StateExact   ProfileState = "exact"    // no channel, or none yet justified
+	StateOpening ProfileState = "opening"  // escrow tx submitted, not yet confirmed
+	StateBatch   ProfileState = "batch"    // channel live
+	StateClosing ProfileState = "closing"  // redemption/close submitted, not yet confirmed
+)
+
+// SettlementProfile is keyed by (account, payee) — never by agent. Spend
+// counters already pool multiple agents against one account balance (§9.3);
+// a channel is escrow drawn from that same pool, so two agents calling the
+// same payee share one channel rather than each paying to open their own.
+type SettlementProfile struct {
+	AccountID id.AccountID
+	PayeeID   id.CounterpartyID
+	State     ProfileState
+	ChannelID *string
 }
 ```
 
-> **Why an interface with one implementation**
-> §8.1: *"Rails are adapters, not dependencies. The authorization engine never knows what a chain is."* Writing the interface now costs nothing and forces the Base-specific concepts (gas, confirmations, reorgs) to stay behind it. §12.1's roadmap adds ACP, AP2 and card rails; each should be a new file, not a refactor.
+- [ ] `Realize(ctx, accountID, payeeID, amount) error` — the entire selection algorithm is one branch:
 
-### Task 7.2: Batching worker
+```go
+func (s *Service) Realize(ctx context.Context, p RealizeParams) error {
+	profile, err := s.repo.SettlementProfile(ctx, p.AccountID, p.PayeeID)
+	if err != nil {
+		return err
+	}
 
-- [ ] Aggregate ledger positions per payee per period; one on-chain transfer per net position (§8.6 — 800 payments become one settlement).
-- [ ] Idempotent by `(payee, period)`; a retried batch must not double-pay.
-- [ ] **Tests:** `TestBatch_NetsMultiplePaymentsToOneTransfer`, `TestBatch_RetryDoesNotDoublePay`, `TestBatch_RecordsFailureWithoutLosingPosition`
+	if profile.State == StateBatch && profile.Channel.RemainingCapacity() >= p.Amount {
+		return s.signVoucher(ctx, profile.Channel, p) // local signature, no chain call
+	}
 
-> **Why the worker and not inline settlement**
-> §8.1's single early exception. Chain RPC is slow and unreliable; it must never be able to make an authorization time out. The queue is the isolation boundary.
+	// Covers StateExact, StateOpening, StateClosing, an unknown payee, and a
+	// batch channel that is temporarily out of room. One path, not four —
+	// the caller never needs to know which reason applied, and a payment
+	// never blocks waiting for money it could move the boring way instead.
+	if _, err := s.rail.Transfer(ctx, TransferRequest{Scheme: SchemeExact, ...}); err != nil {
+		return err
+	}
+	s.evaluatePromotion(ctx, p.AccountID, p.PayeeID) // async, never delays this payment
+	return nil
+}
+```
 
-- [ ] Commit `feat(settlement): netting batcher and Base USDC rail adapter`
+- [ ] Off-platform payees never enter `StateOpening` — they have no relationship with Cleargate to redeem a voucher against, so `SettlementProfile` for them is permanently `exact`, by construction rather than by threshold.
+- [ ] **Promotion policy** (background, evaluated after settling, never inline): promote when `count(payments to this payee, trailing 7 days) >= 10 AND avg(amount) <= $5`. Both numbers are configuration, not constants — the amount ceiling matters as much as the count, since a payee getting paid rarely but for large amounts wants `exact`'s immediacy, not a netting delay.
+- [ ] **Tests:** `TestSchemeSelection_DefaultsToExact`, `TestSchemeSelection_UsesOpenChannelWhenCapacityAllows`, `TestSchemeSelection_FallsBackToExactWhenChannelOpening`, `TestSchemeSelection_FallsBackToExactWhenCapacityExhausted`, `TestSchemeSelection_OffPlatformPayeeNeverPromotes`, `TestPromotion_RequiresBothVolumeAndAmountCeiling`
+
+> **Why an interface with one implementation ships first**
+> §8.1: *"Rails are adapters, not dependencies. The authorization engine never knows what a chain is."* Only `exact` is implemented in this task; `Supports(scheme)` returns false for the others and selection degrades to `exact`. §14.1's roadmap adds ACP, AP2 and card rails; each should be a new file, not a refactor of this one.
+
+### Task 7.2: Channel and voucher schema, and the delegated signing key
+
+```sql
+CREATE TABLE settlement_profile (
+  account_id  uuid NOT NULL REFERENCES account(id),
+  payee_id    uuid NOT NULL,
+  state       text NOT NULL CHECK (state IN ('exact','opening','batch','closing')),
+  channel_id  uuid REFERENCES settlement_channel(id),
+  PRIMARY KEY (account_id, payee_id)
+);
+
+CREATE TABLE settlement_channel (
+  id                    uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  account_id            uuid NOT NULL REFERENCES account(id),
+  payee_id              uuid NOT NULL,
+  escrow_deposited      numeric NOT NULL,             -- ever deposited, on-chain
+  latest_voucher_amount numeric NOT NULL DEFAULT 0,    -- our own running counter
+  on_chain_claimed      numeric NOT NULL DEFAULT 0,    -- last amount actually redeemed
+  status                text NOT NULL CHECK (status IN ('open','closing','closed')),
+  opened_at             timestamptz NOT NULL DEFAULT now()
+);
+
+-- Append-only, same discipline as `posting` (§8.3) — a voucher is evidence,
+-- never updated. `latest_voucher_amount` above is a live pointer; this table
+-- is the full audit trail behind it.
+CREATE TABLE settlement_voucher (
+  id                 uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  channel_id         uuid NOT NULL REFERENCES settlement_channel(id),
+  payment_id         uuid NOT NULL,
+  cumulative_amount  numeric NOT NULL,
+  signature          bytea NOT NULL,
+  signed_at          timestamptz NOT NULL DEFAULT now()
+);
+```
+
+- [ ] `signVoucher` reads `latest_voucher_amount` **under the same row-level locking discipline §8.5 already requires for ledger balances** — two payments to the same channel arriving concurrently must not both read the same stale total and each sign a voucher claiming to be the latest.
+- [ ] **The delegated signing key is scoped to the account, one per account, generated lazily** on first promotion — not one per agent. An agent's own `agent_credential` (Task 2.6, already built) authenticates *who is asking*; it has never been a signing key for money movement, and this does not change that. The delegated key answers a different question — whose pooled balance this is — so it lives where the pool lives.
+- [ ] Store the key sealed with the **same `SecretSealer` built for TOTP secrets** (Task 2.4) — `context = "settlement:key:<account_id>"`. This is a secret that must be recoverable to sign with, not merely compared, which is exactly the property that pattern exists for. No new secret-handling infrastructure needed.
+- [ ] **Tests:** `TestSignVoucher_IncrementsUnderConcurrentPayments`, `TestSignVoucher_RejectsWhenCapacityExceeded`, `TestDelegatedKey_SharedAcrossAgentsOnOneAccount`, `TestDelegatedKey_SealedAtRest`, `TestVoucherIsAppendOnly`
+
+> **Why the key is not per agent**
+> Revisits and corrects an earlier draft of this task. Channels are keyed by `(account, payee)` because escrow is drawn from the pooled account balance (§9.3), not from an agent's own funds — agents never hold funds, only spend authority against the pool. Two agents both calling the same payee should share one channel: opening a second one because a different agent happened to make the call would double the escrow lockup and the gas cost of opening, for a distinction the money doesn't actually have.
+
+### Task 7.3: Channel lifecycle — opening, redemption, top-up
+
+Three background workers, none in the payment hot path, each solving a distinct clock:
+
+| Worker | Cadence | Job |
+|---|---|---|
+| Opener | On promotion | Submit the escrow-open tx, size the initial deposit to ~14 days of the payee's observed weekly rate, flip `StateOpening` → `StateBatch` on confirmation |
+| Redemption | Hourly | For each `open` channel, if `latest_voucher_amount > on_chain_claimed`, submit the latest voucher — one transaction, whatever the gap is |
+| Top-up | Daily | If remaining capacity (`escrow_deposited − latest_voucher_amount`) drops below ~3 days of trailing velocity, deposit back up to the ~14-day target |
+
+- [ ] **Redemption needs no summing logic.** A voucher's amount is already the running total since the channel opened, so "how much is owed since last redemption" is `new_voucher_amount − on_chain_claimed`, computed by the contract during redemption, never by us. This also makes redemption naturally idempotent: if the worker crashes and reruns, it compares again and either resubmits the same voucher harmlessly or finds nothing new. A missed cycle needs no backlog replay — the very next run catches everything in the one number that matters, the latest total.
+- [ ] **Redemption cadence is set by our own counterparty exposure, not by payee payout speed.** An unredeemed voucher is a claim not yet converted to actual custody; if a channel contract lets a payer reclaim unclaimed escrow after some timeout, redemption must run comfortably inside that window. This is independent of — and normally faster than — whatever cadence the payee is actually paid out on (§8.6's delayed-settlement tiers), because those solve a different problem.
+- [ ] **Top-up is bounded by the account's real liquid balance**, the same `min(agent remaining, account balance)` reasoning that already governs ordinary spend (§9.3) — escrowed funds are a third bucket alongside liquid and spent, and a channel does not get to over-draw an account any more than an agent does. If liquid balance can't cover the target top-up, size down to what's available rather than failing; if a channel genuinely runs dry before top-up catches up, `Realize` already falls back to `exact` for that one payment (Task 7.1) and flags the channel urgent.
+- [ ] Redemption feeds a **treasury reconciliation**, not the payee directly. The escrow's beneficiary is Cleargate's own settlement address, exactly as an `exact` on-platform payment's beneficiary is — this is what makes a hold possible for an on-platform payee under either scheme (§7.2): Cleargate has custody the instant money lands, and release-to-payee is a separate, later, delivery-gated step regardless of which scheme got the money there. Off-platform `exact` payments specify the payee's own wallet as beneficiary, which is exactly why Cleargate never has custody to hold there.
+- [ ] **Tests:** `TestOpener_SizesInitialDepositFromObservedVelocity`, `TestRedemption_ResubmitsOnlyWhenVoucherAdvanced`, `TestRedemption_SurvivesAMissedCycleWithoutBacklog`, `TestTopUp_CappedByLiquidBalance`, `TestTopUp_DegradesGracefullyWhenUnderfunded`
+
+> **Why redemption doesn't close the channel**
+> "800 payments become one settlement" (§8.6) describes steady state, not a reset. Redeeming the latest voucher and leaving the channel open is the normal cycle, repeating every period for as long as the relationship stays active; closing is a separate, rare event — payee opt-out, prolonged inactivity, or a deliberate rebalance — and gets its own task if Phase 7's scope grows to need one.
+
+### Task 7.4: Reconciliation, and what is *not* evidence
+
+- [ ] Three artifacts, three jobs: the **ledger** holds per-payment truth, **vouchers** are per-payment audit evidence, the **on-chain batch** proves net settlement and nothing finer.
+- [ ] Solvency is proved by an **hourly invariant — payables never exceed holdings** — not by publishing per-payment hashes.
+- [ ] **Tests:** `TestSolvencyInvariantHoldsAfterBatch`, `TestIndividualPaymentHasNoChainReference`
+
+> **Never reconcile against the chain**
+> In a batch settlement the chain records the *facilitator or executor* firing a transaction — not the payer, not the individual payments, not the purpose. Any code, dashboard or support process that treats a block explorer as the audit trail is reconciling against the wrong object, and any promise to produce on-chain evidence of one payment cannot be met, because that evidence does not exist. An individual payment in the netted flow has **no transaction hash** (§12.2); the console must not have a column for one.
+
+> **Running batch-settlement makes us the facilitator**
+> That concentrates authority across every open channel at once — a compromised facilitator can misauthorize or misdirect broadly, not per payment. The delegated signing key from Task 7.2 is a production secret of the same class as the settlement wallet key.
+
+- [ ] Commit `feat(settlement): scheme-selecting rail adapter and Base USDC exact settlement`
 
 ---
 
 # Phase 8 — Funding and hardening
 
-- [ ] On-ramp webhook (MoonPay/Transak) → `funding` journal entry. Verify signatures; treat webhooks as untrusted input and idempotent by provider reference. Resolve the payer through `onramp_customer` and post only when Task 2.7's KYC gate passes — a webhook naming a customer we cannot map to a principal is an alert, never a credit.
-- [ ] Key management via Turnkey/Privy (§8.8 — no private keys in-house).
-- [ ] Alerting: ledger imbalance, spend spikes, elevated decline rate, settlement backlog (§8.8).
+- [ ] On-ramp webhook (Coinbase on-ramp or MoonPay) → `funding` journal entry. Keep both behind one abstraction so either works. Verify signatures; treat webhooks as untrusted input and idempotent by provider reference. Resolve the payer through `onramp_customer` and post only when Task 2.7's KYC gate passes — a webhook naming a customer we cannot map to a principal is an alert, never a credit.
+- [ ] **Wallet provider: Coinbase CDP behind a `WalletProvider` interface** (§8.8 — no private keys in-house). CDP has no Go SDK, so the adapter is either direct REST from Go for the handful of endpoints used, or a thin TypeScript sidecar behind the same interface. **That choice is sealed inside the adapter** and must not leak into any module that authorizes payments.
+- [ ] **Voucher signing runs on our own delegated EOA, not through CDP.** CDP prices wallet operations at $0.005 each (first 5,000/month free). At 8,000 vouchers a day that is $40 of signing against roughly $32 of payments, which inverts the economics of the netted flow entirely. The delegated key — x402's `payerAuthorizer` — signs server-side, outside the meter, where the marginal cost is one ECDSA operation. **This is a cost boundary, not a throughput optimisation.**
+- [ ] CDP is used for what it is priced for: account-wallet custody, funding operations, on-chain settlement and redemption, and Spend Permission / Policy enforcement.
+- [ ] **Mandate enforcement partly below our own backend.** Express per-agent limits as CDP **Spend Permissions** (allowance per spender per period) and **Policies** (value caps, address allow/blocklists, USD limits, network and function restrictions). Our engine enforces what CDP cannot express — intent, behaviour, category, provenance. Where a CDP policy covers a rule, a compromise of our servers still cannot exceed it.
+- [ ] **Gas:** CDP sponsorship covers on-chain agent actions and `exact` payments — no separate paymaster in the common path. Keep the ops requirement regardless: **monitor and auto-refill the settlement wallet's native gas balance.** A settlement failing on an empty own-wallet is a preventable outage.
+- [ ] **KYT:** CDP's built-in address screening on deposits and payouts.
+- [ ] Alerting: ledger imbalance, spend spikes, elevated decline rate, settlement backlog (§8.10).
 - [ ] Load test to the 100ms p99 budget under realistic concurrency.
 - [ ] Runbooks in `docs/runbooks/`: ledger imbalance, stuck settlement, credential compromise.
 - [ ] Structured logging with a trace ID spanning gateway → authorize → ledger → settlement (§8.9).
@@ -1746,7 +1952,7 @@ Demonstrable end to end:
 5. Settlement batches the day's payments into one on-chain USDC transfer.
 6. The hourly reconciliation job confirms the ledger sums to zero.
 
-That is whitepaper §21 exactly, and it is enough to put design partners on live transactions.
+That is whitepaper §22 exactly, and it is enough to put design partners on live transactions.
 
 ---
 
@@ -1754,16 +1960,21 @@ That is whitepaper §21 exactly, and it is enough to put design partners on live
 
 | Risk | Why it bites | Mitigation |
 |---|---|---|
-| Custody structure decided late | §17 names this: *"Discovery at month 18 means a rewrite plus a year of licensing"* | Resolve §19's open question **before Phase 1**. It determines who holds keys and therefore what settlement can do. |
-| Feature snapshot skipped as "not MVP" | The data is unrecoverable; §18.3 says it is architectural | Task 4.2 is not optional. It is ~50 lines. |
+| Custody model decided late | §18 names this: *"Discovery at month 18 means a rewrite plus a year of licensing"* | Resolve §20's open question **before Phase 1**. It is now narrower — *which CDP control model is primary* — but no smaller: it sets KYC, gas, licensing and schema. |
+| Feature snapshot skipped as "not MVP" | The data is unrecoverable; §19.3 says it is architectural | Task 4.2 is not optional. It is ~50 lines. |
 | Ledger built after the API | A silent money bug found in month 4 costs more than the whole MVP | Phase ordering above |
 | `float64` slipping in via a JSON DTO | `encoding/json` decodes numbers to `float64` by default | Decode amounts as `json.Number`/string; add a lint rule banning `float64` in `internal/modules/**` |
 | Mandate signature unverifiable later | Re-marshalling produces different bytes | Task 3.1 — sign and store opaque bytes, never re-marshal |
 | Transactional email treated as a detail | Phase 2 cannot ship without it — verification, reset and invites are all email — and deliverability (SPF/DKIM/DMARC, a warmed domain) takes days of calendar time, not hours of work | Pick the provider and start domain warm-up during Phase 0, behind a `Mailer` port so tests never send |
-| MFA encryption key stored like config | `user_mfa_factor.secret_enc` is recoverable by design, so the key that protects it is as sensitive as a signing key | Keep it in the §8.8 managed store from the first commit, not in an env var |
+| MFA encryption key stored like config | `user_mfa_factor.secret_enc` is recoverable by design, so the key that protects it is as sensitive as a signing key | Keep it in the §8.10 managed store from the first commit, not in an env var |
 | Break-glass left undesigned | Three cases have no in-app path by design: owner and guardian compromised together, an owner who is gone (only the owner may propose `transfer_owner`), and a user who lost every WebAuthn credential. A rushed reset path is a backdoor around every control above it | Write the identity re-verification runbook **before the first customer account has a guardian** |
 | Notifications treated as product polish | Task 2.8's delays are only a control if somebody is told; unnoticed, a timelock is just latency. This is also the only detection channel an attacker with a session cookie probably does not hold | Task 2.10 ships with Phase 2, not after; bounces surface as account health |
 | Console repo not ready for WebAuthn | The `navigator.credentials` calls live in a separate repository, and until they exist **no mandate can be signed at all** — this is a hard cross-repo dependency on the critical path, not a UI polish item | Agree the challenge/assertion contract with the console repo during Phase 2, not Phase 6; stub the browser side in integration tests |
+| Voucher signing routed through a metered API | At $0.005 per operation the netted flow costs more to sign than it moves (§8.8). Discovered after the schema is live, it is a key-role migration across every channel row | Delegated EOA outside the meter, scoped to the account (Task 7.2). **Confirm the billing boundary with CDP before Phase 7** |
+| Netting reimplemented instead of adopted | A proprietary netting engine is a worse version of x402's `batch-settlement`, maintained forever, and incompatible with what our merchants' other counterparties speak | Use the x402-foundation Go SDK. The rail adapter selects a scheme; it does not invent one |
+| On-chain data treated as the audit trail | The chain shows the *facilitator* firing, not the payer or the individual payments (§8.6). A support process or dashboard built on block explorers reconciles against the wrong object, and a promise to produce per-payment on-chain evidence cannot be met | Ledger plus vouchers plus batch hashes are the record. Hourly solvency invariant, not per-payment hashes. No tx-hash column on an individual payment |
+| Loss observation deferred as "not MVP" | It is free to collect and unrecoverable afterwards, and without it the guarantee decision is made on no evidence | Task 5.6 ships with Phase 5. It pays nobody and shows nobody |
+| Directory gated behind signup | Trades a compounding network effect for a modest conversion bump, and starves the asset that becomes the reputation bureau (§11.1) | Gate *protection*, not *information*. Read is open and rate-limited; write and claim are gated to verified payees |
 | Enrolment friction blocks onboarding | Two credentials before a design partner can sign their first mandate is real setup cost, discovered at the worst moment | Walk partners through enrolment during onboarding, not at first mandate; make the second-credential prompt part of signup |
 
 ---
@@ -1779,8 +1990,36 @@ That is whitepaper §21 exactly, and it is enough to put design partners on live
 | 4 Authz | 2–3 |
 | 5 Payment orchestration | 5–6 |
 | 6 HTTP surface | 4–5 |
-| 7 Settlement | 5–7 |
+| 7 Settlement | 6–8 |
 | 8 Funding & hardening | 5–7 |
-| **Total** | **≈ 47–61 days (9–12 weeks)** |
+| **Total** | **≈ 50–66 days (10–13 weeks)** |
 
-Consistent with §16's Phase 0 window of months 0–3, leaving room for the SDK, MCP server and console in their own repositories.
+The increase over the previous estimate is the scheme-selecting adapter and channel schema in Phase 7, plus hold states in Phase 1 and the counterparty/loss-observation tasks in Phase 5. All four are seams and schema rather than features — they are cheap now precisely because they are expensive to retrofit.
+
+Consistent with §17's Phase 0 window of months 0–3, leaving room for the SDK, MCP server and console in their own repositories.
+
+
+---
+
+## Revision notes
+
+**29 September 2026.** Reworked Phase 7 around the actual scheme-switching mechanism, and corrected a scoping mistake it exposed.
+
+- **Tasks 7.1–7.4 rewritten.** Scheme selection is now one function (`Realize`), keyed by `(account, payee)`, with a single fallback branch covering every reason to use `exact` instead of a merged four-way conditional. Added the concrete `settlement_profile` / `settlement_channel` / `settlement_voucher` schema, the promotion policy (10 payments / 7 days, avg ≤ $5, both configurable), and three named background workers — opener, redemption, top-up — each solving a distinct clock (opening, treasury reconciliation, escrow runway) that were previously conflated into one "batching worker."
+- **Redemption no longer sums positions.** Cumulative vouchers already carry the running total, so the worker compares `latest_voucher_amount` to `on_chain_claimed` and resubmits only when ahead — naturally idempotent, no backlog to replay after a missed cycle. This replaces the earlier "aggregate ledger positions per period" framing, which was the wrong mental model for this voucher design.
+- **Corrected: the delegated signing key is account-scoped, not agent-scoped.** Removed the "two key roles per agent" text from Task 2.6 — `agent_credential` stays authentication-only, exactly as built. Both the CDP account wallet and the delegated voucher EOA belong with the account-level wallet work (Task 8.x) and the channel schema (Task 7.2), because escrow draws on the same pooled balance spend counters already meter (§9.3), and two agents calling the same payee must share one channel rather than each paying to open their own.
+- **Clarified where holds attach**: the escrow/authorization beneficiary for an on-platform payee is Cleargate's own settlement address under either scheme, which is what makes a hold possible regardless of exact vs. batch — not a property of the scheme itself.
+
+**28 September 2026.** Folded in the whitepaper v1.2 refinements. Build order is unchanged in spirit — ledger first, API sixth — and the changes are to scope, schema and sequencing rather than to the shape of the plan.
+
+- **Framed the MVP explicitly as the buyer-side product**, useful with zero merchants integrated. Every payment settles `exact`; netting, holds and merchant onboarding are the second act.
+- **Guarantees removed from scope entirely**; holds reframed as a settlement mechanic with zero capital at risk. Added **Task 1.5** (hold states, built now and dormant until an on-platform payee exists) and **Task 5.6** (silent loss-observation ledger — records what a guarantee would have cost, pays nobody, surfaces nowhere).
+- **Phase 7 rewritten around x402 schemes.** Netting is the official `batch-settlement` scheme from the x402-foundation Go SDK, not a Cleargate invention. Added scheme selection per (account, payee) with promotion from `exact` (Task 7.1), channel and voucher schema (Task 7.2), and reconciliation with the warning that on-chain data shows the facilitator rather than the payer (Task 7.4).
+- **Wallet provider is Coinbase CDP** behind a `WalletProvider` interface, replacing Turnkey/Privy. No Go SDK exists, so the adapter is REST-from-Go or a TypeScript sidecar, sealed inside the adapter. Mandates map onto CDP Spend Permissions and Policies; the engine enforces intent, behaviour, category and provenance.
+- **Two key roles, both scoped to the account** — CDP account wallet plus a delegated voucher-signing EOA — because CDP's $0.005 per-operation pricing makes metered voucher signing cost more than the payments it settles (§8.8). Originally drafted onto Task 2.6's `agent_credential`; corrected to live with the account-level wallet work (Task 8.x) and the channel schema (Task 7.2) instead, since the escrow and signing key are drawn from the pooled account balance spend counters already meter, not from any one agent.
+- **Task 2.7 reworked to tier KYC by spend limit rather than funding method**, with on-chain address screening distinguished from identity verification.
+- **Task 5.5 added:** counterparty records and observed directory listings, with read access deliberately open and protection rather than information gated.
+- **Architecture note made explicit:** module-first with layers inside each module, domain owns repository interfaces, cross-module calls through service interfaces, concrete infrastructure wired only in `main`.
+- **Cross-references updated** for the whitepaper's renumbering (sections 11–21 became 12–22; platform security moved from §8.8 to §8.10, and §8.8 is now wallets and custody).
+
+**Open decisions blocking work:** which CDP control model is primary (gates Phase 1); whether CDP implements `batch-settlement`; whether off-chain voucher signing is billable (both gate Phase 7).

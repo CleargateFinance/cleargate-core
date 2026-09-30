@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/CleargateFinance/cleargate-core/internal/infrastructure/database"
+	"github.com/CleargateFinance/cleargate-core/internal/shared/apperr"
 	"github.com/CleargateFinance/cleargate-core/internal/shared/id"
 )
 
@@ -1034,6 +1035,255 @@ func (r *postgresRepo) UpdateMembershipRole(
 	return tag.RowsAffected() == 1, nil
 }
 
+// CreateAgent registers an agent against an account.
+func (r *postgresRepo) CreateAgent(
+	ctx context.Context,
+	accountID id.AccountID,
+	name string,
+	createdBy id.UserID,
+) (Agent, error) {
+	const q = `
+		INSERT INTO agent (account_id, name, created_by)
+		VALUES ($1, $2, $3)
+		RETURNING id, status, created_at`
+
+	agent := Agent{AccountID: accountID, Name: name, CreatedBy: createdBy}
+
+	var agentID string
+	var status string
+	if err := r.db.QueryRow(ctx, q, string(accountID), name, string(createdBy)).
+		Scan(&agentID, &status, &agent.CreatedAt); err != nil {
+		return Agent{}, fmt.Errorf("account: create agent: %w", err)
+	}
+
+	agent.ID = id.AgentID(agentID)
+	agent.Status = AgentStatus(status)
+	return agent, nil
+}
+
+// Agent loads one registration.
+func (r *postgresRepo) Agent(ctx context.Context, agentID id.AgentID) (Agent, error) {
+	const q = `
+		SELECT id, account_id, name, status, created_by, created_at, revoked_at
+		FROM agent
+		WHERE id = $1`
+
+	var (
+		agent     Agent
+		rawID     string
+		accountID string
+		status    string
+		createdBy *string
+	)
+
+	err := r.db.QueryRow(ctx, q, string(agentID)).Scan(
+		&rawID, &accountID, &agent.Name, &status, &createdBy,
+		&agent.CreatedAt, &agent.RevokedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Agent{}, ErrAgentNotFound
+	}
+	if err != nil {
+		return Agent{}, fmt.Errorf("account: load agent: %w", err)
+	}
+
+	agent.ID = id.AgentID(rawID)
+	agent.AccountID = id.AccountID(accountID)
+	agent.Status = AgentStatus(status)
+	if createdBy != nil {
+		agent.CreatedBy = id.UserID(*createdBy)
+	}
+	return agent, nil
+}
+
+// RevokeAgent retires an agent and every credential it holds.
+//
+// Both in one transaction. An agent marked revoked whose keys stayed live is
+// precisely the state somebody containing an incident believes they have just
+// eliminated, and the gap would be invisible until one of those keys was used.
+func (r *postgresRepo) RevokeAgent(ctx context.Context, agentID id.AgentID, at time.Time) error {
+	return r.db.UoW.Do(ctx, func(ctx context.Context) error {
+		if _, err := r.db.Exec(ctx, `
+			UPDATE agent SET status = 'revoked', revoked_at = $2
+			WHERE id = $1 AND revoked_at IS NULL`,
+			string(agentID), at,
+		); err != nil {
+			return fmt.Errorf("account: revoke agent: %w", err)
+		}
+
+		if _, err := r.db.Exec(ctx, `
+			UPDATE agent_credential SET revoked_at = $2
+			WHERE agent_id = $1 AND revoked_at IS NULL`,
+			string(agentID), at,
+		); err != nil {
+			return fmt.Errorf("account: revoke agent credentials: %w", err)
+		}
+
+		return nil
+	})
+}
+
+// CreateAgentCredential stores a key's handle and the digest of its secret.
+func (r *postgresRepo) CreateAgentCredential(
+	ctx context.Context,
+	agentID id.AgentID,
+	name, prefix string,
+	digest []byte,
+	createdBy id.UserID,
+) (AgentCredential, error) {
+	const q = `
+		INSERT INTO agent_credential (agent_id, name, prefix, secret_hash, created_by)
+		VALUES ($1, $2, $3, $4, $5)
+		RETURNING id, created_at`
+
+	credential := AgentCredential{
+		AgentID: agentID, Name: name, Prefix: prefix, CreatedBy: createdBy,
+	}
+
+	if err := r.db.QueryRow(ctx, q,
+		string(agentID), name, prefix, digest, string(createdBy),
+	).Scan(&credential.ID, &credential.CreatedAt); err != nil {
+		return AgentCredential{}, fmt.Errorf("account: create agent credential: %w", err)
+	}
+
+	return credential, nil
+}
+
+// ActiveCredentialByPrefix resolves a handle to the identity behind it.
+//
+// The join is what makes revoking an agent take effect on every key it holds
+// without a sweep, and every validity condition sits in the query rather than
+// in Go, so no caller can hold an identity that looks usable but is not.
+func (r *postgresRepo) ActiveCredentialByPrefix(ctx context.Context, prefix string) (AgentIdentity, []byte, error) {
+	const q = `
+		SELECT c.id, c.secret_hash, a.id, a.account_id
+		FROM agent_credential c
+		JOIN agent a ON a.id = c.agent_id
+		WHERE c.prefix = $1
+		  AND c.revoked_at IS NULL
+		  AND a.status = 'active'`
+
+	var (
+		identity  AgentIdentity
+		digest    []byte
+		agentID   string
+		accountID string
+	)
+
+	err := r.db.QueryRow(ctx, q, prefix).Scan(
+		&identity.CredentialID, &digest, &agentID, &accountID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return AgentIdentity{}, nil, ErrCredentialInvalid
+	}
+	if err != nil {
+		return AgentIdentity{}, nil, fmt.Errorf("account: load agent credential: %w", err)
+	}
+
+	identity.AgentID = id.AgentID(agentID)
+	identity.AccountID = id.AccountID(accountID)
+	identity.Prefix = prefix
+	return identity, digest, nil
+}
+
+// AgentCredentials lists an agent's keys, secrets excluded.
+func (r *postgresRepo) AgentCredentials(ctx context.Context, agentID id.AgentID) ([]AgentCredential, error) {
+	const q = `
+		SELECT id, name, prefix, created_by, created_at, revoked_at, last_used_at
+		FROM agent_credential
+		WHERE agent_id = $1
+		ORDER BY created_at`
+
+	rows, err := r.db.Query(ctx, q, string(agentID))
+	if err != nil {
+		return nil, fmt.Errorf("account: list agent credentials: %w", err)
+	}
+	defer rows.Close()
+
+	var credentials []AgentCredential
+	for rows.Next() {
+		credential := AgentCredential{AgentID: agentID}
+		var createdBy *string
+
+		if err := rows.Scan(&credential.ID, &credential.Name, &credential.Prefix,
+			&createdBy, &credential.CreatedAt, &credential.RevokedAt,
+			&credential.LastUsedAt); err != nil {
+			return nil, fmt.Errorf("account: scan agent credential: %w", err)
+		}
+		if createdBy != nil {
+			credential.CreatedBy = id.UserID(*createdBy)
+		}
+
+		credentials = append(credentials, credential)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("account: list agent credentials: %w", err)
+	}
+
+	return credentials, nil
+}
+
+// RevokeAgentCredential retires one key.
+func (r *postgresRepo) RevokeAgentCredential(
+	ctx context.Context,
+	agentID id.AgentID,
+	credentialID string,
+	at time.Time,
+) (bool, error) {
+	const q = `
+		UPDATE agent_credential SET revoked_at = $3
+		WHERE id = $1 AND agent_id = $2 AND revoked_at IS NULL`
+
+	tag, err := r.db.Exec(ctx, q, credentialID, string(agentID), at)
+	if err != nil {
+		return false, fmt.Errorf("account: revoke agent credential: %w", err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// TouchAgentCredential records that a key was used.
+func (r *postgresRepo) TouchAgentCredential(ctx context.Context, credentialID string, at time.Time) error {
+	const q = `UPDATE agent_credential SET last_used_at = $2 WHERE id = $1`
+
+	if _, err := r.db.Exec(ctx, q, credentialID, at); err != nil {
+		return fmt.Errorf("account: touch agent credential: %w", err)
+	}
+	return nil
+}
+
+// CreateAgentSession opens a run.
+func (r *postgresRepo) CreateAgentSession(
+	ctx context.Context,
+	agentID id.AgentID,
+	taskRef, taskText string,
+) (AgentSession, error) {
+	const q = `
+		INSERT INTO agent_session (agent_id, task_ref, task_text)
+		VALUES ($1, $2, $3)
+		RETURNING id, started_at`
+
+	session := AgentSession{AgentID: agentID, TaskRef: taskRef, TaskText: taskText}
+
+	// Empty strings go in as NULL, because "the caller did not say" is a real
+	// state and storing it as an empty string makes it indistinguishable from
+	// somebody who said nothing on purpose.
+	var ref, text any
+	if taskRef != "" {
+		ref = taskRef
+	}
+	if taskText != "" {
+		text = taskText
+	}
+
+	var sessionID string
+	if err := r.db.QueryRow(ctx, q, string(agentID), ref, text).
+		Scan(&sessionID, &session.StartedAt); err != nil {
+		return AgentSession{}, fmt.Errorf("account: create agent session: %w", err)
+	}
+
+	session.ID = id.AgentSessionID(sessionID)
+	return session, nil
+}
+
 // scanInvitation reads one invitation row.
 func (r *postgresRepo) scanInvitation(row pgx.Row) (Invitation, error) {
 	var (
@@ -1056,6 +1306,176 @@ func (r *postgresRepo) scanInvitation(row pgx.Row) (Invitation, error) {
 	inv.InvitedBy = id.UserID(invitedBy)
 	inv.Role = PermissionRole(role)
 	return inv, nil
+}
+
+// VerificationTier returns what a principal is currently entitled to do.
+func (r *postgresRepo) VerificationTier(ctx context.Context, principalID id.PrincipalID) (VerificationTier, error) {
+	const q = `SELECT verification_tier FROM principal_identity WHERE principal_id = $1`
+
+	var tier string
+	err := r.db.QueryRow(ctx, q, string(principalID)).Scan(&tier)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// No compliance record means nothing has been established, which is
+		// exactly what the basic tier means. Treating it as an error would make
+		// every caller handle a case that is simply the starting state.
+		return TierBasic, nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("account: load verification tier: %w", err)
+	}
+	return VerificationTier(tier), nil
+}
+
+// SetVerificationTier records a new entitlement.
+func (r *postgresRepo) SetVerificationTier(ctx context.Context, principalID id.PrincipalID, tier VerificationTier) error {
+	const q = `UPDATE principal_identity SET verification_tier = $2 WHERE principal_id = $1`
+
+	tag, err := r.db.Exec(ctx, q, string(principalID), string(tier))
+	if err != nil {
+		// The database refuses a tier above basic without a verified kyc_status,
+		// so this is a caller claiming entitlement it has not established.
+		return fmt.Errorf("account: set verification tier: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return apperr.NotFound("account: no compliance record for this principal")
+	}
+	return nil
+}
+
+// ScreenedAddress returns the verdict on one address for one principal.
+func (r *postgresRepo) ScreenedAddress(
+	ctx context.Context,
+	principalID id.PrincipalID,
+	chain, address string,
+) (ScreenedAddress, error) {
+	const q = `
+		SELECT id, principal_id, chain, address, status, provider, reference,
+		       screened_at, first_funded_at, created_at
+		FROM screened_address
+		WHERE principal_id = $1 AND chain = $2 AND address = $3`
+
+	screened, err := r.scanScreenedAddress(r.db.QueryRow(ctx, q, string(principalID), chain, address))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ScreenedAddress{}, ErrAddressNotScreened
+	}
+	if err != nil {
+		return ScreenedAddress{}, fmt.Errorf("account: load screened address: %w", err)
+	}
+	return screened, nil
+}
+
+// RecordScreening stores a screening verdict.
+//
+// Upserted on (principal, chain, address) because screening is periodic: an
+// address clear last month can be flagged today, and the current verdict is
+// what governs. first_funded_at is preserved across a re-screen, since whether
+// an address funded this principal is a historical fact that a later verdict
+// does not change.
+func (r *postgresRepo) RecordScreening(ctx context.Context, a ScreenedAddress) (ScreenedAddress, error) {
+	const q = `
+		INSERT INTO screened_address
+			(principal_id, chain, address, status, provider, reference, screened_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		ON CONFLICT (principal_id, chain, address) DO UPDATE
+		SET status      = EXCLUDED.status,
+		    provider    = EXCLUDED.provider,
+		    reference   = EXCLUDED.reference,
+		    screened_at = EXCLUDED.screened_at
+		RETURNING id, principal_id, chain, address, status, provider, reference,
+		          screened_at, first_funded_at, created_at`
+
+	var provider, reference any
+	if a.Provider != "" {
+		provider = a.Provider
+	}
+	if a.Reference != "" {
+		reference = a.Reference
+	}
+
+	screened, err := r.scanScreenedAddress(r.db.QueryRow(ctx, q,
+		string(a.PrincipalID), a.Chain, a.Address, string(a.Status),
+		provider, reference, a.ScreenedAt))
+	if err != nil {
+		return ScreenedAddress{}, fmt.Errorf("account: record screening: %w", err)
+	}
+	return screened, nil
+}
+
+// MarkAddressFunded stamps the first deposit from an address.
+//
+// Only the first: the column answers "has this address ever funded us", and
+// moving it on every later deposit would lose the answer to when the
+// relationship began without gaining anything.
+func (r *postgresRepo) MarkAddressFunded(
+	ctx context.Context,
+	principalID id.PrincipalID,
+	chain, address string,
+	at time.Time,
+) error {
+	const q = `
+		UPDATE screened_address SET first_funded_at = $4
+		WHERE principal_id = $1 AND chain = $2 AND address = $3
+		  AND first_funded_at IS NULL`
+
+	if _, err := r.db.Exec(ctx, q, string(principalID), chain, address, at); err != nil {
+		return fmt.Errorf("account: mark address funded: %w", err)
+	}
+	return nil
+}
+
+// FundingAddresses lists the addresses that have actually funded a principal.
+func (r *postgresRepo) FundingAddresses(ctx context.Context, principalID id.PrincipalID) ([]ScreenedAddress, error) {
+	const q = `
+		SELECT id, principal_id, chain, address, status, provider, reference,
+		       screened_at, first_funded_at, created_at
+		FROM screened_address
+		WHERE principal_id = $1 AND first_funded_at IS NOT NULL
+		ORDER BY first_funded_at`
+
+	rows, err := r.db.Query(ctx, q, string(principalID))
+	if err != nil {
+		return nil, fmt.Errorf("account: list funding addresses: %w", err)
+	}
+	defer rows.Close()
+
+	var addresses []ScreenedAddress
+	for rows.Next() {
+		screened, err := r.scanScreenedAddress(rows)
+		if err != nil {
+			return nil, fmt.Errorf("account: scan funding address: %w", err)
+		}
+		addresses = append(addresses, screened)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("account: list funding addresses: %w", err)
+	}
+	return addresses, nil
+}
+
+// scanScreenedAddress reads one screening row.
+func (r *postgresRepo) scanScreenedAddress(row pgx.Row) (ScreenedAddress, error) {
+	var (
+		a           ScreenedAddress
+		principalID string
+		status      string
+		provider    *string
+		reference   *string
+	)
+
+	if err := row.Scan(&a.ID, &principalID, &a.Chain, &a.Address, &status,
+		&provider, &reference, &a.ScreenedAt, &a.FirstFundedAt, &a.CreatedAt); err != nil {
+		return ScreenedAddress{}, err
+	}
+
+	a.PrincipalID = id.PrincipalID(principalID)
+	a.Status = ScreeningStatus(status)
+	if provider != nil {
+		a.Provider = *provider
+	}
+	if reference != nil {
+		a.Reference = *reference
+	}
+	return a, nil
 }
 
 // isUniqueViolation reports whether err is Postgres rejecting a duplicate.

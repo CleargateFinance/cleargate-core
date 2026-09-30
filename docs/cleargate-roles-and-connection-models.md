@@ -72,9 +72,9 @@ Roles are not new entities. They describe how an entity participates in a given 
 
 **Payee** — the party receiving the payment and expected to deliver. This is what earlier thinking called "the merchant." Reputation attaches to this role. A payee may be an on-platform account or an external endpoint — the role is identical either way.
 
-**Approver** — a user who signs off when a payment escalates past a threshold.
-
 **Backer** *(later)* — whoever underwrites guarantees for a class of counterparties.
+
+There is no separate transaction role for signing off on an escalated payment — that is exercised by whichever **owner or admin** the account has configured to receive it, using the permission roles below, not a role of its own.
 
 The key consequence: **"merchant" dissolves into "an account acting in the payee role."** Any account can occupy it. This is what makes agent-to-agent payment the same code path as agent-to-merchant payment — the payee simply happens to be another account rather than an outside business.
 
@@ -86,10 +86,10 @@ Separate from transaction roles, these govern what each user is allowed to do in
 |---|---|
 | **Owner** | Everything, including billing and closing the account |
 | **Admin** | Manage agents and mandates; not billing |
-| **Approver** | Approve escalated payments; not change mandates |
+| **Guardian** | Stop things — veto a pending change to spending authority, freeze the account — and propose nothing |
 | **Viewer** | Read-only: console and reports (e.g. an accountant or auditor) |
 
-This permission model is also the platform's segregation-of-duties mechanism for enterprise: the user who sets a policy need not be the user who approves an exception. It is built early because retrofitting authorization into a running system is notoriously painful.
+Four roles, deliberately no fifth. Approving an escalated payment is an owner or admin action, not a distinct role — every permission an account needs is a combination of propose, operate, stop, or read. This permission model is also the platform's segregation-of-duties mechanism for enterprise: the admin who sets a policy need not be the admin who signs off on an exception to it, and on a guarded account no single compromised human can widen what an agent may spend, because a guardian can veto and propose nothing. It is built early because retrofitting authorization into a running system is notoriously painful.
 
 ---
 
@@ -162,9 +162,9 @@ Had "merchant" been modeled as a separate entity type, DataCorp would have neede
 
 **Entities** (identity and lifecycle): Principal, Account, User, Agent, Mandate, Counterparty.
 
-**Transaction roles** (per payment): payer, payee, approver, and later backer.
+**Transaction roles** (per payment): payer, payee, and later backer.
 
-**Permission roles** (within an account): owner, admin, approver, viewer.
+**Permission roles** (within an account): owner, admin, guardian, viewer.
 
 **Connection models:** buyer only (agents attached), seller only (services attached), or both (both attached to one account).
 
