@@ -89,8 +89,8 @@ func (r *postgresRepo) EnsureAccount(
 // partition rather than scanning all of them.
 func (r *postgresRepo) InsertEntry(ctx context.Context, e Entry) (id.JournalEntryID, error) {
 	const insertEntry = `
-		INSERT INTO journal_entry (kind, reference_type, reference_id, agent_id, description, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6)
+		INSERT INTO journal_entry (kind, reference_type, reference_id, agent_id, reverses_entry_id, description, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		RETURNING id, created_at`
 
 	// All the lines go in as one statement, so an entry costs two round trips
@@ -111,6 +111,10 @@ func (r *postgresRepo) InsertEntry(ctx context.Context, e Entry) (id.JournalEntr
 	var agentID any
 	if e.AgentID != nil {
 		agentID = string(*e.AgentID)
+	}
+	var reverses any
+	if e.Reverses != nil {
+		reverses = string(*e.Reverses)
 	}
 	var description any
 	if e.Description != "" {
@@ -133,7 +137,7 @@ func (r *postgresRepo) InsertEntry(ctx context.Context, e Entry) (id.JournalEntr
 
 		var createdAt time.Time
 		if err := r.db.QueryRow(ctx, insertEntry,
-			string(e.Kind), referenceType, referenceID, agentID, description, e.OccurredAt,
+			string(e.Kind), referenceType, referenceID, agentID, reverses, description, e.OccurredAt,
 		).Scan(&entryID, &createdAt); err != nil {
 			return fmt.Errorf("ledger: insert entry: %w", err)
 		}
@@ -272,6 +276,33 @@ func (r *postgresRepo) IncrementSpend(
 	return currency.Parse(total.String(), amount.Asset())
 }
 
+// DecrementSpend takes amount off a counter. It can't reuse IncrementSpend's
+// upsert: Postgres checks spent >= 0 on the proposed insert row before
+// resolving the conflict, so a negative amount always fails.
+func (r *postgresRepo) DecrementSpend(
+	ctx context.Context,
+	agentID id.AgentID,
+	p Period,
+	amount currency.Amount,
+) error {
+	const q = `
+		UPDATE agent_spend_counter
+		SET spent = spent - $5, updated_at = now()
+		WHERE agent_id = $1 AND period_type = $2 AND period_start = $3 AND asset = $4
+		  AND spent >= $5`
+
+	tag, err := r.db.Exec(ctx, q,
+		string(agentID), string(p.Type), p.Start, string(amount.Asset()), amount.Decimal(),
+	)
+	if err != nil {
+		return fmt.Errorf("ledger: decrement spend: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrReleaseExceedsSpend
+	}
+	return nil
+}
+
 // SpentIn reports a counter, treating a missing row as zero spent.
 func (r *postgresRepo) SpentIn(
 	ctx context.Context,
@@ -312,23 +343,42 @@ func (r *postgresRepo) StoredSpend(ctx context.Context, p Period) ([]Spend, erro
 // postings themselves.
 //
 // Spending is the value that left a customer funds bucket on a payment entry
-// attributed to that agent. Those postings are negative, so the sum is negated
-// to give a positive spent figure comparable with the counter.
+// attributed to that agent, less reversals of that payment. A reversal counts
+// in the payment's window, matching ReleaseSpend. The sum is negated to give a
+// positive figure comparable with the counter.
 func (r *postgresRepo) RecomputeSpend(ctx context.Context, p Period) ([]Spend, error) {
 	const q = `
-		SELECT je.agent_id, po.asset, -SUM(po.amount)
-		FROM posting po
-		JOIN journal_entry je
-		  ON je.id = po.journal_entry_id AND je.created_at = po.created_at
-		JOIN ledger_account la
-		  ON la.id = po.ledger_account_id
-		WHERE je.agent_id IS NOT NULL
-		  AND je.kind = 'payment'
-		  AND la.type = 'customer_funds'
-		  AND po.amount < 0
-		  AND po.created_at >= $1
-		  AND po.created_at < $2
-		GROUP BY je.agent_id, po.asset`
+		SELECT agent_id, asset, -SUM(amount)
+		FROM (
+			SELECT je.agent_id, po.asset, po.amount
+			FROM posting po
+			JOIN journal_entry je
+			  ON je.id = po.journal_entry_id AND je.created_at = po.created_at
+			JOIN ledger_account la
+			  ON la.id = po.ledger_account_id
+			WHERE je.agent_id IS NOT NULL
+			  AND je.kind = 'payment'
+			  AND la.type = 'customer_funds'
+			  AND po.created_at >= $1
+			  AND po.created_at < $2
+
+			UNION ALL
+
+			SELECT pay.agent_id, po.asset, po.amount
+			FROM posting po
+			JOIN journal_entry je
+			  ON je.id = po.journal_entry_id AND je.created_at = po.created_at
+			JOIN ledger_account la
+			  ON la.id = po.ledger_account_id
+			JOIN journal_entry pay
+			  ON pay.id = je.reverses_entry_id AND pay.kind = 'payment'
+			WHERE pay.agent_id IS NOT NULL
+			  AND je.kind = 'reversal'
+			  AND la.type = 'customer_funds'
+			  AND pay.created_at >= $1
+			  AND pay.created_at < $2
+		) AS spend
+		GROUP BY agent_id, asset`
 
 	rows, err := r.db.Query(ctx, q, p.Start, p.End())
 	if err != nil {

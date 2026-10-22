@@ -110,6 +110,11 @@ func TestEntryValidate(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name:    "a reversal that names no entry is rejected",
+			mutate:  func(e *Entry) { e.Kind = KindReversal },
+			wantErr: true,
+		},
+		{
 			name:    "a single line cannot balance and is rejected",
 			mutate:  func(e *Entry) { e.Lines = e.Lines[:1] },
 			wantErr: true,

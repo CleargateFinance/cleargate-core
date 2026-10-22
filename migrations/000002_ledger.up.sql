@@ -67,6 +67,10 @@ CREATE TABLE journal_entry (
     -- postings themselves rather than trusted blindly.
     agent_id       uuid,
 
+    -- For a reversal, the entry it undoes. No foreign key: the partitioned
+    -- key would need that entry's timestamp too.
+    reverses_entry_id uuid,
+
     description    text,
     created_at     timestamptz NOT NULL DEFAULT now(),
 

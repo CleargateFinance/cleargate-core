@@ -21,9 +21,10 @@ CREATE TABLE agent_spend_counter (
 
     asset        text NOT NULL,
 
-    -- Spending only ever accumulates within a window, so this can never go
-    -- negative. A refund is attributed to the period it is issued in rather
-    -- than clawing back a closed window.
+    -- Spending accumulates within a window and only goes down when a failed
+    -- payment is released from its own window, so this can never go negative.
+    -- A refund is attributed to the period it is issued in rather than
+    -- clawing back a closed window.
     spent        numeric(38, 18) NOT NULL DEFAULT 0 CHECK (spent >= 0),
 
     updated_at   timestamptz NOT NULL DEFAULT now(),

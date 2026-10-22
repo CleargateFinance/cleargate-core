@@ -362,6 +362,86 @@ func TestRecordSpend_IsAtomicUnderConcurrency(t *testing.T) {
 	assert.Equal(t, "50", spent.String(), "every concurrent increment must be counted exactly once")
 }
 
+func TestReleaseSpend_GivesBudgetBackToTheAuthorizationWindows(t *testing.T) {
+	ctx := context.Background()
+	f := newLedgerFixture(t)
+	agent := id.AgentID("88888888-8888-8888-8888-888888888888")
+	yesterday := time.Now().UTC().AddDate(0, 0, -1)
+
+	_, err := f.svc.RecordSpend(ctx, agent, usd(t, "0.40"), yesterday)
+	require.NoError(t, err)
+	require.NoError(t, f.svc.ReleaseSpend(ctx, agent, usd(t, "0.40"), yesterday))
+
+	for _, p := range PeriodsFor(yesterday) {
+		spent, err := f.svc.SpentIn(ctx, agent, p, currency.USDC)
+		require.NoError(t, err)
+		assert.True(t, spent.IsZero(), "%s window still holds %s", p.Type, spent)
+	}
+}
+
+func TestReleaseSpend_RefusesMoreThanWasRecorded(t *testing.T) {
+	ctx := context.Background()
+	f := newLedgerFixture(t)
+	agent := id.AgentID("88888888-8888-8888-8888-888888888888")
+	now := time.Now().UTC()
+
+	err := f.svc.ReleaseSpend(ctx, agent, usd(t, "0.40"), now)
+	require.ErrorIs(t, err, ErrReleaseExceedsSpend, "nothing was recorded")
+
+	_, err = f.svc.RecordSpend(ctx, agent, usd(t, "0.40"), now)
+	require.NoError(t, err)
+
+	err = f.svc.ReleaseSpend(ctx, agent, usd(t, "0.50"), now)
+	require.ErrorIs(t, err, ErrReleaseExceedsSpend)
+}
+
+// TestCheckSpendCounters_NetsReversalsInThePaymentWindow covers a payment
+// authorized yesterday and reversed today, twice under the same reference.
+func TestCheckSpendCounters_NetsReversalsInThePaymentWindow(t *testing.T) {
+	ctx := context.Background()
+	f := newLedgerFixture(t)
+	f.fund(t, "10.00")
+
+	agent := id.AgentID("99999999-9999-9999-9999-999999999999")
+	payment := id.PaymentID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	now := time.Now().UTC()
+	yesterday := now.AddDate(0, 0, -1)
+
+	for range 2 {
+		entry, err := f.svc.Post(ctx, Entry{
+			Kind:          KindPayment,
+			Asset:         currency.USDC,
+			Lines:         Transfer(f.payer, f.payee, usd(t, "0.40")),
+			ReferenceType: "payment",
+			ReferenceID:   &payment,
+			AgentID:       &agent,
+			OccurredAt:    yesterday,
+		})
+		require.NoError(t, err)
+		_, err = f.svc.RecordSpend(ctx, agent, usd(t, "0.40"), yesterday)
+		require.NoError(t, err)
+
+		_, err = f.svc.Post(ctx, Entry{
+			Kind:          KindReversal,
+			Asset:         currency.USDC,
+			Lines:         Transfer(f.payee, f.payer, usd(t, "0.40")),
+			ReferenceType: "payment",
+			ReferenceID:   &payment,
+			Reverses:      &entry,
+			AgentID:       &agent,
+			OccurredAt:    now,
+		})
+		require.NoError(t, err)
+		require.NoError(t, f.svc.ReleaseSpend(ctx, agent, usd(t, "0.40"), yesterday))
+	}
+
+	for _, p := range []Period{DayPeriod(yesterday), DayPeriod(now)} {
+		drifts, err := f.svc.CheckSpendCounters(ctx, p)
+		require.NoError(t, err)
+		assert.Empty(t, drifts, "window starting %s", p.Start.Format(time.DateOnly))
+	}
+}
+
 func TestCheckBook_ReportsZeroForAConsistentBook(t *testing.T) {
 	ctx := context.Background()
 	f := newLedgerFixture(t)
