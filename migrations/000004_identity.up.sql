@@ -377,3 +377,17 @@ CREATE TABLE onramp_customer (
   created_at   timestamptz NOT NULL DEFAULT now(),
   UNIQUE (provider, external_id)
 );
+
+-- ---------------------------------------------------------------------------
+-- Foreign keys from earlier migrations
+-- ---------------------------------------------------------------------------
+
+-- The ledger and the spend counters were created before account and agent
+-- existed, so their foreign keys are added here.
+ALTER TABLE ledger_account
+  ADD CONSTRAINT ledger_account_account_fk
+    FOREIGN KEY (account_id) REFERENCES account(id);
+
+ALTER TABLE agent_spend_counter
+  ADD CONSTRAINT agent_spend_counter_agent_fk
+    FOREIGN KEY (agent_id) REFERENCES agent(id);

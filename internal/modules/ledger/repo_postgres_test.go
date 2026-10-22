@@ -32,18 +32,45 @@ func newLedgerFixture(t *testing.T) *ledgerFixture {
 	ctx := context.Background()
 
 	db := fixtures.NewTestDB(t)
-	svc := New(db.DB, nil).Service()
+	f := &ledgerFixture{db: db, svc: New(db.DB, nil).Service()}
 
-	payerAccount := id.AccountID("11111111-1111-1111-1111-111111111111")
-	payeeAccount := id.AccountID("22222222-2222-2222-2222-222222222222")
+	f.account = f.newAccount(t)
+	payeeAccount := f.newAccount(t)
 
-	payer, err := svc.EnsureAccount(ctx, &payerAccount, TypeCustomerFunds, currency.USDCBase)
+	var err error
+	f.payer, err = f.svc.EnsureAccount(ctx, &f.account, TypeCustomerFunds, currency.USDCBase)
 	require.NoError(t, err)
 
-	payee, err := svc.EnsureAccount(ctx, &payeeAccount, TypePayeePayable, currency.USDCBase)
+	f.payee, err = f.svc.EnsureAccount(ctx, &payeeAccount, TypePayeePayable, currency.USDCBase)
 	require.NoError(t, err)
 
-	return &ledgerFixture{db: db, svc: svc, payer: payer, payee: payee, account: payerAccount}
+	return f
+}
+
+// newAccount inserts a customer account for buckets to belong to.
+func (f *ledgerFixture) newAccount(t *testing.T) id.AccountID {
+	t.Helper()
+
+	var accountID string
+	err := f.db.QueryRow(context.Background(), `
+		WITH p AS (INSERT INTO principal (kind) VALUES ('person') RETURNING id)
+		INSERT INTO account (principal_id, display_name)
+		SELECT id, 'test' FROM p
+		RETURNING id`).Scan(&accountID)
+	require.NoError(t, err)
+	return id.AccountID(accountID)
+}
+
+// newAgent inserts an agent on the payer's account for counters to belong to.
+func (f *ledgerFixture) newAgent(t *testing.T) id.AgentID {
+	t.Helper()
+
+	var agentID string
+	err := f.db.QueryRow(context.Background(),
+		`INSERT INTO agent (account_id, name) VALUES ($1, 'test') RETURNING id`,
+		string(f.account)).Scan(&agentID)
+	require.NoError(t, err)
+	return id.AgentID(agentID)
 }
 
 // fund puts starting value into the payer bucket, balanced against the
@@ -161,6 +188,27 @@ func TestDatabaseRejectsUnbalancedEntry(t *testing.T) {
 	balance, err := f.svc.Balance(ctx, f.payer, currency.USDCBase)
 	require.NoError(t, err)
 	assert.True(t, balance.IsZero(), "the rolled back posting must leave no trace")
+}
+
+// TestDatabaseRejectsPostingInAnotherAsset: such a posting would vanish from
+// the bucket's balance, which only sums the bucket's own asset.
+func TestDatabaseRejectsPostingInAnotherAsset(t *testing.T) {
+	ctx := context.Background()
+	f := newLedgerFixture(t)
+
+	float, err := f.svc.EnsureAccount(ctx, nil, TypeOnchainFloat, currency.USDCBase)
+	require.NoError(t, err)
+
+	eurc, err := currency.Parse("1", currency.Asset("EURC"))
+	require.NoError(t, err)
+
+	_, err = f.svc.Post(ctx, Entry{
+		Kind:  KindFunding,
+		Asset: eurc.Asset(),
+		Lines: Transfer(float, f.payer, eurc),
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "posting_asset_matches_bucket")
 }
 
 // TestDatabaseRejectsMutation proves history cannot be edited or removed, so
@@ -300,7 +348,7 @@ func TestPost_ConcurrentPaymentsCannotOverdraw(t *testing.T) {
 func TestRecordSpend_CreatesCountersOnFirstSpend(t *testing.T) {
 	ctx := context.Background()
 	f := newLedgerFixture(t)
-	agent := id.AgentID("33333333-3333-3333-3333-333333333333")
+	agent := f.newAgent(t)
 	now := time.Now().UTC()
 
 	totals, err := f.svc.RecordSpend(ctx, agent, usd(t, "0.40"), now)
@@ -333,7 +381,7 @@ func TestSpentIn_IsZeroWhenNothingSpentYet(t *testing.T) {
 func TestRecordSpend_IsAtomicUnderConcurrency(t *testing.T) {
 	ctx := context.Background()
 	f := newLedgerFixture(t)
-	agent := id.AgentID("55555555-5555-5555-5555-555555555555")
+	agent := f.newAgent(t)
 	now := time.Now().UTC()
 
 	const concurrent = 50
@@ -365,7 +413,7 @@ func TestRecordSpend_IsAtomicUnderConcurrency(t *testing.T) {
 func TestReleaseSpend_GivesBudgetBackToTheAuthorizationWindows(t *testing.T) {
 	ctx := context.Background()
 	f := newLedgerFixture(t)
-	agent := id.AgentID("88888888-8888-8888-8888-888888888888")
+	agent := f.newAgent(t)
 	yesterday := time.Now().UTC().AddDate(0, 0, -1)
 
 	_, err := f.svc.RecordSpend(ctx, agent, usd(t, "0.40"), yesterday)
@@ -382,7 +430,7 @@ func TestReleaseSpend_GivesBudgetBackToTheAuthorizationWindows(t *testing.T) {
 func TestReleaseSpend_RefusesMoreThanWasRecorded(t *testing.T) {
 	ctx := context.Background()
 	f := newLedgerFixture(t)
-	agent := id.AgentID("88888888-8888-8888-8888-888888888888")
+	agent := f.newAgent(t)
 	now := time.Now().UTC()
 
 	err := f.svc.ReleaseSpend(ctx, agent, usd(t, "0.40"), now)
@@ -402,7 +450,7 @@ func TestCheckSpendCounters_NetsReversalsInThePaymentWindow(t *testing.T) {
 	f := newLedgerFixture(t)
 	f.fund(t, "10.00")
 
-	agent := id.AgentID("99999999-9999-9999-9999-999999999999")
+	agent := f.newAgent(t)
 	payment := id.PaymentID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
 	now := time.Now().UTC()
 	yesterday := now.AddDate(0, 0, -1)
@@ -464,7 +512,7 @@ func TestCheckSpendCounters_ReportsNoDriftWhenCountersMatchPostings(t *testing.T
 	f := newLedgerFixture(t)
 	f.fund(t, "10.00")
 
-	agent := id.AgentID("66666666-6666-6666-6666-666666666666")
+	agent := f.newAgent(t)
 	now := time.Now().UTC()
 
 	_, err := f.svc.Post(ctx, Entry{
@@ -491,7 +539,7 @@ func TestCheckSpendCounters_DetectsDrift(t *testing.T) {
 	f := newLedgerFixture(t)
 	f.fund(t, "10.00")
 
-	agent := id.AgentID("77777777-7777-7777-7777-777777777777")
+	agent := f.newAgent(t)
 	now := time.Now().UTC()
 
 	// A payment of 0.40 is recorded in the book.
