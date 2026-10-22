@@ -37,10 +37,10 @@ func newLedgerFixture(t *testing.T) *ledgerFixture {
 	payerAccount := id.AccountID("11111111-1111-1111-1111-111111111111")
 	payeeAccount := id.AccountID("22222222-2222-2222-2222-222222222222")
 
-	payer, err := svc.EnsureAccount(ctx, &payerAccount, TypeCustomerFunds, currency.USDC)
+	payer, err := svc.EnsureAccount(ctx, &payerAccount, TypeCustomerFunds, currency.USDCBase)
 	require.NoError(t, err)
 
-	payee, err := svc.EnsureAccount(ctx, &payeeAccount, TypePayeePayable, currency.USDC)
+	payee, err := svc.EnsureAccount(ctx, &payeeAccount, TypePayeePayable, currency.USDCBase)
 	require.NoError(t, err)
 
 	return &ledgerFixture{db: db, svc: svc, payer: payer, payee: payee, account: payerAccount}
@@ -52,12 +52,12 @@ func (f *ledgerFixture) fund(t *testing.T, amount string) {
 	t.Helper()
 	ctx := context.Background()
 
-	float, err := f.svc.EnsureAccount(ctx, nil, TypeOnchainFloat, currency.USDC)
+	float, err := f.svc.EnsureAccount(ctx, nil, TypeOnchainFloat, currency.USDCBase)
 	require.NoError(t, err)
 
 	_, err = f.svc.Post(ctx, Entry{
 		Kind:  KindFunding,
-		Asset: currency.USDC,
+		Asset: currency.USDCBase,
 		Lines: Transfer(float, f.payer, usd(t, amount)),
 	})
 	require.NoError(t, err)
@@ -67,7 +67,7 @@ func TestEnsureAccount_IsIdempotent(t *testing.T) {
 	ctx := context.Background()
 	f := newLedgerFixture(t)
 
-	again, err := f.svc.EnsureAccount(ctx, &f.account, TypeCustomerFunds, currency.USDC)
+	again, err := f.svc.EnsureAccount(ctx, &f.account, TypeCustomerFunds, currency.USDCBase)
 	require.NoError(t, err)
 	assert.Equal(t, f.payer, again, "asking twice must return the same bucket, not create a second")
 }
@@ -84,7 +84,7 @@ func TestEnsureAccount_SeparateBucketPerAssetAndRole(t *testing.T) {
 
 	// The same customer acting as a payee is also a different bucket, since
 	// money owed to them is not money they can spend.
-	asPayee, err := f.svc.EnsureAccount(ctx, &f.account, TypePayeePayable, currency.USDC)
+	asPayee, err := f.svc.EnsureAccount(ctx, &f.account, TypePayeePayable, currency.USDCBase)
 	require.NoError(t, err)
 	assert.NotEqual(t, f.payer, asPayee)
 }
@@ -96,17 +96,17 @@ func TestPost_WritesEntryAndUpdatesBalances(t *testing.T) {
 
 	entryID, err := f.svc.Post(ctx, Entry{
 		Kind:  KindPayment,
-		Asset: currency.USDC,
+		Asset: currency.USDCBase,
 		Lines: Transfer(f.payer, f.payee, usd(t, "0.40")),
 	})
 	require.NoError(t, err)
 	assert.NotEmpty(t, entryID)
 
-	payerBalance, err := f.svc.Balance(ctx, f.payer, currency.USDC)
+	payerBalance, err := f.svc.Balance(ctx, f.payer, currency.USDCBase)
 	require.NoError(t, err)
 	assert.Equal(t, "9.6", payerBalance.String())
 
-	payeeBalance, err := f.svc.Balance(ctx, f.payee, currency.USDC)
+	payeeBalance, err := f.svc.Balance(ctx, f.payee, currency.USDCBase)
 	require.NoError(t, err)
 	assert.Equal(t, "0.4", payeeBalance.String())
 }
@@ -117,7 +117,7 @@ func TestPost_RejectsUnbalancedEntryBeforeReachingTheDatabase(t *testing.T) {
 
 	_, err := f.svc.Post(ctx, Entry{
 		Kind:  KindPayment,
-		Asset: currency.USDC,
+		Asset: currency.USDCBase,
 		Lines: []Line{
 			Debit(f.payer, usd(t, "0.40")),
 			Credit(f.payee, usd(t, "0.30")),
@@ -149,8 +149,8 @@ func TestDatabaseRejectsUnbalancedEntry(t *testing.T) {
 		// One line with no counter-line: the entry cannot balance.
 		_, err := f.db.Exec(ctx, `
 			INSERT INTO posting (journal_entry_id, ledger_account_id, amount, asset, created_at)
-			VALUES ($1, $2, 5.00, 'USDC', $3)`,
-			entryID, string(f.payer), createdAt)
+			VALUES ($1, $2, 5.00, $3, $4)`,
+			entryID, string(f.payer), string(currency.USDCBase), createdAt)
 		return err
 	})
 
@@ -158,7 +158,7 @@ func TestDatabaseRejectsUnbalancedEntry(t *testing.T) {
 	assert.Contains(t, err.Error(), "unbalanced")
 
 	// The rejection must have taken the posting with it.
-	balance, err := f.svc.Balance(ctx, f.payer, currency.USDC)
+	balance, err := f.svc.Balance(ctx, f.payer, currency.USDCBase)
 	require.NoError(t, err)
 	assert.True(t, balance.IsZero(), "the rolled back posting must leave no trace")
 }
@@ -170,11 +170,11 @@ func TestDatabaseRejectsMutation(t *testing.T) {
 	f := newLedgerFixture(t)
 	f.fund(t, "1.00")
 
-	_, err := f.db.Exec(ctx, `UPDATE posting SET amount = 999 WHERE asset = 'USDC'`)
+	_, err := f.db.Exec(ctx, `UPDATE posting SET amount = 999 WHERE asset = $1`, string(currency.USDCBase))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "append-only")
 
-	_, err = f.db.Exec(ctx, `DELETE FROM posting WHERE asset = 'USDC'`)
+	_, err = f.db.Exec(ctx, `DELETE FROM posting WHERE asset = $1`, string(currency.USDCBase))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "append-only")
 }
@@ -191,7 +191,7 @@ func TestPost_RollsBackWithCallerTransaction(t *testing.T) {
 	err := f.db.UoW.Do(ctx, func(ctx context.Context) error {
 		if _, err := f.svc.Post(ctx, Entry{
 			Kind:  KindPayment,
-			Asset: currency.USDC,
+			Asset: currency.USDCBase,
 			Lines: Transfer(f.payer, f.payee, usd(t, "2.50")),
 		}); err != nil {
 			return err
@@ -202,7 +202,7 @@ func TestPost_RollsBackWithCallerTransaction(t *testing.T) {
 	})
 	require.ErrorIs(t, err, sentinel)
 
-	balance, err := f.svc.Balance(ctx, f.payer, currency.USDC)
+	balance, err := f.svc.Balance(ctx, f.payer, currency.USDCBase)
 	require.NoError(t, err)
 	assert.Equal(t, "10", balance.String(), "the payment must have been undone entirely")
 }
@@ -214,12 +214,12 @@ func TestPost_RefusesToOverdrawCustomerFunds(t *testing.T) {
 
 	_, err := f.svc.Post(ctx, Entry{
 		Kind:  KindPayment,
-		Asset: currency.USDC,
+		Asset: currency.USDCBase,
 		Lines: Transfer(f.payer, f.payee, usd(t, "1.50")),
 	})
 	require.ErrorIs(t, err, ErrInsufficientFunds)
 
-	balance, err := f.svc.Balance(ctx, f.payer, currency.USDC)
+	balance, err := f.svc.Balance(ctx, f.payer, currency.USDCBase)
 	require.NoError(t, err)
 	assert.Equal(t, "1", balance.String(), "a refused payment must leave the balance untouched")
 }
@@ -233,13 +233,13 @@ func TestPost_RefusalLeavesCallerTransactionUsable(t *testing.T) {
 	err := f.db.UoW.Do(ctx, func(ctx context.Context) error {
 		_, refusal = f.svc.Post(ctx, Entry{
 			Kind:  KindPayment,
-			Asset: currency.USDC,
+			Asset: currency.USDCBase,
 			Lines: Transfer(f.payer, f.payee, usd(t, "1.50")),
 		})
 
 		_, err := f.svc.Post(ctx, Entry{
 			Kind:  KindPayment,
-			Asset: currency.USDC,
+			Asset: currency.USDCBase,
 			Lines: Transfer(f.payer, f.payee, usd(t, "0.25")),
 		})
 		return err
@@ -247,7 +247,7 @@ func TestPost_RefusalLeavesCallerTransactionUsable(t *testing.T) {
 	require.NoError(t, err)
 	require.ErrorIs(t, refusal, ErrInsufficientFunds)
 
-	balance, err := f.svc.Balance(ctx, f.payer, currency.USDC)
+	balance, err := f.svc.Balance(ctx, f.payer, currency.USDCBase)
 	require.NoError(t, err)
 	assert.Equal(t, "0.75", balance.String(), "only the payment that fitted may have been written")
 }
@@ -261,7 +261,7 @@ func TestPost_ConcurrentPaymentsCannotOverdraw(t *testing.T) {
 
 	payment := Entry{
 		Kind:  KindPayment,
-		Asset: currency.USDC,
+		Asset: currency.USDCBase,
 		Lines: Transfer(f.payer, f.payee, usd(t, "1")),
 	}
 
@@ -292,7 +292,7 @@ func TestPost_ConcurrentPaymentsCannotOverdraw(t *testing.T) {
 	}
 	assert.Equal(t, 10, paid, "exactly as many payments as the balance covers must go through")
 
-	balance, err := f.svc.Balance(ctx, f.payer, currency.USDC)
+	balance, err := f.svc.Balance(ctx, f.payer, currency.USDCBase)
 	require.NoError(t, err)
 	assert.Equal(t, "0", balance.String())
 }
@@ -311,7 +311,7 @@ func TestRecordSpend_CreatesCountersOnFirstSpend(t *testing.T) {
 		assert.Equal(t, "0.4", total.Amount.String())
 	}
 
-	day, err := f.svc.SpentIn(ctx, agent, DayPeriod(now), currency.USDC)
+	day, err := f.svc.SpentIn(ctx, agent, DayPeriod(now), currency.USDCBase)
 	require.NoError(t, err)
 	assert.Equal(t, "0.4", day.String())
 }
@@ -322,7 +322,7 @@ func TestSpentIn_IsZeroWhenNothingSpentYet(t *testing.T) {
 
 	spent, err := f.svc.SpentIn(ctx,
 		id.AgentID("44444444-4444-4444-4444-444444444444"),
-		DayPeriod(time.Now()), currency.USDC)
+		DayPeriod(time.Now()), currency.USDCBase)
 	require.NoError(t, err)
 	assert.True(t, spent.IsZero(), "an agent that has never spent must read as zero, not error")
 }
@@ -357,7 +357,7 @@ func TestRecordSpend_IsAtomicUnderConcurrency(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	spent, err := f.svc.SpentIn(ctx, agent, DayPeriod(now), currency.USDC)
+	spent, err := f.svc.SpentIn(ctx, agent, DayPeriod(now), currency.USDCBase)
 	require.NoError(t, err)
 	assert.Equal(t, "50", spent.String(), "every concurrent increment must be counted exactly once")
 }
@@ -373,7 +373,7 @@ func TestReleaseSpend_GivesBudgetBackToTheAuthorizationWindows(t *testing.T) {
 	require.NoError(t, f.svc.ReleaseSpend(ctx, agent, usd(t, "0.40"), yesterday))
 
 	for _, p := range PeriodsFor(yesterday) {
-		spent, err := f.svc.SpentIn(ctx, agent, p, currency.USDC)
+		spent, err := f.svc.SpentIn(ctx, agent, p, currency.USDCBase)
 		require.NoError(t, err)
 		assert.True(t, spent.IsZero(), "%s window still holds %s", p.Type, spent)
 	}
@@ -410,7 +410,7 @@ func TestCheckSpendCounters_NetsReversalsInThePaymentWindow(t *testing.T) {
 	for range 2 {
 		entry, err := f.svc.Post(ctx, Entry{
 			Kind:          KindPayment,
-			Asset:         currency.USDC,
+			Asset:         currency.USDCBase,
 			Lines:         Transfer(f.payer, f.payee, usd(t, "0.40")),
 			ReferenceType: "payment",
 			ReferenceID:   &payment,
@@ -423,7 +423,7 @@ func TestCheckSpendCounters_NetsReversalsInThePaymentWindow(t *testing.T) {
 
 		_, err = f.svc.Post(ctx, Entry{
 			Kind:          KindReversal,
-			Asset:         currency.USDC,
+			Asset:         currency.USDCBase,
 			Lines:         Transfer(f.payee, f.payer, usd(t, "0.40")),
 			ReferenceType: "payment",
 			ReferenceID:   &payment,
@@ -449,12 +449,12 @@ func TestCheckBook_ReportsZeroForAConsistentBook(t *testing.T) {
 
 	_, err := f.svc.Post(ctx, Entry{
 		Kind:  KindPayment,
-		Asset: currency.USDC,
+		Asset: currency.USDCBase,
 		Lines: Transfer(f.payer, f.payee, usd(t, "3.25")),
 	})
 	require.NoError(t, err)
 
-	check, err := f.svc.CheckBook(ctx, currency.USDC)
+	check, err := f.svc.CheckBook(ctx, currency.USDCBase)
 	require.NoError(t, err)
 	assert.True(t, check.Balanced(), "every posting in the book must cancel out, got %s", check.Total)
 }
@@ -469,7 +469,7 @@ func TestCheckSpendCounters_ReportsNoDriftWhenCountersMatchPostings(t *testing.T
 
 	_, err := f.svc.Post(ctx, Entry{
 		Kind:       KindPayment,
-		Asset:      currency.USDC,
+		Asset:      currency.USDCBase,
 		Lines:      Transfer(f.payer, f.payee, usd(t, "0.40")),
 		AgentID:    &agent,
 		OccurredAt: now,
@@ -497,7 +497,7 @@ func TestCheckSpendCounters_DetectsDrift(t *testing.T) {
 	// A payment of 0.40 is recorded in the book.
 	_, err := f.svc.Post(ctx, Entry{
 		Kind:       KindPayment,
-		Asset:      currency.USDC,
+		Asset:      currency.USDCBase,
 		Lines:      Transfer(f.payer, f.payee, usd(t, "0.40")),
 		AgentID:    &agent,
 		OccurredAt: now,
@@ -536,17 +536,17 @@ func TestPost_AcrossPartitionBoundary(t *testing.T) {
 
 	_, err := f.svc.Post(ctx, Entry{
 		Kind:       KindPayment,
-		Asset:      currency.USDC,
+		Asset:      currency.USDCBase,
 		Lines:      Transfer(f.payer, f.payee, usd(t, "1.00")),
 		OccurredAt: lastMonth,
 	})
 	require.NoError(t, err)
 
-	balance, err := f.svc.Balance(ctx, f.payer, currency.USDC)
+	balance, err := f.svc.Balance(ctx, f.payer, currency.USDCBase)
 	require.NoError(t, err)
 	assert.Equal(t, "9", balance.String(), "a posting in an older partition must still count")
 
-	check, err := f.svc.CheckBook(ctx, currency.USDC)
+	check, err := f.svc.CheckBook(ctx, currency.USDCBase)
 	require.NoError(t, err)
 	assert.True(t, check.Balanced())
 }

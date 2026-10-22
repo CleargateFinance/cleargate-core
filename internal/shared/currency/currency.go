@@ -10,11 +10,13 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-// Asset identifies the unit of account (e.g. USDC on Base).
+// Asset identifies a token on one chain. The same token on two chains is two
+// assets, since one can't pay for the other without a bridge. The network
+// (testnet or mainnet) is a deployment setting, not part of the asset.
 type Asset string
 
-// USDC is the stablecoin asset used throughout the platform.
-const USDC Asset = "USDC"
+// USDCBase is USDC on Base.
+const USDCBase Asset = "USDC-BASE"
 
 // Amount is an exact decimal quantity of a specific Asset.
 //

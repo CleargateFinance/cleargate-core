@@ -132,7 +132,7 @@ func (w *Worker) runJob(ctx context.Context, j job) {
 
 // checkBook verifies that every posting in the book cancels out.
 func checkBook(ctx context.Context, log *slog.Logger, svc *ledger.Service) error {
-	check, err := svc.CheckBook(ctx, currency.USDC)
+	check, err := svc.CheckBook(ctx, currency.USDCBase)
 	if err != nil {
 		return err
 	}
