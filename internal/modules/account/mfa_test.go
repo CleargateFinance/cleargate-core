@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/CleargateFinance/cleargate-core/internal/infrastructure/crypto"
+	"github.com/CleargateFinance/cleargate-core/internal/shared/apperr"
 	"github.com/CleargateFinance/cleargate-core/internal/shared/id"
 	"github.com/CleargateFinance/cleargate-core/test/fixtures"
 )
@@ -140,6 +141,7 @@ func TestTOTPEnrolment_RequiresConfirmingCode(t *testing.T) {
 	var stepUp *StepUpError
 	require.ErrorAs(t, err, &stepUp)
 	assert.Equal(t, ReasonMFARequired, stepUp.Reason)
+	assert.Equal(t, ReasonMFARequired, apperr.CodeOf(err), "the reason must reach the transport")
 
 	// A wrong code must not confirm it either.
 	_, err = f.svc.ConfirmTOTPEnrolment(ctx, f.user, "000000", "203.0.113.1", "test")

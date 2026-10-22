@@ -3,6 +3,8 @@ package server
 import (
 	"log/slog"
 	"net/http"
+	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -20,6 +22,9 @@ type errorResponse struct {
 	// Kind is the stable machine-readable category, safe for clients to
 	// branch on. Unlike the message, it will not be reworded.
 	Kind string `json:"kind"`
+	// Code is a stable reason more specific than Kind, present when a client
+	// has to branch on it, e.g. "mfa_required".
+	Code string `json:"code,omitempty"`
 	// RequestID lets a caller quote one ID in a support request.
 	RequestID string `json:"request_id,omitempty"`
 }
@@ -80,11 +85,17 @@ func ErrorMapper() gin.HandlerFunc {
 			)
 		}
 
+		if wait := apperr.RetryAfterOf(err); wait > 0 {
+			// Whole seconds, rounded up so the caller never retries early.
+			c.Header("Retry-After", strconv.Itoa(int((wait+time.Second-1)/time.Second)))
+		}
+
 		c.JSON(status, errorResponse{
 			// MessageOf returns the caller-safe message, or a generic string
 			// for errors that are not apperr values, so internals never leak.
 			Error:     apperr.MessageOf(err),
 			Kind:      kind.String(),
+			Code:      apperr.CodeOf(err),
 			RequestID: c.GetString("request_id"),
 		})
 	}

@@ -410,6 +410,7 @@ func TestLogin_ThrottlesRepeatedFailures(t *testing.T) {
 	assert.Greater(t, throttled.RetryAfter, time.Duration(0))
 	assert.Equal(t, apperr.KindRateLimited, apperr.KindOf(err),
 		"a throttled attempt must classify as rate limited, for a Retry-After header")
+	assert.Equal(t, throttled.RetryAfter, apperr.RetryAfterOf(err), "the delay must reach the transport")
 }
 
 func TestLogin_ThrottleClearsOnSuccess(t *testing.T) {

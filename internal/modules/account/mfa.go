@@ -118,7 +118,7 @@ type StepUpError struct {
 }
 
 func newStepUpError(reason, message string) *StepUpError {
-	return &StepUpError{Reason: reason, cause: apperr.Forbidden(message)}
+	return &StepUpError{Reason: reason, cause: apperr.Forbidden(message).WithCode(reason)}
 }
 
 func (e *StepUpError) Error() string { return e.cause.Error() }
