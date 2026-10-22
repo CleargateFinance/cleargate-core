@@ -53,6 +53,9 @@ func (s *Service) EnsureAccount(
 // and that second check is the one that makes the invariant true, since it
 // cannot be bypassed by any code path.
 //
+// Returns ErrInsufficientFunds if customer funds would go below zero. Nothing
+// is written then, so the caller's transaction can still commit.
+//
 // This joins whatever transaction is already open on ctx, so a caller that
 // needs the posting to land atomically alongside other writes gets that by
 // wrapping the whole group in one unit of work.

@@ -1,7 +1,7 @@
 // Package ledger is the double-entry book.
 //
 // This is the component that cannot be got wrong, so it is deliberately small
-// and heavily tested. Three invariants hold at all times:
+// and heavily tested. Four invariants hold at all times:
 //
 //  1. Append-only. Corrections are new reversing entries, never an UPDATE or a
 //     DELETE, so the book can always be replayed to any point in history.
@@ -10,6 +10,7 @@
 //  3. Agents hold spend counters, not balances. Money is pooled at the account
 //     and per-agent limits are ceilings on behaviour, not reservations of
 //     funds.
+//  4. Customer funds never go below zero. Debits lock the bucket first.
 //
 // Note the naming trap: a ledger account is an accounting bucket, and is a
 // different thing from a customer account. They are never the same table.
