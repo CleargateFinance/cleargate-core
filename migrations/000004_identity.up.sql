@@ -82,9 +82,11 @@ CREATE TABLE account (
 
   created_at        timestamptz NOT NULL DEFAULT now(),
 
-  -- Suspension and its timestamp cannot disagree about whether this account
-  -- is frozen.
-  CHECK ((status = 'suspended') = (frozen_at IS NOT NULL))
+  -- Freezing (frozen_at) is the customer's call and suspension (status) the
+  -- platform's. They're kept apart so unfreezing can't lift a suspension. An
+  -- account may spend only when status is 'active' and frozen_at is NULL.
+  CONSTRAINT account_frozen_by_needs_frozen_at
+    CHECK (frozen_by IS NULL OR frozen_at IS NOT NULL)
 );
 
 -- ---------------------------------------------------------------------------
@@ -377,3 +379,17 @@ CREATE TABLE onramp_customer (
   created_at   timestamptz NOT NULL DEFAULT now(),
   UNIQUE (provider, external_id)
 );
+
+-- ---------------------------------------------------------------------------
+-- Foreign keys from earlier migrations
+-- ---------------------------------------------------------------------------
+
+-- The ledger and the spend counters were created before account and agent
+-- existed, so their foreign keys are added here.
+ALTER TABLE ledger_account
+  ADD CONSTRAINT ledger_account_account_fk
+    FOREIGN KEY (account_id) REFERENCES account(id);
+
+ALTER TABLE agent_spend_counter
+  ADD CONSTRAINT agent_spend_counter_agent_fk
+    FOREIGN KEY (agent_id) REFERENCES agent(id);

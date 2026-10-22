@@ -93,6 +93,9 @@ type Entry struct {
 	// the postings rather than trusted from the counters alone.
 	AgentID *id.AgentID
 
+	// Reverses is the entry a reversal undoes. Required for reversals.
+	Reverses *id.JournalEntryID
+
 	Description string
 
 	// OccurredAt stamps both the entry and every posting under it. Leaving it
@@ -150,6 +153,9 @@ func (e Entry) Validate() error {
 	if e.Asset == "" {
 		return apperr.Invalid("ledger: entry has no asset")
 	}
+	if e.Kind == KindReversal && e.Reverses == nil {
+		return apperr.Invalid("ledger: a reversal must name the entry it reverses")
+	}
 
 	// Two lines is the minimum that can cancel out. One line can only be zero,
 	// which is not a movement at all.
@@ -183,3 +189,6 @@ func (e Entry) Validate() error {
 
 // ErrInsufficientFunds means an entry would take customer funds below zero.
 var ErrInsufficientFunds = apperr.Conflict("insufficient funds")
+
+// ErrReleaseExceedsSpend means a release would take a spend counter below zero.
+var ErrReleaseExceedsSpend = apperr.Conflict("release exceeds recorded spend")

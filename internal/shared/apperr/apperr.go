@@ -8,6 +8,7 @@ package apperr
 import (
 	"errors"
 	"fmt"
+	"time"
 )
 
 // Kind classifies an error into one of a small, fixed set of semantic
@@ -53,7 +54,30 @@ func (k Kind) String() string {
 type Error struct {
 	Kind    Kind
 	Message string
-	cause   error
+
+	// Code is an optional stable reason, more specific than Kind, for callers
+	// that must branch on it.
+	Code string
+
+	// RetryAfter, when set, is how long the caller should wait before retrying.
+	RetryAfter time.Duration
+
+	cause error
+}
+
+// WithCode returns a copy of e with a code. It copies so that a shared
+// sentinel is never changed.
+func (e *Error) WithCode(code string) *Error {
+	c := *e
+	c.Code = code
+	return &c
+}
+
+// WithRetryAfter returns a copy of e with a retry delay.
+func (e *Error) WithRetryAfter(d time.Duration) *Error {
+	c := *e
+	c.RetryAfter = d
+	return &c
 }
 
 // Error implements the error interface.
@@ -97,6 +121,24 @@ func MessageOf(err error) string {
 		return appErr.Message
 	}
 	return "internal error"
+}
+
+// CodeOf returns err's code, or "" when it has none.
+func CodeOf(err error) string {
+	var appErr *Error
+	if errors.As(err, &appErr) {
+		return appErr.Code
+	}
+	return ""
+}
+
+// RetryAfterOf returns how long to wait before retrying err, or zero.
+func RetryAfterOf(err error) time.Duration {
+	var appErr *Error
+	if errors.As(err, &appErr) {
+		return appErr.RetryAfter
+	}
+	return 0
 }
 
 // Constructors for the common kinds, so call sites read as prose.

@@ -14,7 +14,7 @@ import (
 // usd is a helper for building test amounts without repeating error handling.
 func usd(t *testing.T, s string) currency.Amount {
 	t.Helper()
-	a, err := currency.Parse(s, currency.USDC)
+	a, err := currency.Parse(s, currency.USDCBase)
 	require.NoError(t, err)
 	return a
 }
@@ -27,7 +27,7 @@ const (
 func TestBalanced_TwoOppositeLinesSumToZero(t *testing.T) {
 	lines := Transfer(bucketA, bucketB, usd(t, "0.40"))
 
-	ok, err := Balanced(currency.USDC, lines)
+	ok, err := Balanced(currency.USDCBase, lines)
 	require.NoError(t, err)
 	assert.True(t, ok, "a debit and an equal credit must cancel out")
 }
@@ -38,7 +38,7 @@ func TestBalanced_RejectsLinesThatDoNotCancel(t *testing.T) {
 		Credit(bucketB, usd(t, "0.30")),
 	}
 
-	ok, err := Balanced(currency.USDC, lines)
+	ok, err := Balanced(currency.USDCBase, lines)
 	require.NoError(t, err)
 	assert.False(t, ok, "lines that do not cancel must not be reported balanced")
 }
@@ -52,7 +52,7 @@ func TestBalanced_ExactWithFractionsThatBreakBinaryFloats(t *testing.T) {
 		Credit(bucketB, usd(t, "0.3")),
 	}
 
-	ok, err := Balanced(currency.USDC, lines)
+	ok, err := Balanced(currency.USDCBase, lines)
 	require.NoError(t, err)
 	assert.True(t, ok, "0.1 + 0.2 must cancel 0.3 exactly")
 }
@@ -66,7 +66,7 @@ func TestBalanced_MultiLineEntry(t *testing.T) {
 		Credit(bucketA, usd(t, "0.05")),
 	}
 
-	ok, err := Balanced(currency.USDC, lines)
+	ok, err := Balanced(currency.USDCBase, lines)
 	require.NoError(t, err)
 	assert.True(t, ok)
 }
@@ -83,7 +83,7 @@ func TestEntryValidate(t *testing.T) {
 	valid := func() Entry {
 		return Entry{
 			Kind:       KindPayment,
-			Asset:      currency.USDC,
+			Asset:      currency.USDCBase,
 			Lines:      Transfer(bucketA, bucketB, usd(t, "0.40")),
 			OccurredAt: time.Now(),
 		}
@@ -107,6 +107,11 @@ func TestEntryValidate(t *testing.T) {
 		{
 			name:    "a missing asset is rejected",
 			mutate:  func(e *Entry) { e.Asset = "" },
+			wantErr: true,
+		},
+		{
+			name:    "a reversal that names no entry is rejected",
+			mutate:  func(e *Entry) { e.Kind = KindReversal },
 			wantErr: true,
 		},
 		{

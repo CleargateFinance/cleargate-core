@@ -1,8 +1,12 @@
 -- Reverses 000004_identity.up.sql.
 --
--- Tables are dropped in reverse creation order, which is always safe here
--- because a foreign key can only ever point at a table created earlier.
+-- The foreign keys this migration added to earlier tables go first. After
+-- that, tables are dropped in reverse creation order, which is safe because
+-- every remaining foreign key points at a table created earlier.
 -- Indexes are dropped automatically with their table.
+
+ALTER TABLE agent_spend_counter DROP CONSTRAINT IF EXISTS agent_spend_counter_agent_fk;
+ALTER TABLE ledger_account DROP CONSTRAINT IF EXISTS ledger_account_account_fk;
 
 DROP TABLE IF EXISTS onramp_customer;
 

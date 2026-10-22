@@ -187,15 +187,15 @@ func NewService(
 
 // defaultTierLimits parses the compile-time ceilings into exact amounts.
 func defaultTierLimits() (TierLimits, error) {
-	basic, err := currency.Parse(DefaultBasicFundingCap, currency.USDC)
+	basic, err := currency.Parse(DefaultBasicFundingCap, currency.USDCBase)
 	if err != nil {
 		return TierLimits{}, err
 	}
-	verified, err := currency.Parse(DefaultVerifiedFundingCap, currency.USDC)
+	verified, err := currency.Parse(DefaultVerifiedFundingCap, currency.USDCBase)
 	if err != nil {
 		return TierLimits{}, err
 	}
-	business, err := currency.Parse(DefaultBusinessFundingCap, currency.USDC)
+	business, err := currency.Parse(DefaultBusinessFundingCap, currency.USDCBase)
 	if err != nil {
 		return TierLimits{}, err
 	}

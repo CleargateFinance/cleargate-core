@@ -4,12 +4,14 @@ package account
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/CleargateFinance/cleargate-core/internal/shared/apperr"
 	"github.com/CleargateFinance/cleargate-core/internal/shared/currency"
 	"github.com/CleargateFinance/cleargate-core/internal/shared/id"
 	"github.com/CleargateFinance/cleargate-core/test/fixtures"
@@ -20,9 +22,9 @@ type stubFunding struct{ funded string }
 
 func (s stubFunding) FundedToDate(context.Context, id.PrincipalID) (currency.Amount, error) {
 	if s.funded == "" {
-		return currency.Parse("0", currency.USDC)
+		return currency.Parse("0", currency.USDCBase)
 	}
-	return currency.Parse(s.funded, currency.USDC)
+	return currency.Parse(s.funded, currency.USDCBase)
 }
 
 // fundingFixture is an account with a principal, and a service whose funding
@@ -58,14 +60,26 @@ func newFundingFixture(t *testing.T, fundedToDate string) *fundingFixture {
 	return f
 }
 
-// screen records a verdict for an address.
+// CAIP-2 network ids.
+const (
+	baseChain    = "eip155:8453"
+	solanaDevnet = "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1"
+)
+
+// screen records a verdict for an address on Base.
 func (f *fundingFixture) screen(t *testing.T, address string, status ScreeningStatus) {
+	t.Helper()
+	f.screenOn(t, baseChain, address, status)
+}
+
+// screenOn records a verdict for an address on any chain.
+func (f *fundingFixture) screenOn(t *testing.T, chain, address string, status ScreeningStatus) {
 	t.Helper()
 
 	now := time.Now().UTC()
-	_, err := f.repo.RecordScreening(context.Background(), ScreenedAddress{
+	_, err := f.svc.RecordScreening(context.Background(), ScreenedAddress{
 		PrincipalID: f.principal,
-		Chain:       "base",
+		Chain:       chain,
 		Address:     address,
 		Status:      status,
 		Provider:    "cdp",
@@ -93,7 +107,7 @@ func (f *fundingFixture) verify(t *testing.T) {
 
 func usd(t *testing.T, v string) currency.Amount {
 	t.Helper()
-	a, err := currency.Parse(v, currency.USDC)
+	a, err := currency.Parse(v, currency.USDCBase)
 	require.NoError(t, err)
 	return a
 }
@@ -118,7 +132,7 @@ func TestUnverifiedPrincipalCanFundSmallAmountWithoutKyc(t *testing.T) {
 	assert.NoError(t, f.svc.RequireFundingAllowed(ctx, FundingRequest{
 		PrincipalID: f.principal,
 		Amount:      usd(t, "50"),
-		Chain:       "base",
+		Chain:       baseChain,
 		Address:     "0xabc",
 	}), "a fifty dollar trial must not require identity documents")
 }
@@ -134,7 +148,7 @@ func TestUnverifiedFundingStillRequiresScreening(t *testing.T) {
 	request := FundingRequest{
 		PrincipalID: f.principal,
 		Amount:      usd(t, "50"),
-		Chain:       "base",
+		Chain:       baseChain,
 		Address:     "0xdirty",
 	}
 
@@ -162,14 +176,14 @@ func TestSpendLimitFollowsTierNotFundingMethod(t *testing.T) {
 		// 60 already funded, 50 more would pass the 100 basic cap.
 		err := f.svc.RequireFundingAllowed(ctx, FundingRequest{
 			PrincipalID: f.principal, Amount: usd(t, "50"),
-			Chain: "base", Address: "0xabc",
+			Chain: baseChain, Address: "0xabc",
 		})
 		assert.ErrorIs(t, err, ErrFundingCapExceeded)
 
 		// Just under it still passes.
 		assert.NoError(t, f.svc.RequireFundingAllowed(ctx, FundingRequest{
 			PrincipalID: f.principal, Amount: usd(t, "40"),
-			Chain: "base", Address: "0xabc",
+			Chain: baseChain, Address: "0xabc",
 		}))
 	})
 
@@ -193,7 +207,7 @@ func TestSpendLimitFollowsTierNotFundingMethod(t *testing.T) {
 
 		assert.NoError(t, f.svc.RequireFundingAllowed(ctx, FundingRequest{
 			PrincipalID: f.principal, Amount: usd(t, "5000"),
-			Chain: "base", Address: "0xabc",
+			Chain: baseChain, Address: "0xabc",
 		}))
 	})
 }
@@ -230,19 +244,19 @@ func TestUnverifiedWithdrawalMustReturnToSource(t *testing.T) {
 	// Money arrived from 0xsource.
 	require.NoError(t, f.svc.RecordFunding(ctx, FundingRequest{
 		PrincipalID: f.principal, Amount: usd(t, "50"),
-		Chain: "base", Address: "0xsource",
+		Chain: baseChain, Address: "0xsource",
 	}, time.Now().UTC()))
 
 	// Back to where it came from: allowed.
 	assert.NoError(t, f.svc.RequireWithdrawalAllowed(ctx, WithdrawalRequest{
 		PrincipalID: f.principal, Amount: usd(t, "20"),
-		Chain: "base", Address: "0xsource",
+		Chain: baseChain, Address: "0xsource",
 	}))
 
 	// Somewhere else, even though that address is perfectly clean: refused.
 	assert.ErrorIs(t, f.svc.RequireWithdrawalAllowed(ctx, WithdrawalRequest{
 		PrincipalID: f.principal, Amount: usd(t, "20"),
-		Chain: "base", Address: "0xelsewhere",
+		Chain: baseChain, Address: "0xelsewhere",
 	}), ErrWithdrawalNotToSource)
 }
 
@@ -257,7 +271,7 @@ func TestVerifiedPrincipalMayWithdrawAnywhere(t *testing.T) {
 
 	assert.NoError(t, f.svc.RequireWithdrawalAllowed(ctx, WithdrawalRequest{
 		PrincipalID: f.principal, Amount: usd(t, "20"),
-		Chain: "base", Address: "0xelsewhere",
+		Chain: baseChain, Address: "0xelsewhere",
 	}))
 }
 
@@ -272,7 +286,7 @@ func TestWithdrawalScreensDestinationAtEveryTier(t *testing.T) {
 
 	assert.ErrorIs(t, f.svc.RequireWithdrawalAllowed(ctx, WithdrawalRequest{
 		PrincipalID: f.principal, Amount: usd(t, "20"),
-		Chain: "base", Address: "0xsanctioned",
+		Chain: baseChain, Address: "0xsanctioned",
 	}), ErrAddressRejected)
 }
 
@@ -286,13 +300,47 @@ func TestAddressComparisonIgnoresCase(t *testing.T) {
 	f.screen(t, "0xabcdef", ScreeningClear)
 	require.NoError(t, f.svc.RecordFunding(ctx, FundingRequest{
 		PrincipalID: f.principal, Amount: usd(t, "50"),
-		Chain: "base", Address: "0xAbCdEf",
+		Chain: baseChain, Address: "0xAbCdEf",
 	}, time.Now().UTC()))
 
 	assert.NoError(t, f.svc.RequireWithdrawalAllowed(ctx, WithdrawalRequest{
 		PrincipalID: f.principal, Amount: usd(t, "20"),
-		Chain: "base", Address: "0xABCDEF",
+		Chain: baseChain, Address: "0xABCDEF",
 	}))
+}
+
+// TestSolanaAddressKeepsItsCase: Solana addresses are case-sensitive base58,
+// so a lowercased one is a different address.
+func TestSolanaAddressKeepsItsCase(t *testing.T) {
+	ctx := context.Background()
+	f := newFundingFixture(t, "0")
+
+	const address = "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM"
+	f.screenOn(t, solanaDevnet, address, ScreeningClear)
+
+	request := FundingRequest{
+		PrincipalID: f.principal,
+		Amount:      usd(t, "50"),
+		Chain:       solanaDevnet,
+		Address:     address,
+	}
+	require.NoError(t, f.svc.RequireFundingAllowed(ctx, request))
+
+	request.Address = strings.ToLower(address)
+	assert.ErrorIs(t, f.svc.RequireFundingAllowed(ctx, request), ErrAddressNotScreened)
+}
+
+func TestScreeningRefusesChainThatIsNotCAIP2(t *testing.T) {
+	f := newFundingFixture(t, "0")
+
+	_, err := f.svc.RecordScreening(context.Background(), ScreenedAddress{
+		PrincipalID: f.principal,
+		Chain:       "base",
+		Address:     "0xabc",
+		Status:      ScreeningPending,
+	})
+	require.Error(t, err)
+	assert.Equal(t, apperr.KindInvalid, apperr.KindOf(err))
 }
 
 // TestFundingRefusedWhenHistoryNotWired checks the gate fails closed.

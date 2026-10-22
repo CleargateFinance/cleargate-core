@@ -35,7 +35,11 @@ CREATE TABLE ledger_account (
     -- cannot be duplicated either. Without it Postgres treats every NULL as
     -- unique and would happily create a second revenue bucket.
     CONSTRAINT ledger_account_unique
-        UNIQUE NULLS NOT DISTINCT (account_id, type, asset)
+        UNIQUE NULLS NOT DISTINCT (account_id, type, asset),
+
+    -- Lets a posting reference its bucket by (id, asset), so it can't be in
+    -- another asset.
+    CONSTRAINT ledger_account_id_asset_unique UNIQUE (id, asset)
 );
 
 CREATE INDEX ledger_account_by_account ON ledger_account (account_id);
@@ -67,6 +71,10 @@ CREATE TABLE journal_entry (
     -- postings themselves rather than trusted blindly.
     agent_id       uuid,
 
+    -- For a reversal, the entry it undoes. No foreign key: the partitioned
+    -- key would need that entry's timestamp too.
+    reverses_entry_id uuid,
+
     description    text,
     created_at     timestamptz NOT NULL DEFAULT now(),
 
@@ -78,7 +86,7 @@ CREATE TABLE journal_entry (
 CREATE TABLE posting (
     id                uuid NOT NULL DEFAULT gen_random_uuid(),
     journal_entry_id  uuid NOT NULL,
-    ledger_account_id uuid NOT NULL REFERENCES ledger_account (id),
+    ledger_account_id uuid NOT NULL,
 
     -- Signed: negative debits the bucket, positive credits it. A single signed
     -- column makes the balance rule literally SUM(amount) = 0, which the
@@ -95,7 +103,13 @@ CREATE TABLE posting (
     -- match. That match is what lets the balance trigger below restrict its
     -- lookup to one partition instead of scanning them all.
     FOREIGN KEY (journal_entry_id, created_at)
-        REFERENCES journal_entry (id, created_at)
+        REFERENCES journal_entry (id, created_at),
+
+    -- A posting in another asset would vanish from its bucket's balance, which
+    -- sums the bucket's own asset only.
+    CONSTRAINT posting_asset_matches_bucket
+        FOREIGN KEY (ledger_account_id, asset)
+        REFERENCES ledger_account (id, asset)
 ) PARTITION BY RANGE (created_at);
 
 CREATE INDEX posting_by_account ON posting (ledger_account_id, created_at DESC);

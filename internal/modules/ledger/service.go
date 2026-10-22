@@ -143,6 +143,33 @@ func (s *Service) RecordSpend(
 	return totals, nil
 }
 
+// ReleaseSpend gives back the budget of a payment that never went through.
+// authorizedAt must be the time passed to RecordSpend, so the release lands in
+// the same windows, even if they have since closed.
+func (s *Service) ReleaseSpend(
+	ctx context.Context,
+	agentID id.AgentID,
+	amount currency.Amount,
+	authorizedAt time.Time,
+) error {
+	if agentID == "" {
+		return apperr.Invalid("ledger: release needs an agent")
+	}
+	if amount.IsNegative() {
+		return apperr.Invalid("ledger: release amount must not be negative")
+	}
+	if authorizedAt.IsZero() {
+		return apperr.Invalid("ledger: release needs the authorization time")
+	}
+
+	for _, p := range PeriodsFor(authorizedAt) {
+		if err := s.repo.DecrementSpend(ctx, agentID, p, amount); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // SpentIn reports how much an agent has spent in one window.
 func (s *Service) SpentIn(
 	ctx context.Context,

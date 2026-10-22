@@ -141,7 +141,8 @@ type ThrottledError struct {
 func newThrottled(retryAfter time.Duration) *ThrottledError {
 	return &ThrottledError{
 		RetryAfter: retryAfter,
-		cause:      apperr.RateLimited("too many attempts, please wait before trying again"),
+		cause: apperr.RateLimited("too many attempts, please wait before trying again").
+			WithRetryAfter(retryAfter),
 	}
 }
 

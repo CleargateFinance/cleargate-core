@@ -36,6 +36,10 @@ type Repository interface {
 	// returns the new total, in a single atomic statement.
 	IncrementSpend(ctx context.Context, agentID id.AgentID, p Period, amount currency.Amount) (currency.Amount, error)
 
+	// DecrementSpend takes amount off an agent's counter for one window,
+	// refusing to take off more than the counter holds.
+	DecrementSpend(ctx context.Context, agentID id.AgentID, p Period, amount currency.Amount) error
+
 	// SpentIn reports an agent's counter for one window, zero when no counter
 	// exists yet.
 	SpentIn(ctx context.Context, agentID id.AgentID, p Period, asset currency.Asset) (currency.Amount, error)
@@ -44,7 +48,8 @@ type Repository interface {
 	StoredSpend(ctx context.Context, p Period) ([]Spend, error)
 
 	// RecomputeSpend derives what every agent's counter should be for one
-	// window, by summing the payment postings attributed to each agent.
+	// window, by summing the payment postings attributed to each agent, net
+	// of reversals of those payments.
 	RecomputeSpend(ctx context.Context, p Period) ([]Spend, error)
 
 	// EnsurePartitions creates any missing monthly partitions, covering

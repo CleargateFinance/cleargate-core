@@ -20,7 +20,7 @@ type FundingRequest struct {
 	// Chain and Address identify where the money is coming from. Both are
 	// empty for a fiat on-ramp deposit, where there is no counterparty address
 	// to screen and the on-ramp has already done customer due diligence of its
-	// own.
+	// own. Chain is a CAIP-2 network id, e.g. eip155:8453.
 	Chain   string
 	Address string
 }
@@ -102,7 +102,11 @@ func (s *Service) RecordFunding(ctx context.Context, r FundingRequest, at time.T
 	if !r.FromChain() {
 		return nil
 	}
-	return s.repo.MarkAddressFunded(ctx, r.PrincipalID, r.Chain, normalizeAddress(r.Address), at)
+	address, err := normalizeAddress(r.Chain, r.Address)
+	if err != nil {
+		return err
+	}
+	return s.repo.MarkAddressFunded(ctx, r.PrincipalID, r.Chain, address, at)
 }
 
 // WithdrawalRequest is money about to leave.
@@ -133,7 +137,10 @@ func (s *Service) RequireWithdrawalAllowed(ctx context.Context, r WithdrawalRequ
 		return errInvalid("withdrawal needs a destination")
 	}
 
-	address := normalizeAddress(r.Address)
+	address, err := normalizeAddress(r.Chain, r.Address)
+	if err != nil {
+		return err
+	}
 
 	// The destination is screened regardless of tier. A verified principal is
 	// still not permitted to send money to a sanctioned address, and
@@ -155,7 +162,7 @@ func (s *Service) RequireWithdrawalAllowed(ctx context.Context, r WithdrawalRequ
 		return err
 	}
 	for _, source := range sources {
-		if source.Chain == r.Chain && normalizeAddress(source.Address) == address && source.HasFunded() {
+		if source.Chain == r.Chain && source.Address == address && source.HasFunded() {
 			return nil
 		}
 	}
@@ -163,9 +170,25 @@ func (s *Service) RequireWithdrawalAllowed(ctx context.Context, r WithdrawalRequ
 	return ErrWithdrawalNotToSource
 }
 
+// RecordScreening stores a screening verdict. It is the only write path for
+// screened addresses, so every stored address is normalized.
+func (s *Service) RecordScreening(ctx context.Context, a ScreenedAddress) (ScreenedAddress, error) {
+	address, err := normalizeAddress(a.Chain, a.Address)
+	if err != nil {
+		return ScreenedAddress{}, err
+	}
+	a.Address = address
+	return s.repo.RecordScreening(ctx, a)
+}
+
 // requireAddressUsable refuses an address that has no verdict, or a bad one.
 func (s *Service) requireAddressUsable(ctx context.Context, principalID id.PrincipalID, chain, address string) error {
-	screened, err := s.repo.ScreenedAddress(ctx, principalID, chain, normalizeAddress(address))
+	address, err := normalizeAddress(chain, address)
+	if err != nil {
+		return err
+	}
+
+	screened, err := s.repo.ScreenedAddress(ctx, principalID, chain, address)
 	if err != nil {
 		if errors.Is(err, ErrAddressNotScreened) {
 			// Screening is asynchronous, so no verdict yet is a wait rather
@@ -190,11 +213,23 @@ func (s *Service) requireAddressUsable(ctx context.Context, principalID id.Princ
 	return nil
 }
 
-// normalizeAddress puts an address into one comparable form.
-//
-// Case folding matters because EVM addresses are routinely written in mixed
-// case as a checksum, and two spellings of the same address must never look
-// like two different addresses to a return-to-source check.
-func normalizeAddress(address string) string {
-	return strings.ToLower(strings.TrimSpace(address))
+// normalizeAddress puts an address into the form it is stored and compared in.
+// chain is a CAIP-2 network id. EVM addresses are lowercased, since mixed case
+// is only a checksum. Solana addresses are case-sensitive and kept as given.
+func normalizeAddress(chain, address string) (string, error) {
+	address = strings.TrimSpace(address)
+
+	namespace, reference, ok := strings.Cut(chain, ":")
+	if !ok || reference == "" {
+		return "", errInvalid("chain must be a CAIP-2 network id")
+	}
+
+	switch namespace {
+	case "eip155":
+		return strings.ToLower(address), nil
+	case "solana":
+		return address, nil
+	default:
+		return "", errInvalid("unsupported chain " + chain)
+	}
 }
