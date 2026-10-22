@@ -74,7 +74,7 @@ Phases 2/3 and 4 are independent of Phase 1 — parallelisable if more than one 
 > **Why this and not that — no `float64` constructor**
 > `0.1 + 0.2 != 0.3` in IEEE-754. The ledger's defining invariant is that postings sum to exactly zero, so a type that cannot represent its own inputs cannot satisfy it. The protection is not "remember to use decimal" — it is that no function in this package accepts a `float64`, so the mistake does not compile. Whitepaper §8.3 depends on this.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```go
 // internal/shared/currency/currency_test.go
@@ -131,11 +131,11 @@ func TestSum_ZeroForBalancedLines(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run and confirm failure**
+- [x] **Step 2: Run and confirm failure**
 
 `go test ./internal/shared/currency/ -run . -v` → FAIL, `undefined: currency.Parse`
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 ```go
 // internal/shared/currency/currency.go
@@ -210,9 +210,9 @@ func Sum(asset Asset, amounts ...Amount) (Amount, error) {
 }
 ```
 
-- [ ] **Step 4: Verify** — `go test ./internal/shared/currency/ -v` → PASS (4 tests)
+- [x] **Step 4: Verify** — `go test ./internal/shared/currency/ -v` → PASS (4 tests)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 go get github.com/shopspring/decimal
@@ -227,7 +227,7 @@ git commit -m "feat(currency): exact decimal amount type with asset safety"
 > **Why this and not that — the unit of work takes a `context.Context`, not a `*sql.Tx`**
 > Repositories need to run inside a caller-controlled transaction, but a repository method signature must not leak the transaction type — that would force every module to import pgx and would break the dependency rule. Stashing the transaction in the context means `Post(ctx, ...)` joins whatever transaction is open, and works identically outside one. One signature, both cases.
 
-- [ ] **Step 1: Failing test** (`internal/infrastructure/database/unitofwork_test.go`)
+- [x] **Step 1: Failing test** (`internal/infrastructure/database/unitofwork_test.go`)
 
 ```go
 //go:build integration
@@ -272,9 +272,9 @@ func TestUnitOfWork_RollsBackOnError(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Confirm failure** — `go test ./internal/infrastructure/database/ -tags=integration -v` → FAIL (undefined fixtures)
+- [x] **Step 2: Confirm failure** — `go test ./internal/infrastructure/database/ -tags=integration -v` → FAIL (undefined fixtures)
 
-- [ ] **Step 3: Implement the DB handle and UoW**
+- [x] **Step 3: Implement the DB handle and UoW**
 
 ```go
 // internal/infrastructure/database/postgres.go
@@ -350,7 +350,7 @@ func (u *uow) Do(ctx context.Context, fn func(context.Context) error) error {
 }
 ```
 
-- [ ] **Step 4: Build the test fixture** (`test/fixtures/db.go`)
+- [x] **Step 4: Build the test fixture** (`test/fixtures/db.go`)
 
 ```go
 package fixtures
@@ -374,7 +374,7 @@ func NewTestDB(t *testing.T) *TestDB {
 > **Why this and not that — a real container, not `sqlmock`**
 > Most of the ledger's correctness lives in *database* constructs: the zero-sum constraint, the partial unique index enforcing one live mandate, generated columns keeping signed and queryable data in sync. `sqlmock` tests your Go against an imaginary database — it would pass while production is broken. Containers cost ~3 seconds per package and test the thing that actually enforces the invariant.
 
-- [ ] **Step 5: Verify and commit**
+- [x] **Step 5: Verify and commit**
 
 ```bash
 go test ./internal/infrastructure/database/ -tags=integration -v   # PASS
@@ -384,16 +384,16 @@ git commit -m "feat(infrastructure): database pool, context-scoped unit of work,
 
 ### Task 0.3: Migration tooling and the walking skeleton
 
-- [ ] **Step 1:** `cmd/migrate` wrapping `golang-migrate`, subcommands `up`/`down`/`version`.
-- [ ] **Step 2:** `migrations/000001_extensions.up.sql` — `CREATE EXTENSION IF NOT EXISTS pgcrypto;`
-- [ ] **Step 3:** `internal/infrastructure/server` — Gin engine with request-ID, structured logging, panic recovery, and the single `apperr.Kind → HTTP status` mapper.
-- [ ] **Step 4:** `internal/app/api.go` — `BuildAPI(cfg) (*gin.Engine, func(), error)` registering only `GET /v1/health` (checks DB and Redis).
-- [ ] **Step 5:** `cmd/api/main.go` — graceful shutdown as sketched in the scaffold.
+- [x] **Step 1:** `cmd/migrate` wrapping `golang-migrate`, subcommands `up`/`down`/`version`.
+- [x] **Step 2:** `migrations/000001_extensions.up.sql` — `CREATE EXTENSION IF NOT EXISTS pgcrypto;`
+- [x] **Step 3:** `internal/infrastructure/server` — Gin engine with request-ID, structured logging, panic recovery, and the single `apperr.Kind → HTTP status` mapper.
+- [x] **Step 4:** `internal/app/api.go` — `BuildAPI(ctx, cfg, log) (*API, func(), error)` registering only `GET /v1/health` (checks DB and Redis).
+- [x] **Step 5:** `cmd/api/main.go` — graceful shutdown as sketched in the scaffold.
 
 > **Why this and not that — migrations never run on API boot**
 > A rolling deploy starts several instances at once. If each runs migrations, they race on the same DDL and one wins arbitrarily. `cmd/migrate` runs as an explicit deploy step, before the new version starts.
 
-- [ ] **Step 6: E2E test and commit**
+- [x] **Step 6: E2E test and commit**
 
 ```go
 // test/e2e/health_test.go — asserts 200 and {"status":"ok"} from a fully built app
@@ -415,7 +415,7 @@ git commit -m "feat: walking skeleton — migrations, gin bootstrap, health endp
 
 **Files:** `migrations/000002_ledger.up.sql` / `.down.sql`
 
-- [ ] **Step 1: Write the migration**
+- [x] **Step 1: Write the migration**
 
 ```sql
 CREATE TABLE ledger_account (
@@ -463,7 +463,7 @@ CREATE TABLE posting_2026m09 PARTITION OF posting
   FOR VALUES FROM ('2026-09-01') TO ('2026-10-01');
 ```
 
-- [ ] **Step 2: Add the zero-sum constraint**
+- [x] **Step 2: Add the zero-sum constraint**
 
 ```sql
 -- Deferred to COMMIT so postings can be inserted one at a time inside a
@@ -492,7 +492,7 @@ CREATE CONSTRAINT TRIGGER posting_balanced
 > **Why signed amounts rather than a `direction` column**
 > The invariant becomes `SUM(amount) = 0`, which the trigger checks directly. A `direction` enum turns it into `SUM(CASE WHEN direction='debit' THEN -amount ELSE amount END)`, which is slower, harder to index, and easy to get backwards.
 
-- [ ] **Step 3: Test the constraint fires**
+- [x] **Step 3: Test the constraint fires**
 
 ```go
 //go:build integration
@@ -502,13 +502,13 @@ func TestLedger_UnbalancedEntryRejectedByDatabase(t *testing.T) {
 }
 ```
 
-- [ ] **Step 4: Verify → PASS. Step 5: Commit** `feat(ledger): schema with database-enforced zero-sum invariant`
+- [x] **Step 4: Verify → PASS. Step 5: Commit** `feat(ledger): schema with database-enforced zero-sum invariant`
 
 ### Task 1.2: Post and Balance
 
 **Files:** `internal/modules/ledger/{domain,service,ports,repo_postgres}.go` + tests
 
-- [ ] **Step 1: Failing tests**
+- [x] **Step 1: Failing tests**
 
 ```go
 func TestPost_RejectsUnbalancedLines(t *testing.T)     // Go-level check, clear error
@@ -517,7 +517,7 @@ func TestBalance_SumsPostings(t *testing.T)
 func TestPost_IsAtomicWithCallerTransaction(t *testing.T) // rollback removes the entry
 ```
 
-- [ ] **Step 2: Confirm failure. Step 3: Implement**
+- [x] **Step 2: Confirm failure. Step 3: Implement**
 
 ```go
 // internal/modules/ledger/domain.go
@@ -556,7 +556,7 @@ func (s *Service) Post(ctx context.Context, e Entry) (id.JournalEntryID, error) 
 }
 ```
 
-- [ ] **Step 4: Verify. Step 5: Commit** `feat(ledger): post balanced entries, derive balances`
+- [x] **Step 4: Verify. Step 5: Commit** `feat(ledger): post balanced entries, derive balances`
 
 ### Task 1.3: Spend counters
 
@@ -567,7 +567,7 @@ func (s *Service) Post(ctx context.Context, e Entry) (id.JournalEntryID, error) 
 >
 > The counter is technically derivable from postings, but deriving it costs a scan on the 100ms path — so it is *maintained* and *reconciled* nightly, the same pattern §8.3 prescribes for the ledger itself.
 
-- [ ] **Step 1: Failing tests**
+- [x] **Step 1: Failing tests**
 
 ```go
 func TestIncrementSpend_CreatesPeriodRowOnFirstSpend(t *testing.T)
@@ -575,7 +575,7 @@ func TestIncrementSpend_IsAtomicUnderConcurrency(t *testing.T) // 50 goroutines 
 func TestReconcile_DetectsDrift(t *testing.T)
 ```
 
-- [ ] **Step 2–4: Implement with an atomic upsert**
+- [x] **Step 2–4: Implement with an atomic upsert**
 
 ```sql
 INSERT INTO agent_spend_counter (agent_id, period_type, period_start, asset, spent)
@@ -588,12 +588,12 @@ RETURNING spent;
 > **Why this and not that — upsert rather than read-modify-write**
 > Whitepaper §8.5 describes the exact bug: two concurrent requests both read the same remaining balance and both approve. A read in Go followed by a write is that bug. The single atomic statement makes the increment indivisible, and returning the new total lets the caller detect a cap breach *after* the fact within the same transaction, then roll back.
 
-- [ ] **Step 5: Commit** `feat(ledger): per-agent spend counters with atomic increment`
+- [x] **Step 5: Commit** `feat(ledger): per-agent spend counters with atomic increment`
 
 ### Task 1.4: Reconciliation job
 
 - [ ] Worker job, hourly: `SELECT SUM(amount) FROM posting` must be `0`; non-zero pages immediately (§8.3).
-- [ ] Nightly: recompute counters from postings, alarm on drift.
+- [x] Nightly: recompute counters from postings, alarm on drift.
 - [ ] Test: inject an imbalance in a test DB, assert the job reports it.
 - [ ] Commit `feat(worker): ledger zero-sum and counter reconciliation`
 
@@ -973,9 +973,9 @@ CREATE TABLE onramp_customer (
 
 **Files:** `internal/modules/account/credential.go`, `internal/infrastructure/crypto/`, `internal/infrastructure/cache/`
 
-- [ ] **Tests:** `TestHashPassword_ProducesPHCString`, `TestVerify_RejectsWrongPassword`, `TestVerify_UnknownEmailCostsSameTime`, `TestNeedsRehash_WhenParamsChange`, `TestSessionToken_HasFullEntropy`, `TestSessionLookup_NeverStoresPlaintext`
-- [ ] Argon2id at OWASP defaults (19 MiB, t=2, p=1), stored as a PHC string.
-- [ ] Session tokens: 32 bytes from `crypto/rand`, base64url, stored as `sha256`.
+- [x] **Tests:** `TestHashPassword_ProducesPHCString`, `TestVerify_RejectsWrongPassword`, `TestVerify_UnknownEmailCostsSameTime`, `TestNeedsRehash_WhenParamsChange`, `TestSessionToken_HasFullEntropy`, `TestSessionLookup_NeverStoresPlaintext`
+- [x] Argon2id at OWASP defaults (19 MiB, t=2, p=1), stored as a PHC string.
+- [x] Session tokens: 32 bytes from `crypto/rand`, base64url, stored as `sha256`.
 
 > **Why a PHC string and not a bare hash**
 > `$argon2id$v=19$m=19456,t=2,p=1$...` carries its own parameters, so raising the cost next year is a config change plus an opportunistic rehash on next login, not a migration that cannot read the old rows. This applies to everything a human chooses or types — `app_user.password_hash` and `user_recovery_code.code_hash` — and to nothing else.
@@ -988,12 +988,12 @@ CREATE TABLE onramp_customer (
 
 **Session validation cache.** Validating a session is a read on every authenticated request, so it gets a Redis fast path in front of Postgres:
 
-- [ ] Session lifetime `account.DefaultSessionLifetime = 12h`; cache window `account.DefaultCacheWindow = 1m`.
-- [ ] Key `sess:<token_hash>`, value `{user_id, mfa_satisfied_at, expires_at}`, TTL `min(60s, time until expires_at)`.
-- [ ] **Read:** hash the cookie, `GET`. On a hit, authorise from the cached value. On a miss *or any Redis error*, read `user_session` in Postgres and repopulate.
-- [ ] **Revoke:** write `revoked_at` in Postgres, commit, then `DEL` the key.
-- [ ] Invalid tokens are not cached; the per-IP throttle in Task 2.3 covers hammering, and a negative entry is one more thing that can be wrong.
-- [ ] **Tests:** `TestSessionCache_HitAvoidsPostgres`, `TestRevokeDeletesCacheEntry`, `TestRedisDownFallsBackToPostgres`, `TestCacheEntryNeverOutlivesSession`, `TestCachedSessionCarriesNoRoles`
+- [x] Session lifetime `account.DefaultSessionLifetime = 12h`; cache window `account.DefaultCacheWindow = 1m`.
+- [x] Key `sess:<token_hash>`, value `{user_id, mfa_satisfied_at, expires_at}`, TTL `min(60s, time until expires_at)`.
+- [x] **Read:** hash the cookie, `GET`. On a hit, authorise from the cached value. On a miss *or any Redis error*, read `user_session` in Postgres and repopulate.
+- [x] **Revoke:** write `revoked_at` in Postgres, commit, then `DEL` the key.
+- [x] Invalid tokens are not cached; the per-IP throttle in Task 2.3 covers hammering, and a negative entry is one more thing that can be wrong.
+- [x] **Tests:** `TestSessionCache_HitAvoidsPostgres`, `TestRevokeDeletesCacheEntry`, `TestRedisDownFallsBackToPostgres`, `TestCacheEntryNeverOutlivesSession`, `TestCachedSessionCarriesNoRoles`
 
 > **Why a 60-second TTL and not the session's own lifetime**
 > The `DEL` on revoke is what makes revocation instant; the TTL exists for when that `DEL` does not happen. Three ways it does not: the call errors and something swallows it, the process dies between the commit and the delete, or a concurrent request misses the cache and repopulates it from a not-yet-committed read. All three leave a revoked session cached as valid. With a session-lifetime TTL that stale entry is usable for days — which is exactly the JWT failure mode this design exists to avoid, reintroduced through the back door. At 60 seconds the worst case is a minute, and the cost of the shorter window is one indexed lookup per active session per minute.
@@ -1006,13 +1006,13 @@ CREATE TABLE onramp_customer (
 
 ### Task 2.3: Sign-up, verification and login
 
-- [ ] **Tests:** `TestSignup_DoesNotRevealExistingEmail`, `TestLogin_RejectsUnverifiedEmail`, `TestLogin_RejectsSuspendedUser`, `TestSessionsDieOnPasswordChange`, `TestResetToken_IsSingleUse`, `TestResetToken_Expires`, `TestFailedLoginIsAudited`
+- [x] **Tests:** `TestSignup_DoesNotRevealExistingEmail`, `TestLogin_RejectsUnverifiedEmail`, `TestLogin_RejectsSuspendedUser`, `TestSessionsDieOnPasswordChange`, `TestResetToken_IsSingleUse`, `TestResetToken_Expires`, `TestFailedLoginIsAudited`
 
 Endpoints (Phase 6 registers these on an *unauthenticated* group):
 
-- [ ] `POST /v1/auth/signup` — creates `principal(kind='person')`, `principal_identity`, `app_user`, and an `email_verify` token. Records `user_consent` for the ToS version shown. Always answers `202`.
-- [ ] `POST /v1/auth/verify-email`, `POST /v1/auth/login`, `POST /v1/auth/logout`
-- [ ] `POST /v1/auth/password/reset-request`, `POST /v1/auth/password/reset`
+- [x] `POST /v1/auth/signup` — creates `principal(kind='person')`, `principal_identity`, `app_user`, and an `email_verify` token. Records `user_consent` for the ToS version shown. Always answers `202`.
+- [x] `POST /v1/auth/verify-email`, `POST /v1/auth/login`, `POST /v1/auth/logout`
+- [x] `POST /v1/auth/password/reset-request`, `POST /v1/auth/password/reset`
 
 > **Why every one of these answers the same way for known and unknown addresses**
 > Signup, reset and login are the three endpoints that will tell an attacker which of a leaked address list are Cleargate customers — a list of people known to hold crypto balances, which is exactly the targeting data a phisher wants. All three return the same status and body either way, and login runs a dummy argon2id verify on unknown addresses so the response time does not leak what the body conceals.
@@ -1020,19 +1020,19 @@ Endpoints (Phase 6 registers these on an *unauthenticated* group):
 > **Why `password_changed_at` instead of deleting sessions on change**
 > Sessions issued before `password_changed_at` are rejected at validation time. One column invalidates every device atomically, including sessions created by a race during the change itself, and it cannot be defeated by a session row the delete query missed.
 
-- [ ] Throttle login and reset in Redis on `(ip, email)` with exponential backoff.
+- [x] Throttle login and reset in Redis on `(ip, email)` with exponential backoff.
 
 > **Why throttling and not account lockout**
 > Lockout on failed attempts lets anyone who knows an address deny that person access to their own money, and during an incident the locked-out party is usually the legitimate owner trying to revoke an agent. Backoff raises the cost of guessing without handing an attacker a remote off switch. MFA, not lockout, is what makes a guessed password insufficient.
 
 ### Task 2.4: MFA and step-up authorization
 
-- [ ] **Tests:** `TestTotpEnrollment_RequiresConfirmingCode`, `TestTotpCode_CannotBeReplayed`, `TestRecoveryCode_IsSingleUse`, `TestFundingWithoutMfaIsRejected`, `TestStepUpExpiresAfterWindow`, `TestMandateSigningIgnoresStepUpWindow`
+- [x] **Tests:** `TestTotpEnrollment_RequiresConfirmingCode`, `TestTotpCode_CannotBeReplayed`, `TestRecoveryCode_IsSingleUse`, `TestFundingWithoutMfaIsRejected`, `TestStepUpExpiresAfterWindow`, `TestMandateSigningIgnoresStepUpWindow`
 
-- [ ] TOTP (RFC 6238), 30s step, ±1 step skew, secret envelope-encrypted with a key from config.
-- [ ] Ten recovery codes issued once at enrolment, argon2id-hashed.
-- [ ] **Gate:** enrolling TOTP is required before funding an account or inviting a user.
-- [ ] **Step-up:** those actions require `mfa_satisfied_at > now() - 15 minutes` (`account.DefaultStepUpWindow`), else `403` with kind `forbidden` and a `mfa_required` code.
+- [x] TOTP (RFC 6238), 30s step, ±1 step skew, secret envelope-encrypted with a key from config.
+- [x] Ten recovery codes issued once at enrolment, argon2id-hashed.
+- [x] **Gate:** enrolling TOTP is required before funding an account or inviting a user.
+- [x] **Step-up:** those actions require `mfa_satisfied_at > now() - 15 minutes` (`account.DefaultStepUpWindow`), else `403` with kind `forbidden` and a `mfa_required` code.
 - [ ] Signing a mandate, adding a payout destination, and proposing a control change are **not** covered by this window at all. They carry their own WebAuthn assertion (Task 2.9), which is strictly stronger: it proves presence over *that exact payload*, rather than presence at some point in the last quarter hour.
 
 > **Why a payout destination is WebAuthn-signed rather than step-up gated**
@@ -1052,8 +1052,8 @@ Endpoints (Phase 6 registers these on an *unauthenticated* group):
 
 ### Task 2.5: Invitations and membership
 
-- [ ] **Tests:** `TestInvite_CannotGrantOwner`, `TestInvite_TokenIsSingleUseAndExpires`, `TestAcceptInvite_CreatesMembership`, `TestRevokedInviteCannotBeAccepted`, `TestLastOwnerCannotLeaveAccount`, `TestAdminCannotManageOtherAdmins`, `TestGuardianCannotBeRemovedByMembershipDelete`, `TestFirstGuardianInviteIsInstant`
-- [ ] Accepting an invite for an unknown address runs the signup flow first, then the membership insert, in one transaction.
+- [x] **Tests:** `TestInvite_CannotGrantOwner`, `TestInvite_TokenIsSingleUseAndExpires`, `TestAcceptInvite_CreatesMembership`, `TestRevokedInviteCannotBeAccepted`, `TestLastOwnerCannotLeaveAccount`, `TestAdminCannotManageOtherAdmins`, `TestGuardianCannotBeRemovedByMembershipDelete`, `TestFirstGuardianInviteIsInstant`
+- [x] Accepting an invite for an unknown address runs the signup flow first, then the membership insert, in one transaction.
 
 **Who may manage whom:**
 
@@ -1077,12 +1077,12 @@ Three separate things, in order, and each is useless without the next: the **reg
 
 **`agent_credential` stays authentication-only — it is not, and never becomes, a money-movement key.** It answers "who is asking," nothing more, exactly as built. Two other key roles exist in the finished system — the CDP account wallet and a delegated voucher-signing EOA (§8.8) — and **both are scoped to the account, not the agent**, because they draw against the same pooled balance spend counters already meter (§9.3): two agents calling the same payee share one wallet and, once a channel opens, one delegated key. Neither belongs on this table. The wallet is provisioned in Phase 8 (Task 8.x); the delegated key is generated lazily on first channel promotion in Task 7.2, sealed with the same `SecretSealer` built for TOTP secrets in Task 2.4.
 
-- [ ] **Tests:** `TestIssueCredential_ReturnsSecretOnlyOnce`, `TestGeneratedSecret_Is256BitsOfCSPRNG`, `TestVerify_RejectsRevoked`, `TestVerify_RejectsCredentialOfRevokedAgent`, `TestVerify_ConstantTimeOnMismatch`, `TestAgentCredentialCannotOpenUserSession`, `TestConnectedAgentWithoutMandateCannotSpend`, `TestRotateCredentialWithoutDowntime`
+- [x] **Tests:** `TestIssueCredential_ReturnsSecretOnlyOnce`, `TestGeneratedSecret_Is256BitsOfCSPRNG`, `TestVerify_RejectsRevoked`, `TestVerify_RejectsCredentialOfRevokedAgent`, `TestVerify_ConstantTimeOnMismatch`, `TestAgentCredentialCannotOpenUserSession`, `TestConnectedAgentWithoutMandateCannotSpend`, `TestRotateCredentialWithoutDowntime`
 
 > **Why credentials are separate objects from the agent**
 > So a key can be rotated without destroying the identity that carries the mandate and the decision history. Issue the new key, deploy it, revoke the old one — both are valid during the overlap, so nothing breaks. It also gives revocation three widths: a **credential** (that one key dies), an **agent** (all its keys and its mandate die), or a **freeze** (every agent on the account stops). You reach for the third when you do not yet know which agent is compromised. All three are instant, because an agent never held funds — only a counter.
-- [ ] Format: `cg_live_<prefix>_<secret>`, where `secret` is 32 bytes from `crypto/rand` in base64url and `prefix` is a non-secret handle from the same source.
-- [ ] Store `sha256(secret)`; the prefix is the index. Compare in constant time.
+- [x] Format: `cg_live_<prefix>_<secret>`, where `secret` is 32 bytes from `crypto/rand` in base64url and `prefix` is a non-secret handle from the same source.
+- [x] Store `sha256(secret)`; the prefix is the index. Compare in constant time.
 
 > **Why a prefix plus a hash rather than hashing the whole key**
 > You need an indexed lookup, and you cannot index a salted hash. The prefix is a non-secret handle that finds one row; the hash then verifies the secret. It is also safe in logs, which means a support engineer can identify a credential without ever seeing it.
@@ -1110,13 +1110,13 @@ Three separate things, in order, and each is useless without the next: the **reg
 | `verified` | Identity verification | Standard limits |
 | `business` | Legal entity plus beneficial ownership | High limits |
 
-- [ ] Store the tier on `principal_identity` and enforce **limits** against it, not against the funding route.
+- [x] Store the tier on `principal_identity` and enforce **limits** against it, not against the funding route.
 - [ ] **Card and bank funding:** the on-ramp is the regulated party and sets an unavoidable verification floor even for small amounts. Inherit their tiers; do not attempt to undercut them.
-- [ ] **Direct stablecoin funding:** we set the terms. Allow a low-cap trial with **no formal KYC** but **mandatory on-chain address screening** via CDP KYT. Screening is not KYC and the schema must not conflate them — screening asks whether an address is associated with sanctioned or criminal activity, KYC asks who the person is.
+- [x] **Direct stablecoin funding:** we set the terms. Allow a low-cap trial with **no formal KYC** but **mandatory on-chain address screening** via CDP KYT. Screening is not KYC and the schema must not conflate them — screening asks whether an address is associated with sanctioned or criminal activity, KYC asks who the person is.
 - [ ] **Withdrawals mirror this:** to a crypto wallet we control the path, screen the address, and keep friction low for small amounts; to a bank an off-ramp is involved and KYC is unavoidable.
-- [ ] **Return-to-source withdrawal is what makes the unverified tier safe to offer.** A `basic` principal may only withdraw to an address that actually funded them, so an unverified account cannot move value between two addresses — only return what it brought. Without this, funding anonymously and withdrawing elsewhere is a laundering route, and repeated across accounts it is textbook structuring. Verification lifts the restriction, which is the honest trade: tell us who you are and you may send money where you like.
-- [ ] The destination is screened at **every** tier. Verification was never a claim about where somebody sends money.
-- [ ] **Tests:** `TestUnverifiedPrincipalCanFundSmallAmountWithoutKyc`, `TestUnverifiedFundingStillRequiresScreening`, `TestSpendLimitFollowsTierNotFundingMethod`, `TestTierAboveBasicRequiresVerifiedKyc`, `TestUnverifiedWithdrawalMustReturnToSource`, `TestVerifiedPrincipalMayWithdrawAnywhere`, `TestWithdrawalScreensDestinationAtEveryTier`, `TestAddressComparisonIgnoresCase`, `TestFundingRefusedWhenHistoryNotWired`
+- [x] **Return-to-source withdrawal is what makes the unverified tier safe to offer.** A `basic` principal may only withdraw to an address that actually funded them, so an unverified account cannot move value between two addresses — only return what it brought. Without this, funding anonymously and withdrawing elsewhere is a laundering route, and repeated across accounts it is textbook structuring. Verification lifts the restriction, which is the honest trade: tell us who you are and you may send money where you like.
+- [x] The destination is screened at **every** tier. Verification was never a claim about where somebody sends money.
+- [x] **Tests:** `TestUnverifiedPrincipalCanFundSmallAmountWithoutKyc`, `TestUnverifiedFundingStillRequiresScreening`, `TestSpendLimitFollowsTierNotFundingMethod`, `TestTierAboveBasicRequiresVerifiedKyc`, `TestUnverifiedWithdrawalMustReturnToSource`, `TestVerifiedPrincipalMayWithdrawAnywhere`, `TestWithdrawalScreensDestinationAtEveryTier`, `TestAddressComparisonIgnoresCase`, `TestFundingRefusedWhenHistoryNotWired`
 
 > **Why funded-to-date comes from the ledger through a port, not from a column here**
 > A running total kept alongside the entries it summarises is a total that can disagree with them. The ledger is the system of record for money that moved, so the cap is measured against the ledger — reached through a `FundingHistory` port rather than by reading its tables, because a module reading another module's schema is the shared-database coupling that module boundaries exist to prevent. The gate **refuses** when that port is unwired rather than assuming zero: a missing dependency must not silently become an unbounded cap.
@@ -2002,6 +2002,8 @@ Consistent with §17's Phase 0 window of months 0–3, leaving room for the SDK,
 ---
 
 ## Revision notes
+
+**22 October 2026.** Ticked the Phase 0–2 steps that are built and tested, and corrected `BuildAPI`'s signature in Task 0.3.
 
 **29 September 2026.** Reworked Phase 7 around the actual scheme-switching mechanism, and corrected a scoping mistake it exposed.
 
