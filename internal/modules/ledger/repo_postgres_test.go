@@ -207,6 +207,96 @@ func TestPost_RollsBackWithCallerTransaction(t *testing.T) {
 	assert.Equal(t, "10", balance.String(), "the payment must have been undone entirely")
 }
 
+func TestPost_RefusesToOverdrawCustomerFunds(t *testing.T) {
+	ctx := context.Background()
+	f := newLedgerFixture(t)
+	f.fund(t, "1.00")
+
+	_, err := f.svc.Post(ctx, Entry{
+		Kind:  KindPayment,
+		Asset: currency.USDC,
+		Lines: Transfer(f.payer, f.payee, usd(t, "1.50")),
+	})
+	require.ErrorIs(t, err, ErrInsufficientFunds)
+
+	balance, err := f.svc.Balance(ctx, f.payer, currency.USDC)
+	require.NoError(t, err)
+	assert.Equal(t, "1", balance.String(), "a refused payment must leave the balance untouched")
+}
+
+func TestPost_RefusalLeavesCallerTransactionUsable(t *testing.T) {
+	ctx := context.Background()
+	f := newLedgerFixture(t)
+	f.fund(t, "1.00")
+
+	var refusal error
+	err := f.db.UoW.Do(ctx, func(ctx context.Context) error {
+		_, refusal = f.svc.Post(ctx, Entry{
+			Kind:  KindPayment,
+			Asset: currency.USDC,
+			Lines: Transfer(f.payer, f.payee, usd(t, "1.50")),
+		})
+
+		_, err := f.svc.Post(ctx, Entry{
+			Kind:  KindPayment,
+			Asset: currency.USDC,
+			Lines: Transfer(f.payer, f.payee, usd(t, "0.25")),
+		})
+		return err
+	})
+	require.NoError(t, err)
+	require.ErrorIs(t, refusal, ErrInsufficientFunds)
+
+	balance, err := f.svc.Balance(ctx, f.payer, currency.USDC)
+	require.NoError(t, err)
+	assert.Equal(t, "0.75", balance.String(), "only the payment that fitted may have been written")
+}
+
+// TestPost_ConcurrentPaymentsCannotOverdraw fails without the bucket lock, as
+// concurrent payments then read the same balance and overdraw it.
+func TestPost_ConcurrentPaymentsCannotOverdraw(t *testing.T) {
+	ctx := context.Background()
+	f := newLedgerFixture(t)
+	f.fund(t, "10.00")
+
+	payment := Entry{
+		Kind:  KindPayment,
+		Asset: currency.USDC,
+		Lines: Transfer(f.payer, f.payee, usd(t, "1")),
+	}
+
+	const concurrent = 50
+
+	var wg sync.WaitGroup
+	results := make(chan error, concurrent)
+
+	for i := 0; i < concurrent; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := f.svc.Post(ctx, payment)
+			results <- err
+		}()
+	}
+
+	wg.Wait()
+	close(results)
+
+	paid := 0
+	for err := range results {
+		if err == nil {
+			paid++
+			continue
+		}
+		require.ErrorIs(t, err, ErrInsufficientFunds)
+	}
+	assert.Equal(t, 10, paid, "exactly as many payments as the balance covers must go through")
+
+	balance, err := f.svc.Balance(ctx, f.payer, currency.USDC)
+	require.NoError(t, err)
+	assert.Equal(t, "0", balance.String())
+}
+
 func TestRecordSpend_CreatesCountersOnFirstSpend(t *testing.T) {
 	ctx := context.Background()
 	f := newLedgerFixture(t)

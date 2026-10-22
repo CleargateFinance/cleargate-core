@@ -180,3 +180,6 @@ func (e Entry) Validate() error {
 
 	return nil
 }
+
+// ErrInsufficientFunds means an entry would take customer funds below zero.
+var ErrInsufficientFunds = apperr.Conflict("insufficient funds")

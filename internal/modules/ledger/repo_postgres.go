@@ -127,6 +127,10 @@ func (r *postgresRepo) InsertEntry(ctx context.Context, e Entry) (id.JournalEntr
 	var entryID string
 
 	err := r.db.UoW.Do(ctx, func(ctx context.Context) error {
+		if err := r.refuseOverdraft(ctx, e); err != nil {
+			return err
+		}
+
 		var createdAt time.Time
 		if err := r.db.QueryRow(ctx, insertEntry,
 			string(e.Kind), referenceType, referenceID, agentID, description, e.OccurredAt,
@@ -147,6 +151,66 @@ func (r *postgresRepo) InsertEntry(ctx context.Context, e Entry) (id.JournalEntr
 	}
 
 	return id.JournalEntryID(entryID), nil
+}
+
+// refuseOverdraft returns ErrInsufficientFunds if the entry would take a
+// customer funds bucket below zero. Debited buckets are locked first, so
+// concurrent payments queue instead of spending the same balance.
+//
+// Lock and sum are separate statements so that, under READ COMMITTED, the sum
+// sees what the previous lock holder committed. Platform buckets aren't
+// checked: the on-chain float is negative by design.
+func (r *postgresRepo) refuseOverdraft(ctx context.Context, e Entry) error {
+	// id order avoids deadlocks. Unlike FOR UPDATE, NO KEY UPDATE doesn't block
+	// the foreign key check of postings that only credit the bucket.
+	const lockFunds = `
+		SELECT id FROM ledger_account
+		WHERE id = ANY($1::text[]::uuid[]) AND type = 'customer_funds'
+		ORDER BY id
+		FOR NO KEY UPDATE`
+
+	const overdrawn = `
+		SELECT EXISTS (
+			SELECT 1
+			FROM unnest($1::text[], $2::text[]) AS debit(account, amount)
+			JOIN ledger_account la
+			  ON la.id = debit.account::uuid AND la.type = 'customer_funds'
+			WHERE debit.amount::numeric + (
+				SELECT COALESCE(SUM(po.amount), 0)
+				FROM posting po
+				WHERE po.ledger_account_id = la.id AND po.asset = $3
+			) < 0
+		)`
+
+	// Net the lines per bucket and keep the ones losing value.
+	net := make(map[id.LedgerAccountID]decimal.Decimal, len(e.Lines))
+	for _, l := range e.Lines {
+		net[l.LedgerAccountID] = net[l.LedgerAccountID].Add(l.Amount.Decimal())
+	}
+
+	var accounts, amounts []string
+	for account, amount := range net {
+		if amount.IsNegative() {
+			accounts = append(accounts, string(account))
+			amounts = append(amounts, amount.String())
+		}
+	}
+	if len(accounts) == 0 {
+		return nil
+	}
+
+	if _, err := r.db.Exec(ctx, lockFunds, accounts); err != nil {
+		return fmt.Errorf("ledger: lock customer funds: %w", err)
+	}
+
+	var refused bool
+	if err := r.db.QueryRow(ctx, overdrawn, accounts, amounts, string(e.Asset)).Scan(&refused); err != nil {
+		return fmt.Errorf("ledger: check customer funds: %w", err)
+	}
+	if refused {
+		return ErrInsufficientFunds
+	}
+	return nil
 }
 
 // Balance sums every posting against one bucket.

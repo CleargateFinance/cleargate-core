@@ -22,7 +22,8 @@ type Repository interface {
 
 	// InsertEntry writes an entry and its postings. Implementations join
 	// whatever transaction is open on ctx, so a caller can bundle this with
-	// other writes atomically.
+	// other writes atomically. Returns ErrInsufficientFunds, writing nothing,
+	// if customer funds would go below zero.
 	InsertEntry(ctx context.Context, e Entry) (id.JournalEntryID, error)
 
 	// Balance sums every posting against one bucket.
