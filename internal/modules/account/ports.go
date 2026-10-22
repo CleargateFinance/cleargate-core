@@ -241,7 +241,8 @@ type Repository interface {
 	ScreenedAddress(ctx context.Context, principalID id.PrincipalID, chain, address string) (ScreenedAddress, error)
 
 	// RecordScreening stores a screening verdict, creating the record if this
-	// address has not been seen for this principal before.
+	// address has not been seen for this principal before. The address must
+	// already be normalized; Service.RecordScreening does that.
 	RecordScreening(ctx context.Context, a ScreenedAddress) (ScreenedAddress, error)
 
 	// MarkAddressFunded stamps the first deposit from an address, which is what
