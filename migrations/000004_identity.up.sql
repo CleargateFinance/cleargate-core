@@ -82,9 +82,11 @@ CREATE TABLE account (
 
   created_at        timestamptz NOT NULL DEFAULT now(),
 
-  -- Suspension and its timestamp cannot disagree about whether this account
-  -- is frozen.
-  CHECK ((status = 'suspended') = (frozen_at IS NOT NULL))
+  -- Freezing (frozen_at) is the customer's call and suspension (status) the
+  -- platform's. They're kept apart so unfreezing can't lift a suspension. An
+  -- account may spend only when status is 'active' and frozen_at is NULL.
+  CONSTRAINT account_frozen_by_needs_frozen_at
+    CHECK (frozen_by IS NULL OR frozen_at IS NOT NULL)
 );
 
 -- ---------------------------------------------------------------------------
