@@ -6,19 +6,17 @@
 
 **Architecture:** One Go modular monolith. **Module-first** — vertical slices by feature — with clean-architecture **layers inside each module** (domain, service, repository, handler). The domain defines its repository *interfaces*; dependencies point inward; cross-module calls go through service interfaces only; concrete infrastructure is wired in `main` and nowhere else. Gin at the edge, Postgres as the system of record, Redis as a disposable cache. Two binaries — `api` (hot path) and `worker` (everything slow) — built from the same modules.
 
-**Tech stack:** Go 1.26 · Gin · pgx/v5 · shopspring/decimal · golang-migrate · testcontainers-go · go-webauthn · Ed25519 · **Coinbase CDP** (custody, policies, gas, KYT) · **x402-foundation Go SDK** (scheme logic) · on-ramp (Coinbase or MoonPay) · Base/USDC.
+**Tech stack:** Go 1.26 · Gin · pgx/v5 · shopspring/decimal · golang-migrate · testcontainers-go · go-webauthn · Ed25519 · **Coinbase CDP** (custody, policies, gas, KYT) · **x402-foundation Go SDK** (scheme logic) · on-ramp (Coinbase or MoonPay) · Solana/USDC.
 
 **What this MVP is, in one line:** the **buyer-side** product. It is deliberately useful with **zero merchants integrated** (whitepaper §3), because every check that matters runs before money leaves the account, and every payment settles `exact` to whatever endpoint the agent found.
 
 **Explicitly out of scope for MVP** (whitepaper §22): **guarantees and any loss absorption**, merchant onboarding, reputation scoring, intent check, behaviour check, agent-to-agent subcontracting (Case B). The pipeline *shape* for those exists; the logic is stubbed.
 
-**In scope even though it looks deferrable.** Three things are cheap now and unrecoverable later, so they ship with the MVP rather than after it:
+**In scope even though it looks deferrable.** One thing is cheap now and unrecoverable later, so it ships with the MVP rather than after it:
 
 | Item | Why now |
 |---|---|
-| **Silent loss-observation ledger** (§7.2) | Records what *would* have been a covered loss, pays nobody. Free to collect, impossible to backfill, and it is the entire precondition for the guarantee decision |
 | **Scheme-selecting rail adapter** (§8.6) | `exact` is the only implementation that ships, but netting arrives as a second implementation rather than a rewrite of the money path |
-| **Two key roles per account, not per agent** (§8.8, §7.2) | The CDP account wallet and the delegated voucher-signing EOA both draw on the pooled balance, so both are scoped to the account. Get the account-level tables shaped correctly in Task 7.2 and Task 8.x before Phase 7 needs them — retrofitting a key role into a live settlement schema touches every channel row |
 
 **Holds: mechanism now, activation later.** The hold is a settlement mechanic with zero capital at risk (§7.2), and its ledger states belong in Phase 1 where the ledger is being designed anyway. It cannot *function* until there is an on-platform payee whose settlement timing we control, which arrives with netting in the second act. Build the states, leave them dormant.
 
@@ -1075,7 +1073,7 @@ Endpoints (Phase 6 registers these on an *unauthenticated* group):
 
 Three separate things, in order, and each is useless without the next: the **registration** is an identity (`agent`), the **credential** lets it authenticate (`agent_credential`), and the **mandate** lets it spend (Phase 3). Connecting an agent grants nothing on its own.
 
-**`agent_credential` stays authentication-only — it is not, and never becomes, a money-movement key.** It answers "who is asking," nothing more, exactly as built. Two other key roles exist in the finished system — the CDP account wallet and a delegated voucher-signing EOA (§8.8) — and **both are scoped to the account, not the agent**, because they draw against the same pooled balance spend counters already meter (§9.3): two agents calling the same payee share one wallet and, once a channel opens, one delegated key. Neither belongs on this table. The wallet is provisioned in Phase 8 (Task 8.x); the delegated key is generated lazily on first channel promotion in Task 7.2, sealed with the same `SecretSealer` built for TOTP secrets in Task 2.4.
+**`agent_credential` stays authentication-only — it is not, and never becomes, a money-movement key.** It answers "who is asking," nothing more, exactly as built. Two other key roles exist in the finished system — the CDP account wallet and a delegated voucher-signing EOA (§8.8) — and **both are scoped to the account, not the agent**, because they draw against the same pooled balance spend counters already meter (§9.3): two agents calling the same payee share one wallet and, once a channel opens, one delegated key. Neither belongs on this table. The wallet is provisioned in Task 7.5; the delegated key is generated lazily on first channel promotion in Task 7.2, sealed with the same `SecretSealer` built for TOTP secrets in Task 2.4.
 
 - [x] **Tests:** `TestIssueCredential_ReturnsSecretOnlyOnce`, `TestGeneratedSecret_Is256BitsOfCSPRNG`, `TestVerify_RejectsRevoked`, `TestVerify_RejectsCredentialOfRevokedAgent`, `TestVerify_ConstantTimeOnMismatch`, `TestAgentCredentialCannotOpenUserSession`, `TestConnectedAgentWithoutMandateCannotSpend`, `TestRotateCredentialWithoutDowntime`
 
@@ -1131,6 +1129,8 @@ Three separate things, in order, and each is useless without the next: the **reg
 > The webhook is one path to a `funding` entry today; reconciliation repair, manual credits and a second provider are the paths that arrive later. Putting the check where the journal entry is written means every future path inherits it, rather than each new caller being asked to remember.
 
 ### Task 2.8: Guardian, timelock and account control changes
+
+**Not in MVP.** Every account is Simple tier. Only freeze ships: owner or admin sets `frozen_at`, authorization declines everything (Task 4.1), and unfreezing is instant (Task 6.2).
 
 Protection here is **opt-in and tiered**. An account with no guardian and no timelock behaves simply: changes take effect immediately. Appointing a guardian, or setting a timelock, switches the controls on.
 
@@ -1189,6 +1189,8 @@ Protection here is **opt-in and tiered**. An account with no guardian and no tim
 
 ### Task 2.9: WebAuthn enrolment
 
+**Not in MVP.**
+
 The keys that authorise spending live in the humans' devices, not in Cleargate. This task registers them; Task 3.1 uses them.
 
 **Files:** `internal/modules/account/webauthn.go`
@@ -1209,6 +1211,8 @@ The keys that authorise spending live in the humans' devices, not in Cleargate. 
 > `sign_count` exists to catch a cloned authenticator, and hardware keys increment it honestly. Synced passkeys typically return zero forever, because the same credential legitimately lives on several devices at once. Record it, alert on a *decrease* from a previously non-zero value, and never reject on it by itself — do that and you lock out every passkey user the first time they sign from their second device.
 
 ### Task 2.10: Administrative notifications
+
+**Not in MVP.**
 
 Every control in Task 2.8 depends on somebody *noticing*. A timelock nobody hears about is not a control, it is a delay — so notification is load-bearing security here, not product polish.
 
@@ -1241,6 +1245,8 @@ Every control in Task 2.8 depends on somebody *noticing*. A timelock nobody hear
 **Outcome:** spending authority is signed, versioned and verifiable — the control that makes §6.1 true.
 
 ### Task 3.1: Canonical payload and user-signed authority
+
+**Not in MVP.** Until then the server creates the mandate after a TOTP step-up (Task 3.2).
 
 **Cleargate holds no key that can create spending authority.** The admin's own authenticator signs the mandate; the server's only job is to verify the assertion and record it. Enrolment is Task 2.9.
 
@@ -1293,12 +1299,16 @@ CREATE TABLE mandate (
   signed_payload jsonb NOT NULL,
   payload_digest bytea NOT NULL,   -- also the WebAuthn challenge (Task 3.1)
 
+  -- How the mandate was approved. 'session_stepup' rows, until Task 3.1
+  -- ships, have no assertion.
+  signature_scheme   text  NOT NULL CHECK (signature_scheme IN ('session_stepup','webauthn')),
+
   -- The full assertion, because verification needs all three parts. There is
   -- no server signature here: nothing Cleargate holds can produce one.
-  signature          bytea NOT NULL,
-  authenticator_data bytea NOT NULL,
-  client_data_json   bytea NOT NULL,
-  credential_id      bytea NOT NULL REFERENCES user_webauthn_credential(credential_id),
+  signature          bytea,
+  authenticator_data bytea,
+  client_data_json   bytea,
+  credential_id      bytea REFERENCES user_webauthn_credential(credential_id),
   signed_by          uuid  NOT NULL REFERENCES app_user(id),
   status         text NOT NULL DEFAULT 'pending'
                    CHECK (status IN ('pending','active','vetoed','superseded')),
@@ -1315,6 +1325,8 @@ CREATE TABLE mandate (
   max_per_month numeric(38,18) GENERATED ALWAYS AS ((signed_payload->>'max_per_month')::numeric) STORED,
 
   CHECK ((status = 'vetoed') = (vetoed_at IS NOT NULL)),
+  CHECK (signature_scheme = 'session_stepup'
+         OR (signature, authenticator_data, client_data_json, credential_id) IS NOT NULL),
   UNIQUE (agent_id, version)
 );
 
@@ -1332,9 +1344,11 @@ CREATE UNIQUE INDEX mandate_one_pending ON mandate (agent_id) WHERE status = 'pe
 
 **Lifecycle.** A proposed mandate enters `pending` with `effective_from = now() + account.timelock_hours`, and is promoted to `active` once that passes with no veto, superseding its predecessor. Guardian veto sets `vetoed` and the mandate never takes effect (Task 2.8).
 
+**Until Task 2.8** there is no guardian to veto and no timelock to wait out: a `session_stepup` mandate needs a step-up within the window (Task 2.4) and is inserted straight as `active`, superseding its predecessor.
+
 - [ ] **Exception — tightening is instant.** If every cap in the proposal is less than or equal to the current active mandate's, insert it directly as `active` with `effective_from = now()`. Reducing what an agent may spend never needs a waiting period.
 
-- [ ] **Tests:** `TestIssue_SupersedesPrevious`, `TestOnlyOneActiveVersion`, `TestOnlyOnePendingVersion`, `TestActiveAt_ReturnsHistoricalVersion` (the dispute query), `TestUpdate_IsRejected`, `TestPendingMandateIsNotEnforced`, `TestVetoedMandateNeverActivates`, `TestTighteningSkipsTimelock`, `TestAuthorizationRejectsMandateWithInvalidSignature`
+- [ ] **Tests:** `TestIssue_RequiresRecentStepUp`, `TestIssue_SupersedesPrevious`, `TestOnlyOneActiveVersion`, `TestOnlyOnePendingVersion`, `TestActiveAt_ReturnsHistoricalVersion` (the dispute query), `TestUpdate_IsRejected`, `TestPendingMandateIsNotEnforced`, `TestVetoedMandateNeverActivates`, `TestTighteningSkipsTimelock`, `TestAuthorizationRejectsMandateWithInvalidSignature`
 
 > **Why `TestAuthorizationRejectsMandateWithInvalidSignature` is not optional**
 > `max_per_tx` is `GENERATED` from `signed_payload`, so anyone who can edit that JSONB changes the cap the engine enforces — the generated column follows the tampered bytes exactly as designed. The assertion is what makes that edit detectable, and it only does so if something actually verifies it before the caps are trusted. Without this test the signature is decoration, and a database compromise silently becomes an authorization compromise. With user-held keys this test is the *entire* payoff of Task 3.1: it is the moment the forged row is caught.
@@ -1404,6 +1418,20 @@ func TestDecide(t *testing.T) {
 			req:     authz.Request{Amount: usd("1"), Category: "gambling"},
 			outcome: authz.Declined,
 			reason:  authz.ReasonCategoryNotPermitted,
+		},
+		{
+			name:    "payee off the allowlist is declined",
+			req:     authz.Request{Amount: usd("1"), Category: "data_api", PayTo: "stranger"},
+			mutate:  func(s *authz.Snapshot) { s.Rules.PayTo = []string{"known"} },
+			outcome: authz.Declined,
+			reason:  authz.ReasonPayeeNotPermitted,
+		},
+		{
+			name:    "frozen or suspended account is declined",
+			req:     authz.Request{Amount: usd("1"), Category: "data_api"},
+			mutate:  func(s *authz.Snapshot) { s.AccountBlocked = true },
+			outcome: authz.Declined,
+			reason:  authz.ReasonAccountBlocked,
 		},
 		{
 			name:    "would breach daily cap is declined",
@@ -1478,12 +1506,18 @@ func Decide(req Request, s Snapshot) Decision {
 	if req.Amount.IsZero() || req.Amount.IsNegative() {
 		return d.decline(ReasonInvalidAmount, "amount must be positive")
 	}
+	if s.AccountBlocked { // suspended (status) or frozen (frozen_at)
+		return d.decline(ReasonAccountBlocked, "account is suspended or frozen")
+	}
 	if s.Now.After(s.Rules.ExpiresAt) {
 		return d.decline(ReasonMandateExpired, "mandate expired")
 	}
 	if !s.Rules.PermitsCategory(req.Category) {
 		return d.decline(ReasonCategoryNotPermitted,
 			"category "+req.Category+" not permitted by mandate")
+	}
+	if !s.Rules.PermitsPayee(req.PayTo) { // empty allowlist permits any payee
+		return d.decline(ReasonPayeeNotPermitted, "payee not on the mandate's allowlist")
 	}
 	if over, _ := req.Amount.GreaterThan(s.Rules.MaxPerTx); over {
 		return d.decline(ReasonOverPerTxCap,
@@ -1512,7 +1546,7 @@ func Decide(req Request, s Snapshot) Decision {
 > **Why stub the three unbuilt checks rather than omit them**
 > §22 scopes MVP to the mandate check. But §6's pipeline is the product's shape. Leaving the call sites in place — each returning `Pass` and recording a `decision_check` row — means Phase 2 of the detection roadmap (§6.5) is a function body, and the decision record already has the right structure for the day it is filled in.
 
-- [ ] **Step 4: Verify** — 9 subtests pass.
+- [ ] **Step 4: Verify** — 11 subtests pass.
 - [ ] **Step 5: Commit** `feat(authz): pure mandate-check decision engine`
 
 ### Task 4.2: Feature snapshot
@@ -1535,6 +1569,8 @@ func Decide(req Request, s Snapshot) Decision {
 **Files:** `migrations/000006_payment.up.sql` — `payment`, `decision` (partitioned, hash-chained), `decision_check`, `idempotency_key`, `event_outbox`, `fulfillment`.
 
 Schema per [data-architecture.md](data-architecture.md) §5.3.
+
+- [ ] Payment status is `declined`, or `authorized` → `settled` | `expired` | `failed` (Task 7.7). Authorizing posts customer funds → payee payable; settling and expiring are later entries, never updates.
 
 > **Why declines get a full `payment` row**
 > §12.1: *"What exists only inside Cleargate Finance are the declines and holds — and those are the proof of value."* If blocked attempts go to a log line or a side table, the console's headline report ("blocked 14 payments, $3,200 at risk") becomes a log-scraping exercise instead of a `SELECT`. Model them as first-class payments with a non-approving outcome.
@@ -1632,11 +1668,17 @@ func (s *Service) Authorize(ctx context.Context, req Request) (*Result, error) {
 			return err
 		}
 		if d.Approved() {
-			if _, err := s.ledger.Post(ctx, req.LedgerEntry(p.ID)); err != nil {
+			// One timestamp for the posting and the counter, so a release
+			// lands in the same windows (Task 7.7).
+			if _, err := s.ledger.Post(ctx, req.LedgerEntry(p.ID, snap.Now)); err != nil {
 				return err
 			}
-			if err := s.ledger.IncrementSpend(ctx, req.AgentID, req.Amount); err != nil {
+			totals, err := s.ledger.RecordSpend(ctx, req.AgentID, req.Amount, snap.Now)
+			if err != nil {
 				return err
+			}
+			if m.Breached(totals) { // a concurrent payment won the race
+				return ErrCapRace // rolls back; a retry sees fresh counters and declines
 			}
 		}
 		if err := s.decisions.Record(ctx, p.ID, d, m.Version, m.Digest); err != nil {
@@ -1659,10 +1701,14 @@ func (s *Service) Authorize(ctx context.Context, req Request) (*Result, error) {
 
 ### Task 5.4: Hash-chained decision log
 
+**Not in MVP.** Until then `decision` is append-only (a trigger rejects `UPDATE` and `DELETE`) and `prev_hash`, `hash` and `signature` are nullable, so the chain can start later.
+
 - [ ] **Tests:** `TestRecord_LinksToPreviousHash`, `TestVerifyChain_DetectsTampering`, `TestRecord_SignatureVerifies`
 - [ ] Commit `feat(decisionlog): hash-chained signed decision records`
 
 ### Task 5.5: Counterparty records and observed directory listings
+
+**Not in MVP**, except resolve-or-create keyed by endpoint and `payTo` address: every payment needs a payee id.
 
 Counterparty is its **own entity, never a column on an account** (§4.1). It may be an external endpoint or another account, and reputation attaches to the counterparty rather than to whoever it turns out to belong to — which is what lets a record accumulate before anyone signs up and be *linked* to an account later without losing its history.
 
@@ -1679,6 +1725,8 @@ Counterparty is its **own entity, never a column on an account** (§4.1). It may
 > The temptation is to lock the directory as a signup incentive. That trades a compounding network effect for a modest conversion bump: a widely-read registry pulls merchants (reach) and agents (inbound) and makes *Cleargate-verified* a standard that carries beyond our own customers. What is gated is **protection** — mandate checks, holds, netted settlement, key safety — not **information**. Write and claim access is gated to verified payees. The read surface needs rate limiting against bulk exfiltration, not authentication.
 
 ### Task 5.6: Silent loss-observation ledger
+
+**Not in MVP.**
 
 - [ ] Record every event that **would** have been a covered loss had a guarantee been in force: non-delivery, dispute, and approvals that turned out to be wrong.
 - [ ] Capture full context per event — payee, category, amount, reason, and which check let it through.
@@ -1722,9 +1770,10 @@ decisionMod.RegisterRoutes(consoleAPI)
 // Authority-granting routes require a WebAuthn assertion over the exact
 // payload, not a step-up window — the role says who may propose, the
 // signature says who actually approved these bytes (Tasks 2.4, 3.1).
+// Until Task 3.1 ships, a recent TOTP step-up stands in for the assertion.
 mandateMod.RegisterRoutes(consoleAPI,
 	server.RequireRole(domain.RoleAdmin),
-	server.RequireAssertion(),
+	server.RequireStepUp(), // server.RequireAssertion() with Task 3.1
 )
 
 // Veto is the guardian's only power here, and admins do not hold it —
@@ -1747,21 +1796,30 @@ accountMod.RegisterControlVetoRoute(guardianAPI)
 
 ### Task 6.2: Endpoints
 
-- [ ] `POST /v1/payments/authorize` — the hot path. Requires `Idempotency-Key`.
+- [ ] `POST /v1/payments/authorize` — the hot path. Requires `Idempotency-Key`. Takes the merchant's x402 payment requirements and returns the signed `PAYMENT-SIGNATURE` payload, or the decline and its reason (Task 7.6).
 - [ ] `GET /v1/agents/{id}/decisions` — the console's decision log, including declines.
 - [ ] `POST /v1/accounts/{id}/agents` — **connects** an existing external agent, returning a registration. `POST /v1/agents/{id}/revoke` disconnects it.
 - [ ] `POST /v1/agents/{id}/credentials` · `POST /v1/agents/{id}/credentials/{cid}/revoke` — issue and revoke named keys, so rotation never requires destroying the agent.
 - [ ] `GET /v1/accounts/{id}/summary` — balance, spend against caps, blocked count.
-- [ ] `POST /v1/agents/{id}/mandate/draft` — canonicalises the proposed rules and returns the WebAuthn challenge; writes no mandate. `PUT /v1/agents/{id}/mandate` then submits the assertion (Task 3.1).
+- [ ] `GET /v1/accounts/{id}/deposit-address` — the account wallet's address (Task 7.5).
+- [ ] `POST /v1/accounts/{id}/freeze` · `/unfreeze` — owner or admin, instant (Task 2.8).
+- [ ] `POST /v1/mfa/totp` · `/totp/confirm` · `/step-up` · `/recovery-codes` — Task 2.4 has the service and no routes yet.
+- [ ] `PUT /v1/agents/{id}/mandate` — sets the rules behind a recent TOTP step-up (Task 3.2). With Task 3.1, `POST /v1/agents/{id}/mandate/draft` canonicalises the rules and returns the WebAuthn challenge, and the `PUT` carries the assertion instead.
+- [ ] Update `api/openapi.yaml`; the SDK and MCP repos generate from it.
+
+Not in MVP:
+
 - [ ] `POST /v1/webauthn/credentials/begin` · `/finish`, `GET`/`DELETE /v1/webauthn/credentials/{id}` (Task 2.9).
 - [ ] `POST /v1/mandates/{id}/veto` — guardian only. `DELETE /v1/mandates/{id}` — the proposer withdraws their own pending proposal.
 - [ ] `POST /v1/accounts/{id}/control-changes` — **owner only**, proposes a transfer, guardian change, timelock reduction or closure. `POST /.../{cid}/veto` and `DELETE /.../{cid}` cover veto and proposer-cancel (Task 2.8).
-- [ ] `POST /v1/accounts/{id}/freeze` — owner, admin *or* guardian; instant, no quorum. `POST /v1/accounts/{id}/unfreeze` — instant for whoever froze it, delayed for anyone else.
+- [ ] Guardian freeze, and unfreeze delayed for anyone but whoever froze it (Task 2.8).
+- [ ] `POST /v1/payments/{id}/delivery` — the agent reports whether it got what it paid for (Task 5.5).
 - [ ] `PUT`/`DELETE /v1/accounts/{id}/members/{uid}` — role changes and removal, subject to Task 2.5's matrix; refuses `guardian` outright.
 - [ ] `GET /v1/accounts/{id}/notifications` — the account's own administrative trail (Task 2.10).
-- [ ] Update `api/openapi.yaml`; the SDK and MCP repos generate from it.
 
 ### Task 6.3: Latency gate in CI
+
+**Not in MVP.**
 
 - [ ] Benchmark `POST /payments/authorize` against a seeded database; **fail the build above 100ms p99** (§6.6).
 
@@ -1774,7 +1832,7 @@ accountMod.RegisterControlVetoRoute(guardianAPI)
 
 # Phase 7 — Settlement
 
-**Outcome:** ledger positions become real USDC movement on Base, through the x402 scheme appropriate to each payee.
+**Outcome:** ledger positions become real USDC movement on Solana, through the x402 scheme appropriate to each payee.
 
 **Netting is x402's, not ours.** Aggregation is the official **`batch-settlement` scheme** — escrow deposit, off-chain cumulative vouchers, one on-chain redemption — and the implementation comes from the **x402-foundation Go SDK**. Do not write a netting engine. A proprietary one would be a worse version of a standard our merchants' other counterparties already speak, and it would have to be maintained forever.
 
@@ -1783,6 +1841,8 @@ accountMod.RegisterControlVetoRoute(guardianAPI)
 **Both schemes are fast for the same reason: at payment time, neither touches the chain.** An `exact` payment is a signed transfer authorization (e.g. `transferWithAuthorization`) — that signature is the proof of payment the payee's endpoint accepts and delivers against. A `batch-settlement` payment is a signed voucher asserting a new cumulative total. Both are local signing operations, sub-millisecond, nothing broadcast yet. What differs is only *when* something eventually reaches the chain and *how often*: an `exact` authorization is submitted soon after, roughly one-to-one; a channel's vouchers are submitted only as the single latest one, periodically, no matter how many were signed in between. This is what makes the split compatible with the sub-100ms authorization budget in §6.6 — that budget was never a promise about block confirmation, and settlement of either kind is architected to never sit in the request path.
 
 ### Task 7.1: Settlement profile and scheme selection
+
+**Not in MVP**, except a `Rail` interface with one `Transfer` method, implemented by Task 7.6.
 
 ```go
 // internal/modules/settlement/domain.go
@@ -1849,6 +1909,8 @@ func (s *Service) Realize(ctx context.Context, p RealizeParams) error {
 
 ### Task 7.2: Channel and voucher schema, and the delegated signing key
 
+**Not in MVP.**
+
 ```sql
 CREATE TABLE settlement_profile (
   account_id  uuid NOT NULL REFERENCES account(id),
@@ -1892,6 +1954,8 @@ CREATE TABLE settlement_voucher (
 
 ### Task 7.3: Channel lifecycle — opening, redemption, top-up
 
+**Not in MVP.**
+
 Three background workers, none in the payment hot path, each solving a distinct clock:
 
 | Worker | Cadence | Job |
@@ -1911,6 +1975,8 @@ Three background workers, none in the payment hot path, each solving a distinct 
 
 ### Task 7.4: Reconciliation, and what is *not* evidence
 
+**Not in MVP.**
+
 - [ ] Three artifacts, three jobs: the **ledger** holds per-payment truth, **vouchers** are per-payment audit evidence, the **on-chain batch** proves net settlement and nothing finer.
 - [ ] Solvency is proved by an **hourly invariant — payables never exceed holdings** — not by publishing per-payment hashes.
 - [ ] **Tests:** `TestSolvencyInvariantHoldsAfterBatch`, `TestIndividualPaymentHasNoChainReference`
@@ -1923,12 +1989,39 @@ Three background workers, none in the payment hot path, each solving a distinct 
 
 - [ ] Commit `feat(settlement): scheme-selecting rail adapter and Base USDC exact settlement`
 
+### Task 7.5: Account wallet
+
+- [ ] `WalletProvider` with one wallet per account, never per agent: `Address(ctx, accountID)` and `SignTransaction(ctx, accountID, tx)`.
+- [ ] Implemented with Coinbase CDP server wallets (§8.8 — no private keys in-house), on Solana devnet for testnet; CDP's faucet funds demo wallets. CDP has no Go SDK, so the adapter is either direct REST from Go for the handful of endpoints used, or a thin TypeScript sidecar behind the same interface. **That choice is sealed inside the adapter** and must not leak into any module that authorizes payments.
+- [ ] **Tests:** `TestWallet_OnePerAccount`, `TestWallet_SignsVerifiableTransaction`
+
+### Task 7.6: Signing `exact` payments on Solana
+
+- [ ] Parse the merchant's `PAYMENT-REQUIRED` (x402 v2) and take its `exact` option for USDC on Solana (`solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1` on devnet). No such option is a decline with its own reason code, recorded like any other.
+- [ ] Before signing, check the requirement against the decision: amount, asset, network, and `payTo` on the mandate's allowlist.
+- [ ] Build the `exact` transaction (a USDC `TransferChecked` plus a memo) with the x402 Go SDK and sign it through `WalletProvider`, as the `Rail` from Task 7.1. The memo is the payment ID, unless the merchant sets `extra.memo`. Store the memo and the blockhash's `lastValidBlockHeight` on the payment.
+- [ ] `Authorize` commits first (Task 5.3), then signs, since CDP is a network call. It stores the signed transaction before returning it, so an idempotent replay returns the same one; if none was stored, nobody holds the first and signing again is safe. The agent retries the merchant with the `PAYMENT-SIGNATURE` payload. The merchant's facilitator is the fee payer, so account wallets never hold SOL.
+- [ ] **Tests:** `TestSign_RefusesRequirementThatDiffersFromDecision`, `TestSign_MemoIsPaymentID`, `TestSign_ReplayReturnsStoredTransaction`, `TestSign_NoSolanaUSDCOptionIsDeclined`
+
+> **Why the memo carries the payment ID**
+> It is the only link between an on-chain transaction and our payment row. The transaction's id is the fee payer's signature, which we never see, so Task 7.7 finds the payment by its memo.
+
+### Task 7.7: Confirmation, expiry and chain reconciliation
+
+- [ ] Worker over `authorized` payments: look for a finalized transaction from the account wallet carrying the payment's memo (`getSignaturesForAddress`). Succeeded: post payee payable → on-chain float and mark the payment `settled`. Failed, or not found once the finalized block height passes `lastValidBlockHeight`, means it can never land: post a reversal (`Reverses`), call `ReleaseSpend` with the authorization time, and mark it `failed` or `expired`.
+- [ ] Hourly: each account's customer funds in the ledger never exceed the USDC in its wallet on-chain. It is the one check tying the ledger to real balances.
+- [ ] **Tests:** `TestConfirm_SettlesLandedTransaction`, `TestExpire_ReleasesFundsAndBudget`, `TestExpire_NeverBeforeBlockhashExpires`, `TestChainReconciliation_FlagsFundsAboveWalletBalance`
+- [ ] Commit `feat(settlement): exact payments on Solana — sign, confirm, expire`
+
 ---
 
 # Phase 8 — Funding and hardening
 
+- [ ] **Deposit detection.** Watch USDC transfers into account wallets' token accounts (Task 7.5). Record each deposit once, keyed by transaction signature and instruction index, run Task 2.7's funding gate, then post a `funding` entry or quarantine the deposit for return to sender. A `FundingHistory` adapter sums a principal's funding from the ledger.
+
+Everything below is not in the MVP.
+
 - [ ] On-ramp webhook (Coinbase on-ramp or MoonPay) → `funding` journal entry. Keep both behind one abstraction so either works. Verify signatures; treat webhooks as untrusted input and idempotent by provider reference. Resolve the payer through `onramp_customer` and post only when Task 2.7's KYC gate passes — a webhook naming a customer we cannot map to a principal is an alert, never a credit.
-- [ ] **Wallet provider: Coinbase CDP behind a `WalletProvider` interface** (§8.8 — no private keys in-house). CDP has no Go SDK, so the adapter is either direct REST from Go for the handful of endpoints used, or a thin TypeScript sidecar behind the same interface. **That choice is sealed inside the adapter** and must not leak into any module that authorizes payments.
 - [ ] **Voucher signing runs on our own delegated EOA, not through CDP.** CDP prices wallet operations at $0.005 each (first 5,000/month free). At 8,000 vouchers a day that is $40 of signing against roughly $32 of payments, which inverts the economics of the netted flow entirely. The delegated key — x402's `payerAuthorizer` — signs server-side, outside the meter, where the marginal cost is one ECDSA operation. **This is a cost boundary, not a throughput optimisation.**
 - [ ] CDP is used for what it is priced for: account-wallet custody, funding operations, on-chain settlement and redemption, and Spend Permission / Policy enforcement.
 - [ ] **Mandate enforcement partly below our own backend.** Express per-agent limits as CDP **Spend Permissions** (allowance per spender per period) and **Policies** (value caps, address allow/blocklists, USD limits, network and function restrictions). Our engine enforces what CDP cannot express — intent, behaviour, category, provenance. Where a CDP policy covers a rule, a compromise of our servers still cannot exceed it.
@@ -1946,10 +2039,10 @@ Three background workers, none in the payment hot path, each solving a distinct 
 Demonstrable end to end:
 
 1. Create an account, fund it, connect an agent, sign a mandate.
-2. The agent requests a $0.40 payment → approved in under 100ms → ledger debited, spend counter incremented, decision recorded.
+2. The agent requests a $0.40 payment → approved → ledger debited, spend counter incremented, decision recorded.
 3. The agent requests $85 against a $20 cap → **declined**, no money moves, and the decline appears in the console with reason and mandate version.
 4. The agent retries a timed-out request with the same idempotency key → the original result returns; no second payment.
-5. Settlement batches the day's payments into one on-chain USDC transfer.
+5. Each approved payment is confirmed on-chain, or expires and gives back its funds and budget.
 6. The hourly reconciliation job confirms the ledger sums to zero.
 
 That is whitepaper §22 exactly, and it is enough to put design partners on live transactions.
@@ -1968,12 +2061,12 @@ That is whitepaper §22 exactly, and it is enough to put design partners on live
 | Transactional email treated as a detail | Phase 2 cannot ship without it — verification, reset and invites are all email — and deliverability (SPF/DKIM/DMARC, a warmed domain) takes days of calendar time, not hours of work | Pick the provider and start domain warm-up during Phase 0, behind a `Mailer` port so tests never send |
 | MFA encryption key stored like config | `user_mfa_factor.secret_enc` is recoverable by design, so the key that protects it is as sensitive as a signing key | Keep it in the §8.10 managed store from the first commit, not in an env var |
 | Break-glass left undesigned | Three cases have no in-app path by design: owner and guardian compromised together, an owner who is gone (only the owner may propose `transfer_owner`), and a user who lost every WebAuthn credential. A rushed reset path is a backdoor around every control above it | Write the identity re-verification runbook **before the first customer account has a guardian** |
-| Notifications treated as product polish | Task 2.8's delays are only a control if somebody is told; unnoticed, a timelock is just latency. This is also the only detection channel an attacker with a session cookie probably does not hold | Task 2.10 ships with Phase 2, not after; bounces surface as account health |
-| Console repo not ready for WebAuthn | The `navigator.credentials` calls live in a separate repository, and until they exist **no mandate can be signed at all** — this is a hard cross-repo dependency on the critical path, not a UI polish item | Agree the challenge/assertion contract with the console repo during Phase 2, not Phase 6; stub the browser side in integration tests |
+| Notifications treated as product polish | Task 2.8's delays are only a control if somebody is told; unnoticed, a timelock is just latency. This is also the only detection channel an attacker with a session cookie probably does not hold | Task 2.10 ships with Task 2.8, not after; bounces surface as account health |
+| Console repo not ready for WebAuthn | The `navigator.credentials` calls live in a separate repository, and until they exist **no mandate can be signed at all** — this is a hard cross-repo dependency on the critical path, not a UI polish item | Not before Task 3.1, since MVP mandates use a TOTP step-up. Agree the challenge/assertion contract with the console repo before it; stub the browser side in integration tests |
 | Voucher signing routed through a metered API | At $0.005 per operation the netted flow costs more to sign than it moves (§8.8). Discovered after the schema is live, it is a key-role migration across every channel row | Delegated EOA outside the meter, scoped to the account (Task 7.2). **Confirm the billing boundary with CDP before Phase 7** |
 | Netting reimplemented instead of adopted | A proprietary netting engine is a worse version of x402's `batch-settlement`, maintained forever, and incompatible with what our merchants' other counterparties speak | Use the x402-foundation Go SDK. The rail adapter selects a scheme; it does not invent one |
 | On-chain data treated as the audit trail | The chain shows the *facilitator* firing, not the payer or the individual payments (§8.6). A support process or dashboard built on block explorers reconciles against the wrong object, and a promise to produce per-payment on-chain evidence cannot be met | Ledger plus vouchers plus batch hashes are the record. Hourly solvency invariant, not per-payment hashes. No tx-hash column on an individual payment |
-| Loss observation deferred as "not MVP" | It is free to collect and unrecoverable afterwards, and without it the guarantee decision is made on no evidence | Task 5.6 ships with Phase 5. It pays nobody and shows nobody |
+| Loss observation deferred as "not MVP" | It is free to collect and unrecoverable afterwards, and without it the guarantee decision is made on no evidence | Task 5.6 ships before launch. It pays nobody and shows nobody |
 | Directory gated behind signup | Trades a compounding network effect for a modest conversion bump, and starves the asset that becomes the reputation bureau (§11.1) | Gate *protection*, not *information*. Read is open and rate-limited; write and claim are gated to verified payees |
 | Enrolment friction blocks onboarding | Two credentials before a design partner can sign their first mandate is real setup cost, discovered at the worst moment | Walk partners through enrolment during onboarding, not at first mandate; make the second-credential prompt part of signup |
 
@@ -1998,10 +2091,26 @@ The increase over the previous estimate is the scheme-selecting adapter and chan
 
 Consistent with §17's Phase 0 window of months 0–3, leaving room for the SDK, MCP server and console in their own repositories.
 
+**The testnet MVP, from here:**
+
+| Phase | Days (one engineer) |
+|---|---|
+| 3 Mandate (TOTP step-up) | 3–4 |
+| 4 Authz | 3–4 |
+| 5 Payment orchestration | 6–7 |
+| 6 HTTP surface | 5–7 |
+| 7 `exact` on Solana, CDP wallets | 6–8 |
+| 8 Deposit detection | 2–3 |
+| **Total** | **≈ 25–33 days** |
+
+Tasks marked **Not in MVP** are outside this total. Phase 6 grows because no handlers exist yet beyond `/v1/health`.
+
 
 ---
 
 ## Revision notes
+
+**22 October 2026, reorganization.** Refocused on a testnet MVP on Solana with CDP wallets; tasks outside it are marked **Not in MVP**.
 
 **22 October 2026.** Ticked the Phase 0–2 steps that are built and tested, and corrected `BuildAPI`'s signature in Task 0.3.
 
