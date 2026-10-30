@@ -154,6 +154,30 @@ func ValidateAgentName(name string) error {
 	return nil
 }
 
+// Agent loads one registration by identifier, with no actor check.
+//
+// It is for other modules' ports, which have already established who is
+// asking, and never for a handler: answering it for any caller would let an
+// identifier probe agents in accounts the caller does not belong to.
+func (s *Service) Agent(ctx context.Context, agentID id.AgentID) (Agent, error) {
+	return s.repo.Agent(ctx, agentID)
+}
+
+// RequireMandateIssuer reports whether a session may grant an agent spending
+// authority in this account.
+//
+// The roles that manage agents manage their mandates, and the act is gated on
+// a recent second factor, like issuing a credential. This is the MVP's
+// stand-in for a passkey signature over the mandate itself (Task 3.1), and it
+// is weaker in the way RequireStepUp describes: it proves somebody with a
+// valid code was present recently, not what they approved.
+func (s *Service) RequireMandateIssuer(ctx context.Context, actor Session, accountID id.AccountID) error {
+	if err := s.requireAgentManager(ctx, actor, accountID); err != nil {
+		return err
+	}
+	return s.RequireStepUp(ctx, actor)
+}
+
 // requireAgentManager checks that an actor may manage agents in this account.
 //
 // Owners and admins only. Managing agents is the substance of the admin role,

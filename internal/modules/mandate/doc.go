@@ -8,5 +8,12 @@
 //  2. Signed by the owner, verified server-side. A compromise of Cleargate's
 //     own database therefore cannot fabricate spending authority.
 //
-// MVP scope: caps (per tx / day / month), categories, TTL, signing, versioning.
+// The MVP delivers the first in full and the second not yet. A mandate is
+// approved by a console session with a recent TOTP step-up and stored as the
+// exact bytes approved, so the passkey signature of Task 3.1 can later cover
+// those same bytes. Until then a write that bypasses this module is not
+// detectable from the row alone.
+//
+// MVP scope: caps (per tx / day / month) in one asset, categories, an optional
+// payee allowlist, expiry, versioning.
 package mandate
