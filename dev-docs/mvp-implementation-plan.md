@@ -1291,6 +1291,8 @@ func TestServerHoldsNoMandateSigningKey(t *testing.T)       // assert the invari
 
 ### Task 3.2: Versioned storage
 
+**Built** in `migrations/000006_mandate.up.sql` and `internal/modules/mandate`. The SQL below is the original sketch. The migration differs in three ways, recorded in the Revision notes for 30 October 2026: the payload is `bytea`, the projections are filled by an insert trigger instead of `GENERATED`, and every cap is in the one `asset` the mandate names.
+
 ```sql
 CREATE TABLE mandate (
   id             uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -1346,9 +1348,10 @@ CREATE UNIQUE INDEX mandate_one_pending ON mandate (agent_id) WHERE status = 'pe
 
 **Until Task 2.8** there is no guardian to veto and no timelock to wait out: a `session_stepup` mandate needs a step-up within the window (Task 2.4) and is inserted straight as `active`, superseding its predecessor.
 
-- [ ] **Exception — tightening is instant.** If every cap in the proposal is less than or equal to the current active mandate's, insert it directly as `active` with `effective_from = now()`. Reducing what an agent may spend never needs a waiting period.
+- [ ] **Exception — tightening is instant** (with Task 2.8; until then every mandate is instant). If every cap in the proposal is less than or equal to the current active mandate's, insert it directly as `active` with `effective_from = now()`. Reducing what an agent may spend never needs a waiting period.
 
-- [ ] **Tests:** `TestIssue_RequiresRecentStepUp`, `TestIssue_SupersedesPrevious`, `TestOnlyOneActiveVersion`, `TestOnlyOnePendingVersion`, `TestActiveAt_ReturnsHistoricalVersion` (the dispute query), `TestUpdate_IsRejected`, `TestPendingMandateIsNotEnforced`, `TestVetoedMandateNeverActivates`, `TestTighteningSkipsTimelock`, `TestAuthorizationRejectsMandateWithInvalidSignature`
+- [x] **Tests:** `TestIssue_RequiresRecentStepUp`, `TestIssue_SupersedesPrevious`, `TestOnlyOneActiveVersion`, `TestOnlyOnePendingVersion`, `TestActiveAt_ReturnsHistoricalVersion` (the dispute query), `TestUpdate_IsRejected`, `TestPendingMandateIsNotEnforced`. Until Task 3.1, `TestAuthorizationRejectsMandateWithInvalidSignature` takes the form `TestCurrent_RefusesUnverifiableScheme` and `TestCurrent_RefusesStoredWebAuthnMandate`: no verifier exists, so a `webauthn` row is refused, not trusted.
+- [ ] **Tests with Task 2.8:** `TestVetoedMandateNeverActivates`, `TestTighteningSkipsTimelock`. **With Task 3.1:** `TestAuthorizationRejectsMandateWithInvalidSignature`, `TestSignedByMatchesCredentialOwner`.
 
 > **Why `TestAuthorizationRejectsMandateWithInvalidSignature` is not optional**
 > `max_per_tx` is `GENERATED` from `signed_payload`, so anyone who can edit that JSONB changes the cap the engine enforces — the generated column follows the tampered bytes exactly as designed. The assertion is what makes that edit detectable, and it only does so if something actually verifies it before the caps are trusted. Without this test the signature is decoration, and a database compromise silently becomes an authorization compromise. With user-held keys this test is the *entire* payoff of Task 3.1: it is the moment the forged row is caught.
@@ -2109,6 +2112,31 @@ Tasks marked **Not in MVP** are outside this total. Phase 6 grows because no han
 ---
 
 ## Revision notes
+
+**30 October 2026.** Built Task 3.2 with a TOTP step-up standing in for the passkey signature. It differs from the task's SQL in three deliberate ways:
+
+- **The payload is `bytea`, not `jsonb`.** `jsonb` re-serialises on output, reordering keys and dropping whitespace. The bytes read back would not be the bytes approved, so Task 3.1's signatures over them could never verify. The payload is encoded once at issue, in a JCS-compatible form (`internal/modules/mandate/payload.go`), and only ever parsed afterwards. It names its agent and version, and the database refuses a payload filed against another row.
+- **Projections come from an insert trigger, not `GENERATED`.** Reading `bytea` as JSON needs `convert_from`, which Postgres marks `STABLE`, and generated columns accept only `IMMUTABLE` expressions. The trigger overwrites whatever a writer supplies. An update guard then refuses any change except the lifecycle transitions `pending → active | vetoed` and `active → superseded`, and refuses every delete. `payload_digest` stays `GENERATED` as `sha256(payload)`.
+- **Every cap is in one named `asset`.** Bare `numeric` caps had no unit. A payment in another asset finds no mandate rather than being converted. **Open (owner):** whether a mandate stays per asset once an account holds USDC on both Solana and Base, or caps move to a unit of account. `currency` defines only `USDC-BASE` so far, and adding the Solana asset belongs with Task 7.5.
+
+Also recorded:
+
+- **Accepted gap.** A `session_stepup` mandate proves that someone with a valid code was signed in, not what they saw, and a write that bypasses the service can't be detected from the row. Task 3.1 closes this. Until then the service refuses any `webauthn` row, since it has no verifier.
+- **Concurrency.** Two concurrent issues for one agent are settled by the unique indexes. The loser gets `ErrConcurrentChange` and nothing is written, so it never replaces rules it didn't see.
+- **Module boundary.** `mandate` reaches the account module only through its `Accounts` port (`internal/app/adapters.go`). `account.RequireMandateIssuer` requires owner or admin plus a recent step-up. Console routes for this arrive with Task 6.2.
+
+**Candidates from a competitor review (Saifuro, docs.saifuro.com, 30 October 2026).** These are notes, not decisions. Saifuro authorizes agent payments without custody: it returns a signed verdict, and the customer's own code then pays.
+
+- **Observe mode** (Tasks 5.3, 6.2). An `observe | enforce` switch per account or environment, stamped on every decision record. In observe mode, decisions are recorded and payments proceed. This lets a design partner see about 30 days of "would have declined" before anything blocks.
+- **Reason codes as a public contract** (Tasks 4.1, 6.2). Task 4.1 already checks in a fixed order. Publish that order and the `ReasonCode` values in `api/openapi.yaml`, so an SDK can branch on them and an order change is a breaking change.
+- **Idempotency detail** (Task 5.2). Never store an outcome for a 5xx, so a retry after a server error is evaluated again. The same key with a different body is a conflict.
+- **Human approval threshold** (whitepaper §4.1). `review_above` with an expiry, and a review queue the console can read; Saifuro's own review endpoints return 404. It would be payload format 2, after the MVP.
+- **Configurable velocity.** Saifuro hard-codes 10 decisions per 60 seconds per agent. If Cleargate adds a frequency rule, it belongs in the mandate.
+- **Window semantics.** Spend counters are UTC calendar day and month (Task 1.3). Say so in the API docs. Saifuro's docs contradict themselves between "per month" and "rolling 30-day".
+- **Portable signed approvals** (after the MVP, with on-platform payees). An ES256 JWT carrying amount, asset, payee, mandate version, a nonce and a 5-minute expiry, verifiable against a public JWKS. It would let a merchant or facilitator check an approval without trusting the agent. Its limits: replay protection needs a nonce store shared by every verifier, and a verifier must accept only mandate IDs the operator gave it.
+- **Rail as a label.** Record the rail on the decision, but keep it out of policy and out of anything signed. This is consistent with the `Rail` interface.
+- **Docs pattern.** "Known gaps" and "what a signed approval does not prove" pages, plus an `llms.txt` index for agents.
+- **Where Cleargate is deliberately stronger, so don't trade it away.** Saifuro checks, then the customer pays as a separate step. An approval stays usable for 5 minutes after the mandate is revoked, and concurrent approvals can together exceed a cap. Its `policy_version` never increments, so old decisions can't be reconstructed. Cleargate's single transaction (ledger debit, spend counter and decision record, Task 5.3) and its decision-time snapshot (Task 4.2) avoid all three.
 
 **22 October 2026, reorganization.** Refocused on a testnet MVP on Solana with CDP wallets; tasks outside it are marked **Not in MVP**.
 

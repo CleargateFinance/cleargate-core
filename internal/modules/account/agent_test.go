@@ -226,9 +226,9 @@ func TestAgentCredentialCannotOpenUserSession(t *testing.T) {
 // is worth on its own, which is nothing.
 //
 // Authentication answers who is calling and says nothing about what they may
-// do. Spending authority comes from a mandate, and until Phase 3 exists there
-// is no way to grant one, so the strongest form of this test is that the
-// identity a verified key resolves to carries no authority at all.
+// do. Spending authority comes from a mandate, which the mandate module grants
+// separately, so the strongest form of this test is that the identity a
+// verified key resolves to carries no authority at all.
 func TestConnectedAgentWithoutMandateCannotSpend(t *testing.T) {
 	ctx := context.Background()
 	f := newAgentFixture(t)
@@ -413,4 +413,48 @@ func TestStartAgentSession_GroupsARun(t *testing.T) {
 	require.NoError(t, f.db.QueryRow(ctx,
 		`SELECT agent_id FROM agent_session WHERE id = $1`, string(run.ID)).Scan(&storedAgent))
 	assert.Equal(t, string(agent.ID), storedAgent)
+}
+
+// TestRequireMandateIssuer_AllowsManagersWithStepUp: the roles that manage
+// agents grant them authority, once they have entered a second factor.
+func TestRequireMandateIssuer_AllowsManagersWithStepUp(t *testing.T) {
+	ctx := context.Background()
+	f := newAgentFixture(t)
+
+	assert.NoError(t, f.svc.RequireMandateIssuer(ctx, f.owner, f.accountID))
+
+	admin := f.addMemberWithMFA(t, "admin@example.com", RoleAdmin)
+	assert.NoError(t, f.svc.RequireMandateIssuer(ctx, admin, f.accountID))
+}
+
+// TestRequireMandateIssuer_RefusesOtherRoles: a guardian's power is
+// subtractive and a viewer changes nothing, so neither may grant spending
+// authority, second factor or not.
+func TestRequireMandateIssuer_RefusesOtherRoles(t *testing.T) {
+	ctx := context.Background()
+	f := newAgentFixture(t)
+
+	guardian := f.addMemberWithMFA(t, "guardian@example.com", RoleGuardian)
+	assert.ErrorIs(t, f.svc.RequireMandateIssuer(ctx, guardian, f.accountID), ErrNotPermitted)
+
+	viewer := f.addMemberWithMFA(t, "viewer@example.com", RoleViewer)
+	assert.ErrorIs(t, f.svc.RequireMandateIssuer(ctx, viewer, f.accountID), ErrNotPermitted)
+
+	stranger, err := f.svc.ValidateSession(ctx, f.signInStranger(t, "stranger@example.com"))
+	require.NoError(t, err)
+	assert.ErrorIs(t, f.svc.RequireMandateIssuer(ctx, stranger, f.accountID), ErrNotPermitted)
+}
+
+// TestRequireMandateIssuer_RequiresRecentStepUp: until passkey signing ships,
+// the step-up is the whole of a mandate's approval, so a stale one is refused.
+func TestRequireMandateIssuer_RequiresRecentStepUp(t *testing.T) {
+	ctx := context.Background()
+	f := newAgentFixture(t)
+
+	f.clock.Advance(DefaultStepUpWindow + time.Minute)
+
+	err := f.svc.RequireMandateIssuer(ctx, f.owner, f.accountID)
+	var stepUp *StepUpError
+	require.ErrorAs(t, err, &stepUp)
+	assert.Equal(t, ReasonStepUpRequired, stepUp.Reason)
 }

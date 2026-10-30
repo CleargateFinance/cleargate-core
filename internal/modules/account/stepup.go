@@ -24,6 +24,11 @@ import (
 // step-up for the next quarter of an hour. Those actions carry their own
 // signature over the exact payload instead, which proves intent about that
 // specific thing rather than presence at some point in the recent past.
+//
+// The MVP makes one deliberate exception: until passkey signing ships
+// (Task 3.1), a mandate is approved by this step-up, through
+// RequireMandateIssuer. The weakness above is accepted for the testnet MVP,
+// not forgotten.
 func (s *Service) RequireStepUp(ctx context.Context, session Session) error {
 	enrolled, err := s.repo.HasConfirmedMFA(ctx, session.UserID)
 	if err != nil {
