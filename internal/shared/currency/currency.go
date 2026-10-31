@@ -10,13 +10,21 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-// Asset identifies a token on one chain. The same token on two chains is two
-// assets, since one can't pay for the other without a bridge. The network
-// (testnet or mainnet) is a deployment setting, not part of the asset.
+// Asset names the unit an Amount is counted in. Two assets are never
+// fungible with each other, and nothing converts between them implicitly.
 type Asset string
 
-// USDCBase is USDC on Base.
-const USDCBase Asset = "USDC-BASE"
+// USD is the system's unit of account: ledger balances, spend counters,
+// mandate caps and decision records are all in it.
+//
+// Which stablecoin or chain actually carries a payment (USDC on Solana, USDT,
+// USDC on Base) is a property of the settlement rail, not of the money. The
+// rail converts to and from USD at par at its edge, as the only place that
+// knows which token it holds, and records the token and chain on the payment.
+// Par is an assumption, not a fact: if a stablecoin trades away from a dollar,
+// the gap shows up where the on-chain float is reconciled against the chain,
+// not in a customer's caps.
+const USD Asset = "USD"
 
 // Amount is an exact decimal quantity of a specific Asset.
 //

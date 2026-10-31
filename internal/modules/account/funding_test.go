@@ -22,9 +22,9 @@ type stubFunding struct{ funded string }
 
 func (s stubFunding) FundedToDate(context.Context, id.PrincipalID) (currency.Amount, error) {
 	if s.funded == "" {
-		return currency.Parse("0", currency.USDCBase)
+		return currency.Parse("0", currency.USD)
 	}
-	return currency.Parse(s.funded, currency.USDCBase)
+	return currency.Parse(s.funded, currency.USD)
 }
 
 // fundingFixture is an account with a principal, and a service whose funding
@@ -107,7 +107,7 @@ func (f *fundingFixture) verify(t *testing.T) {
 
 func usd(t *testing.T, v string) currency.Amount {
 	t.Helper()
-	a, err := currency.Parse(v, currency.USDCBase)
+	a, err := currency.Parse(v, currency.USD)
 	require.NoError(t, err)
 	return a
 }
