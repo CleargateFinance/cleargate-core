@@ -46,17 +46,37 @@ func base(t *testing.T) authz.Snapshot {
 	}
 }
 
+type decideCase struct {
+	name   string
+	req    authz.Request
+	mutate func(*authz.Snapshot)
+	want   authz.ReasonCode
+}
+
 // TestDecide covers every reason code once, and the boundary of each limit.
 func TestDecide(t *testing.T) {
+	for _, tc := range decideCases(t) {
+		t.Run(tc.name, func(t *testing.T) {
+			snap := base(t)
+			if tc.mutate != nil {
+				tc.mutate(&snap)
+			}
+
+			got := authz.Decide(tc.req, snap)
+
+			assert.Equal(t, tc.want, got.ReasonCode)
+			assert.Equal(t, tc.want == authz.ReasonOK, got.Approved())
+			assert.NotEmpty(t, got.Reason, "the console always has something to show")
+		})
+	}
+}
+
+// decideCases is shared with the features tests, which replay each one.
+func decideCases(t *testing.T) []decideCase {
 	usd := func(s string) currency.Amount { return amt(t, s, usdc) }
 	req := func(s string) authz.Request { return authz.Request{Amount: usd(s), Category: "data_api"} }
 
-	cases := []struct {
-		name   string
-		req    authz.Request
-		mutate func(*authz.Snapshot)
-		want   authz.ReasonCode
-	}{
+	return []decideCase{
 		{name: "within all limits is approved", req: req("0.40"), want: authz.ReasonOK},
 		{name: "zero amount is invalid", req: req("0"), want: authz.ReasonInvalidAmount},
 		{name: "negative amount is invalid", req: req("-5"), want: authz.ReasonInvalidAmount},
@@ -166,21 +186,6 @@ func TestDecide(t *testing.T) {
 			want:   authz.ReasonOK,
 		},
 	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			snap := base(t)
-			if tc.mutate != nil {
-				tc.mutate(&snap)
-			}
-
-			got := authz.Decide(tc.req, snap)
-
-			assert.Equal(t, tc.want, got.ReasonCode)
-			assert.Equal(t, tc.want == authz.ReasonOK, got.Approved())
-			assert.NotEmpty(t, got.Reason, "the console always has something to show")
-		})
-	}
 }
 
 // TestDecide_FailsClosedOnMismatchedInputs: an input in the wrong asset is a
@@ -189,7 +194,21 @@ func TestDecide(t *testing.T) {
 func TestDecide_FailsClosedOnMismatchedInputs(t *testing.T) {
 	req := authz.Request{Amount: amt(t, "1", usdc), Category: "data_api"}
 
-	cases := map[string]func(*authz.Snapshot){
+	for name, mutate := range mismatchCases(t) {
+		t.Run(name, func(t *testing.T) {
+			snap := base(t)
+			mutate(&snap)
+
+			got := authz.Decide(req, snap)
+
+			assert.False(t, got.Approved())
+			assert.Equal(t, authz.ReasonProcessingError, got.ReasonCode)
+		})
+	}
+}
+
+func mismatchCases(t *testing.T) map[string]func(*authz.Snapshot) {
+	return map[string]func(*authz.Snapshot){
 		"per-transaction cap": func(s *authz.Snapshot) { s.Mandate.MaxPerTx = amt(t, "20", other) },
 		"daily cap":           func(s *authz.Snapshot) { s.Mandate.MaxPerDay = amt(t, "100", other) },
 		"monthly cap":         func(s *authz.Snapshot) { s.Mandate.MaxPerMonth = amt(t, "200", other) },
@@ -201,18 +220,6 @@ func TestDecide_FailsClosedOnMismatchedInputs(t *testing.T) {
 		// currency.Zero of the mandate's asset.
 		"counter left as the zero Amount": func(s *authz.Snapshot) { s.DaySpent = currency.Amount{} },
 		"balance left as the zero Amount": func(s *authz.Snapshot) { s.AccountBalance = currency.Amount{} },
-	}
-
-	for name, mutate := range cases {
-		t.Run(name, func(t *testing.T) {
-			snap := base(t)
-			mutate(&snap)
-
-			got := authz.Decide(req, snap)
-
-			assert.False(t, got.Approved())
-			assert.Equal(t, authz.ReasonProcessingError, got.ReasonCode)
-		})
 	}
 }
 

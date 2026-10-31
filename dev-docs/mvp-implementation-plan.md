@@ -1572,16 +1572,21 @@ func Decide(req Request, s Snapshot) Decision {
 - [x] **Fail closed on every comparison.** `currency.Amount` refuses to compare or add across assets. The sketch above discards that error (`over, _ :=`), which would let a mismatched amount pass a cap. `Decide` checks the request's asset against the mandate first, and any arithmetic error after that declines with `processing_error`.
 
 - [x] **Step 4: Verify** — every row of the table above has a subtest, plus the boundaries (exactly at each cap, at the expiry instant). Also `TestDecide_FailsClosedOnMismatchedInputs`, `TestDecide_FirstFailureWins`, `TestDecide_RecordsTheStagesThatRan`.
-- [ ] **Step 5: Commit** `feat(authz): pure mandate-check decision engine`
+- [x] **Step 5: Commit** `feat(authz): pure mandate-check decision engine`
 
 ### Task 4.2: Feature snapshot
 
-- [ ] `buildFeatures` returns versioned JSONB capturing every input, plus the Bucket-C fields from the request: URL provenance, stated purpose, session novel-counterparty count, quoted price.
-- [ ] **Test:** `TestFeatures_CapturesAllDecisionInputs` — asserts the snapshot is sufficient to replay the decision.
+**Built** in `internal/modules/authz/features.go`. `Decision.Features` is a versioned (`"v": 1`) record of every input, and `Features.Inputs()` rebuilds the request and snapshot from it. Task 5.3 stores it as `json.Marshal(d.Features)`.
+
+- [x] `buildFeatures` returns versioned JSONB capturing every input, plus the Bucket-C fields from the request: URL provenance, stated purpose, session novel-counterparty count, quoted price. The agent's reports arrive as `Request.Signals`: resource URL, `url_source` (`task` | `fetched` | `unknown`, and an unreported source is `unknown`, never `task`), purpose, task, session id, and novel counterparties this session (absent, not zero, when unreported). The quoted price is the request amount, since an x402 `exact` payment pays exactly what was quoted.
+- [x] **Test:** `TestFeatures_CapturesAllDecisionInputs` — asserts the snapshot is sufficient to replay the decision. It replays every `TestDecide` case and every mismatched-asset case through JSON. `TestFeatures_EncodingIsPinned` fails on any accidental change to the stored shape.
 
 > **Why:** data-architecture.md §2, Bucket C. These fields are unrecoverable after the instant passes and are the only possible training data for §6.5's year-2 models. Cost now: a few hundred bytes per payment.
 
-- [ ] Commit `feat(authz): immutable decision feature snapshot`
+> **Why replayable rather than just complete**
+> "Captures every input" is easy to claim and hard to check. "Decide over the stored record gives the same decision" is a test. It also makes two later features nearly free: a dispute shows the decision being reproduced, and a proposed mandate can be run against past traffic before it is issued.
+
+- [x] Commit `feat(authz): immutable decision feature snapshot`
 
 ---
 
@@ -1596,6 +1601,7 @@ func Decide(req Request, s Snapshot) Decision {
 Schema per [data-architecture.md](data-architecture.md) §5.3.
 
 - [ ] Payment status is `declined`, or `authorized` → `settled` | `expired` | `failed` (Task 7.7). Authorizing posts customer funds → payee payable; settling and expiring are later entries, never updates.
+- [ ] `decision.mandate_id`, `mandate_version` and `mandate_digest` are nullable, together, and null only when `reason_code = 'no_mandate'` (a CHECK). data-architecture.md §5.3 has them `NOT NULL`, which would make the `no_mandate` decline (Task 4.1) impossible to record.
 - [ ] Record the rail on every payment (`rail text NOT NULL`, `x402-exact-solana` for now). It is a label for reporting and reconciliation only: no mandate rule reads it and no signed payload includes it, so adding Base or another protocol never changes policy or invalidates a signature. The value comes from the settlement `Rail` (Task 7.1).
 
 > **Why declines get a full `payment` row**
@@ -1836,6 +1842,7 @@ accountMod.RegisterControlVetoRoute(guardianAPI)
 - [ ] `POST /v1/mfa/totp` · `/totp/confirm` · `/step-up` · `/recovery-codes` — Task 2.4 has the service and no routes yet.
 - [ ] `PUT /v1/agents/{id}/mandate` — sets the rules behind a recent TOTP step-up (Task 3.2). With Task 3.1, `POST /v1/agents/{id}/mandate/draft` canonicalises the rules and returns the WebAuthn challenge, and the `PUT` carries the assertion instead.
 - [ ] Update `api/openapi.yaml`; the SDK and MCP repos generate from it.
+- [ ] `POST /v1/payments/authorize` accepts the optional signals of Task 4.2 (`resource_url`, `url_source`, `purpose`, `task`, `session_id`, `session_novel_counterparties`) and bounds their length, refusing with `400` rather than truncating. They are stored on every decision, so the bound is what keeps a decision record a few hundred bytes, and truncating would alter evidence.
 - [ ] Publish the reason codes and their order (Task 4.1) as an enum in `api/openapi.yaml`, each with a one-line meaning and what an agent should do about it.
 - [ ] State the spend windows in the API docs: the daily cap resets at 00:00 UTC and the monthly cap on the 1st at 00:00 UTC (Task 1.3). They are calendar windows, not rolling ones, so a customer can predict exactly when an agent may spend again.
 - [ ] Recommend failing closed in the SDK: a timeout, a network error or a 5xx means the payment did not happen, and the agent must not pay by another route.
@@ -2156,6 +2163,8 @@ Also recorded:
 - **Accepted gap.** A `session_stepup` mandate proves that someone with a valid code was signed in, not what they saw, and a write that bypasses the service can't be detected from the row. Task 3.1 closes this. Until then the service refuses any `webauthn` row, since it has no verifier.
 - **Concurrency.** Two concurrent issues for one agent are settled by the unique indexes. The loser gets `ErrConcurrentChange` and nothing is written, so it never replaces rules it didn't see.
 - **Module boundary.** `mandate` reaches the account module only through its `Accounts` port (`internal/app/adapters.go`). `account.RequireMandateIssuer` requires owner or admin plus a recent step-up. Console routes for this arrive with Task 6.2.
+
+**31 October 2026, Task 4.2.** Built the feature snapshot. Its completeness test is a replay: the stored JSON rebuilds a request and snapshot that `Decide` turns into the same decision. Amounts are stored with their own asset rather than assuming the mandate's, so a `processing_error` decline replays too. Two consequences for later tasks: `decision`'s mandate columns must be nullable for `no_mandate` declines (Task 5.1), and the authorize endpoint must bound the agent's signals rather than truncate them (Task 6.2).
 
 **31 October 2026.** Built Task 4.1. It differs from the task's sketch in four deliberate ways:
 

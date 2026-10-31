@@ -149,9 +149,55 @@ func (r Rules) PermitsPayee(p string) bool {
 
 // Request is the payment an agent asked for.
 type Request struct {
+	// Amount is the price the payee quoted. An x402 exact payment pays
+	// exactly the quoted amount, so the two are the same figure.
 	Amount   currency.Amount
 	Category string
 	PayTo    string
+
+	Signals Signals
+}
+
+// URLSource says where the URL being paid came from.
+type URLSource string
+
+const (
+	// URLSourceTask is a URL that appeared in the task the agent was given.
+	URLSourceTask URLSource = "task"
+	// URLSourceFetched is a URL the agent found in content it fetched
+	// mid-session. §6.2 calls this the primary tell for injection.
+	URLSourceFetched URLSource = "fetched"
+	// URLSourceUnknown is a URL whose origin the SDK did not report. An
+	// unreported source is recorded as unknown, never as task.
+	URLSourceUnknown URLSource = "unknown"
+)
+
+// Signals are what the agent reports about a payment beyond the payment
+// itself. No check reads them yet. They are recorded on every decision
+// because each is observable only at this instant (data-architecture.md §2,
+// Bucket C): a later intent or behaviour check, and the models of §6.5, can
+// only learn from what was captured at the time.
+//
+// They are the agent's own account and are recorded as reported. A
+// compromised agent can lie in them, which is why none of them will ever be
+// enough to approve a payment on its own.
+type Signals struct {
+	// ResourceURL is the endpoint being paid for.
+	ResourceURL string
+	URLSource   URLSource
+
+	// Purpose is the agent's stated reason for this payment, and Task the
+	// task it was given (§6.3).
+	Purpose string
+	Task    string
+
+	// SessionID groups the payments of one agent run.
+	SessionID string
+
+	// SessionNovelCounterparties is how many payees this session had not
+	// paid before this one (§6.4). Nil when the SDK did not report it, which
+	// is different from zero.
+	SessionNovelCounterparties *int
 }
 
 // Snapshot is every input Decide reads besides the request, fetched before it
@@ -191,6 +237,10 @@ type Decision struct {
 	// Checks are the stages that ran, in order. Evaluation stops at the first
 	// failure, so a decline's last check is the one that failed.
 	Checks []Check
+
+	// Features is every input the decision was made from, stored with the
+	// decision record and never updated (Task 4.2).
+	Features Features
 }
 
 // Approved reports whether the payment may proceed.

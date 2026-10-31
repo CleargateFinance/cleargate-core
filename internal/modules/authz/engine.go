@@ -13,7 +13,9 @@ import (
 // and every such refusal here declines, so an input in the wrong asset can
 // never slip past a cap.
 func Decide(req Request, s Snapshot) Decision {
-	e := evaluation{}
+	// Built first, from the untouched inputs, so a decline at any stage is
+	// recorded with everything the engine was given.
+	e := evaluation{features: buildFeatures(req, s)}
 
 	if req.Amount.IsZero() || req.Amount.IsNegative() {
 		return e.decline(StageRequest, ReasonInvalidAmount, "amount must be positive")
@@ -117,7 +119,8 @@ func quote(s string) string {
 
 // evaluation accumulates the stages that ran.
 type evaluation struct {
-	checks []Check
+	features Features
+	checks   []Check
 }
 
 func (e *evaluation) pass(st Stage) { e.checks = append(e.checks, Check{Stage: st, Result: Pass}) }
@@ -125,9 +128,9 @@ func (e *evaluation) skip(st Stage) { e.checks = append(e.checks, Check{Stage: s
 
 func (e *evaluation) decline(st Stage, code ReasonCode, reason string) Decision {
 	e.checks = append(e.checks, Check{Stage: st, Result: Fail})
-	return Decision{Outcome: Declined, ReasonCode: code, Reason: reason, Checks: e.checks}
+	return Decision{Outcome: Declined, ReasonCode: code, Reason: reason, Checks: e.checks, Features: e.features}
 }
 
 func (e *evaluation) approve() Decision {
-	return Decision{Outcome: Approved, ReasonCode: ReasonOK, Reason: "within mandate", Checks: e.checks}
+	return Decision{Outcome: Approved, ReasonCode: ReasonOK, Reason: "within mandate", Checks: e.checks, Features: e.features}
 }
