@@ -27,6 +27,7 @@ linters:
           files:
             - "**/internal/modules/*/domain.go"
             - "**/internal/modules/*/service.go"
+            - "**/internal/modules/*/engine.go"
           deny:
             - pkg: github.com/gin-gonic/gin
               desc: "business logic must not import the web framework; handlers translate HTTP"
