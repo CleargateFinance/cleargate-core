@@ -1368,6 +1368,8 @@ CREATE UNIQUE INDEX mandate_one_pending ON mandate (agent_id) WHERE status = 'pe
 
 ### Task 4.1: The pure Decide function
 
+**Built** in `internal/modules/authz` (`domain.go`, `engine.go`). The code below is the original sketch. The build differs in four ways, recorded in the Revision notes for 31 October 2026: `Snapshot.Mandate` is a pointer and nil declines `no_mandate`; the request's asset is checked against the mandate's and every comparison fails closed; the unbuilt checks are recorded as `skipped`, not `pass`; and `buildFeatures` is left to Task 4.2.
+
 > **Why this and not that — the signature has no `context.Context` and no `error`**
 > This is not a style preference; it is the latency constraint made mechanical. §6.6: *"Nothing slow runs in the request path: no chain calls, no model inference, no external HTTP."* A function that takes no context and returns no error **cannot perform I/O** — there is no way to express a network call in that signature. The compiler enforces the rule that would otherwise rely on code review forever.
 >
@@ -1375,7 +1377,7 @@ CREATE UNIQUE INDEX mandate_one_pending ON mandate (agent_id) WHERE status = 'pe
 >
 > The cost — every input must be fetched before calling — is a feature: it makes the engine's data dependencies explicit and reviewable in one struct.
 
-- [ ] **Step 1: Failing table test**
+- [x] **Step 1: Failing table test**
 
 ```go
 // internal/modules/authz/engine_test.go
@@ -1493,7 +1495,7 @@ func TestDecide(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Confirm failure. Step 3: Implement**
+- [x] **Step 2: Confirm failure. Step 3: Implement**
 
 ```go
 // internal/modules/authz/engine.go
@@ -1549,7 +1551,27 @@ func Decide(req Request, s Snapshot) Decision {
 > **Why stub the three unbuilt checks rather than omit them**
 > §22 scopes MVP to the mandate check. But §6's pipeline is the product's shape. Leaving the call sites in place — each returning `Pass` and recording a `decision_check` row — means Phase 2 of the detection roadmap (§6.5) is a function body, and the decision record already has the right structure for the day it is filled in.
 
-- [ ] **Step 4: Verify** — 11 subtests pass.
+**Reason codes are a public contract.** The SDK and MCP server branch on them, and an agent uses them to recover (retry smaller after `over_per_tx_cap`, stop after `account_blocked`). So the codes and the order they are checked in are published in `api/openapi.yaml` (Task 6.2), and renaming a code or reordering the checks is a breaking API change. The order, first failure wins:
+
+| # | Code | Meaning |
+|---|---|---|
+| 1 | `invalid_amount` | Amount is zero or negative |
+| 2 | `account_blocked` | Account is suspended or frozen |
+| 3 | `no_mandate` | The agent has no mandate in force |
+| 4 | `mandate_expired` | The mandate's expiry has passed |
+| 5 | `asset_not_permitted` | The payment is in an asset the mandate does not name |
+| 6 | `category_not_permitted` | Category not on the mandate |
+| 7 | `payee_not_permitted` | Payee not on a non-empty allowlist |
+| 8 | `over_per_tx_cap` | Amount above the per-transaction cap |
+| 9 | `over_daily_cap` | Today's spend plus this payment would exceed the daily cap |
+| 10 | `over_monthly_cap` | This month's spend plus this payment would exceed the monthly cap |
+| 11 | `insufficient_funds` | The account's balance does not cover the payment |
+| — | `processing_error` | The inputs disagree with each other (a Cleargate bug); nothing is charged |
+
+- [x] **No mandate is a decline, not an error.** An agent without authority that tries to pay is exactly the attempt the console exists to show (§12.1), so it gets a `payment` and a `decision` row like any other decline.
+- [x] **Fail closed on every comparison.** `currency.Amount` refuses to compare or add across assets. The sketch above discards that error (`over, _ :=`), which would let a mismatched amount pass a cap. `Decide` checks the request's asset against the mandate first, and any arithmetic error after that declines with `processing_error`.
+
+- [x] **Step 4: Verify** — every row of the table above has a subtest, plus the boundaries (exactly at each cap, at the expiry instant). Also `TestDecide_FailsClosedOnMismatchedInputs`, `TestDecide_FirstFailureWins`, `TestDecide_RecordsTheStagesThatRan`.
 - [ ] **Step 5: Commit** `feat(authz): pure mandate-check decision engine`
 
 ### Task 4.2: Feature snapshot
@@ -1574,6 +1596,7 @@ func Decide(req Request, s Snapshot) Decision {
 Schema per [data-architecture.md](data-architecture.md) §5.3.
 
 - [ ] Payment status is `declined`, or `authorized` → `settled` | `expired` | `failed` (Task 7.7). Authorizing posts customer funds → payee payable; settling and expiring are later entries, never updates.
+- [ ] Record the rail on every payment (`rail text NOT NULL`, `x402-exact-solana` for now). It is a label for reporting and reconciliation only: no mandate rule reads it and no signed payload includes it, so adding Base or another protocol never changes policy or invalidates a signature. The value comes from the settlement `Rail` (Task 7.1).
 
 > **Why declines get a full `payment` row**
 > §12.1: *"What exists only inside Cleargate Finance are the declines and holds — and those are the proof of value."* If blocked attempts go to a log line or a side table, the console's headline report ("blocked 14 payments, $3,200 at risk") becomes a log-scraping exercise instead of a `SELECT`. Model them as first-class payments with a non-approving outcome.
@@ -1600,6 +1623,10 @@ CREATE TABLE idempotency_key (
 
 > **Why the request hash is stored**
 > If a client reuses a key with different parameters, that is a client bug, and silently returning the old result hides it. Compare the hash; on mismatch return `409 Conflict`. This is standard practice (Stripe behaves this way) and turns a silent data corruption into a loud integration error.
+
+- [ ] **Only final outcomes are remembered.** An approval or a decline is stored against the key. A server error is not: the transaction rolled back and nothing moved, so a retry with the same key is evaluated again rather than replaying the failure forever.
+- [ ] **Keys are kept for 24 hours**, and the API docs say so. A worker deletes older rows. A retry after that window is a new payment, which is why the SDK generates one key per logical payment and reuses it only for retries of that payment.
+- [ ] **Tests:** `TestAuthorize_ServerErrorIsNotRemembered`, `TestAuthorize_SameKeyDifferentBodyConflicts`, `TestIdempotencyKey_ExpiresAfterRetention`
 
 ### Task 5.3: The transaction boundary
 
@@ -1809,6 +1836,11 @@ accountMod.RegisterControlVetoRoute(guardianAPI)
 - [ ] `POST /v1/mfa/totp` · `/totp/confirm` · `/step-up` · `/recovery-codes` — Task 2.4 has the service and no routes yet.
 - [ ] `PUT /v1/agents/{id}/mandate` — sets the rules behind a recent TOTP step-up (Task 3.2). With Task 3.1, `POST /v1/agents/{id}/mandate/draft` canonicalises the rules and returns the WebAuthn challenge, and the `PUT` carries the assertion instead.
 - [ ] Update `api/openapi.yaml`; the SDK and MCP repos generate from it.
+- [ ] Publish the reason codes and their order (Task 4.1) as an enum in `api/openapi.yaml`, each with a one-line meaning and what an agent should do about it.
+- [ ] State the spend windows in the API docs: the daily cap resets at 00:00 UTC and the monthly cap on the 1st at 00:00 UTC (Task 1.3). They are calendar windows, not rolling ones, so a customer can predict exactly when an agent may spend again.
+- [ ] Recommend failing closed in the SDK: a timeout, a network error or a 5xx means the payment did not happen, and the agent must not pay by another route.
+- [ ] A **"Known gaps"** page in the API docs, listing plainly what the MVP does not yet do: mandates are approved with a TOTP step-up, not a passkey signature (Task 3.1); there is no guardian or timelock (Task 2.8); `exact` payments to off-platform payees are final, with no hold (§5.5). Overclaiming creates exposure (§6.7), and an integrator who finds a gap we didn't mention stops trusting the rest of the docs.
+- [ ] An **`llms.txt`** index at the docs root, linking each page with a one-line summary, so an agent or a coding assistant can find the integration guide without crawling the site.
 
 Not in MVP:
 
@@ -2125,18 +2157,31 @@ Also recorded:
 - **Concurrency.** Two concurrent issues for one agent are settled by the unique indexes. The loser gets `ErrConcurrentChange` and nothing is written, so it never replaces rules it didn't see.
 - **Module boundary.** `mandate` reaches the account module only through its `Accounts` port (`internal/app/adapters.go`). `account.RequireMandateIssuer` requires owner or admin plus a recent step-up. Console routes for this arrive with Task 6.2.
 
-**Candidates from a competitor review (Saifuro, docs.saifuro.com, 30 October 2026).** These are notes, not decisions. Saifuro authorizes agent payments without custody: it returns a signed verdict, and the customer's own code then pays.
+**31 October 2026.** Built Task 4.1. It differs from the task's sketch in four deliberate ways:
 
-- **Observe mode** (Tasks 5.3, 6.2). An `observe | enforce` switch per account or environment, stamped on every decision record. In observe mode, decisions are recorded and payments proceed. This lets a design partner see about 30 days of "would have declined" before anything blocks.
-- **Reason codes as a public contract** (Tasks 4.1, 6.2). Task 4.1 already checks in a fixed order. Publish that order and the `ReasonCode` values in `api/openapi.yaml`, so an SDK can branch on them and an order change is a breaking change.
-- **Idempotency detail** (Task 5.2). Never store an outcome for a 5xx, so a retry after a server error is evaluated again. The same key with a different body is a conflict.
-- **Human approval threshold** (whitepaper §4.1). `review_above` with an expiry, and a review queue the console can read; Saifuro's own review endpoints return 404. It would be payload format 2, after the MVP.
-- **Configurable velocity.** Saifuro hard-codes 10 decisions per 60 seconds per agent. If Cleargate adds a frequency rule, it belongs in the mandate.
-- **Window semantics.** Spend counters are UTC calendar day and month (Task 1.3). Say so in the API docs. Saifuro's docs contradict themselves between "per month" and "rolling 30-day".
-- **Portable signed approvals** (after the MVP, with on-platform payees). An ES256 JWT carrying amount, asset, payee, mandate version, a nonce and a 5-minute expiry, verifiable against a public JWKS. It would let a merchant or facilitator check an approval without trusting the agent. Its limits: replay protection needs a nonce store shared by every verifier, and a verifier must accept only mandate IDs the operator gave it.
-- **Rail as a label.** Record the rail on the decision, but keep it out of policy and out of anything signed. This is consistent with the `Rail` interface.
-- **Docs pattern.** "Known gaps" and "what a signed approval does not prove" pages, plus an `llms.txt` index for agents.
-- **Where Cleargate is deliberately stronger, so don't trade it away.** Saifuro checks, then the customer pays as a separate step. An approval stays usable for 5 minutes after the mandate is revoked, and concurrent approvals can together exceed a cap. Its `policy_version` never increments, so old decisions can't be reconstructed. Cleargate's single transaction (ledger debit, spend counter and decision record, Task 5.3) and its decision-time snapshot (Task 4.2) avoid all three.
+- **No mandate is an input, not a precondition.** `Snapshot.Mandate` is `*Rules`, and nil declines with `no_mandate`, so Task 5.3 records the attempt instead of returning an error before `Decide` runs.
+- **It fails closed.** The sketch discarded `currency`'s asset-mismatch errors (`over, _ :=`, and an `Add` error skipped the cap). The engine checks the request's asset against the mandate (`asset_not_permitted`), then checks every cap, counter and the balance are in that asset (`processing_error`). The snapshot builder must pass `currency.Zero(asset)` for an empty counter: the zero `Amount` has no asset and declines.
+- **Unbuilt checks are `skipped`, not `pass`.** `Decision.Checks` lists the stages that ran (request, account, mandate, the three skipped ones, funds) and stops at the failure. A decision record must not claim a counterparty was checked when nothing checked it.
+- **`buildFeatures` is Task 4.2's.** `Decision` has no `Features` yet.
+
+Also: a mandate is expired at its `expires_at` instant, not after it. `engine.go` joins `domain.go` and `service.go` under depguard's purity rule.
+
+**31 October 2026, API contract details.** Added to the MVP, each in the task it belongs to:
+
+- **Reason codes as a public contract** (Tasks 4.1, 6.2). The check order and the codes are published, and changing either is a breaking change. Added `no_mandate` (a decline that is recorded, not an error), `asset_not_permitted` and `processing_error`. `Decide` now fails closed where the sketch discarded asset-mismatch errors.
+- **Idempotency details** (Task 5.2). Server errors are not remembered against a key, and keys are kept for 24 hours.
+- **Rail recorded on every payment** (Task 5.1), as a reporting label that no rule reads and no signature covers.
+- **Docs** (Task 6.2). Calendar UTC spend windows stated explicitly, fail-closed guidance for the SDK, a "Known gaps" page and an `llms.txt` index.
+
+Considered and left for after the MVP:
+
+- **Observe mode.** Recording decisions without enforcing them would mean Cleargate signs payments its own rules declined, which breaks the product's promise. The safe form is a replay: evaluate a proposed mandate against past decision snapshots and show what it would have declined. `Decide` is pure and Task 4.2 keeps its inputs, so this is cheap once history exists.
+- **Human approval threshold.** A `review_above` amount that holds a payment for a person to approve, with an expiry. It needs notifications (Task 2.10), a console queue and a worker to expire unanswered reviews, and it would be mandate payload format 2.
+- **Portable signed approvals.** A signed token (amount, asset, payee, mandate version, nonce, short expiry) that a merchant or facilitator can verify without trusting the agent. Useful once payees are on-platform. Replay protection needs a nonce store shared by every verifier.
+- **Configurable velocity.** A payments-per-interval rule, if added, belongs in the mandate rather than being a fixed platform constant.
+- **Pausing one agent.** Today the options are freezing the whole account, revoking the agent permanently, or issuing a tighter mandate. A `revoked` mandate status would stop one agent without destroying it. Add it if a design partner asks.
+
+Properties to keep, since a check-then-pay design loses them: the approval, the ledger debit, the spend counter and the decision record commit in one transaction (Task 5.3), so revoking a mandate takes effect on the next request and concurrent payments cannot together exceed a cap; and every decision records the mandate version and digest it was checked against (Task 4.2), so an old decision can always be reconstructed.
 
 **22 October 2026, reorganization.** Refocused on a testnet MVP on Solana with CDP wallets; tasks outside it are marked **Not in MVP**.
 
