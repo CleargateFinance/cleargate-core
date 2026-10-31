@@ -32,6 +32,7 @@ Go modular monolith for Cleargate Finance: the buyer-side authorization layer fo
 ## Invariants that hold everywhere
 
 - Money is `currency.Amount`, an exact decimal bound to an asset. `float64` appears nowhere near money; decode JSON amounts as strings.
+- The unit of account is `currency.USD`: ledger, counters, mandates and decisions are all in it. Which stablecoin or chain carries a payment is a rail detail; the rail converts at par at its edge, and no other module converts.
 - The ledger is append-only. A correction is a reversing entry, and every entry's postings sum to zero, enforced by a database trigger as well as Go.
 - Customer funds never go below zero. `ledger` locks the debited `customer_funds` buckets, then checks the balance, and returns `ErrInsufficientFunds` without writing. Platform buckets are exempt: the on-chain float is negative by design.
 - A *ledger account* (accounting bucket) is not an *account* (customer). `internal/shared/id` keeps them as distinct types; use typed IDs and never pass bare strings.
