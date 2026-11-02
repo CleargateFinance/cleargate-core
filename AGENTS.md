@@ -4,7 +4,7 @@ Go modular monolith for Cleargate Finance: the buyer-side authorization layer fo
 
 ## Read before you build
 
-- [dev-docs/mvp-implementation-plan.md](dev-docs/mvp-implementation-plan.md): the build plan, ~2000 lines. Grep for `### Task N.N` and read that task plus its "Why this and not that" boxes; do not read it whole. Its Revision notes record deliberate changes.
+- [dev-docs/mvp-implementation-plan.md](dev-docs/mvp-implementation-plan.md): the build plan, long. Grep for `### Task N.N` and read that task plus its "Why this and not that" boxes; do not read it whole. Its Revision notes record deliberate changes.
 - [docs/cleargate-finance-whitepaper.md](docs/cleargate-finance-whitepaper.md): the spec. Code comments cite it as `§8.3`; look the section up before changing that code.
 - [docs/data-architecture.md](docs/data-architecture.md): read before any migration or schema change.
 - [docs/cleargate-roles-and-connection-models.md](docs/cleargate-roles-and-connection-models.md): read before touching entity or role vocabulary.
@@ -53,4 +53,4 @@ Go modular monolith for Cleargate Finance: the buyer-side authorization layer fo
 - Migrations are numbered pairs in `migrations/` (`NNNNNN_name.up.sql` and `.down.sql`). Write the down file too.
 - Config is environment-only; add new variables to `.env.example` with a comment. `DATABASE_DSN` and `CRYPTO_MASTER_KEYS` have no default.
 - Conventional Commits (`feat(account): ...`), work on `feature/*` branches, merged by PR.
-- `make help` lists the commands. Before finishing, run `make test` and `make lint`, plus `make test-int` if you touched SQL or a repository.
+- `make help` lists the commands. A change is done when `make check` is green (gofmt, vet, lint, unit and integration tests, about 30s; needs Docker).
