@@ -142,7 +142,17 @@ func TestSecretMatches_RejectsWrongSecret(t *testing.T) {
 
 	// A secret differing in its first character and one differing in its last
 	// are both simply wrong. Neither reveals how much of it matched.
-	assert.False(t, SecretMatches(key.Digest(), "x"+secret[1:]))
-	assert.False(t, SecretMatches(key.Digest(), secret[:len(secret)-1]+"x"))
+	assert.False(t, SecretMatches(key.Digest(), differentByte(secret[0])+secret[1:]))
+	assert.False(t, SecretMatches(key.Digest(), secret[:len(secret)-1]+differentByte(secret[len(secret)-1])))
 	assert.False(t, SecretMatches(key.Digest(), ""))
+}
+
+// differentByte returns a one-character string that is never c, so replacing
+// a character with it always changes the secret. A fixed replacement would
+// leave the secret intact whenever the random secret already held it there.
+func differentByte(c byte) string {
+	if c == 'x' {
+		return "y"
+	}
+	return "x"
 }
