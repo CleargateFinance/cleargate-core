@@ -1,6 +1,10 @@
 package decisionlog
 
-// Interfaces this module needs from the outside world, declared by the
-// consumer (this module) rather than the provider. Swapping an in-process
-// implementation for a remote one later changes nothing in service.go.
-// TODO(scaffold).
+import "context"
+
+// Repository is what this module needs from storage.
+type Repository interface {
+	// EnsurePartitions creates any missing monthly partitions of the decision
+	// tables, covering monthsAhead months from now.
+	EnsurePartitions(ctx context.Context, monthsAhead int) error
+}
