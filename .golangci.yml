@@ -4,6 +4,9 @@ version: "2"
 
 run:
   timeout: 5m
+  # Integration tests are code too; lint them where they are written.
+  build-tags:
+    - integration
 
 linters:
   enable:

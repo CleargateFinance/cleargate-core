@@ -106,7 +106,7 @@ func newAccountFixtureWithCache(t *testing.T, override SessionCache) *accountFix
 		NewCacheThrottle(sessionCache, redis.Client, nil), nil, nil, Options{})
 
 	f := &accountFixture{db: db, cache: redis, svc: svc, repo: repo}
-	f.user = f.createUser(t, ctx, "founder@example.com")
+	f.user = f.createUser(ctx, t, "founder@example.com")
 	return f
 }
 
@@ -119,7 +119,7 @@ func newAccountFixtureWithCache(t *testing.T, override SessionCache) *accountFix
 // the session stamped by the application, the two are milliseconds apart and
 // the comparison would turn on however far a container's clock has drifted
 // from its host's.
-func (f *accountFixture) createUser(t *testing.T, ctx context.Context, email string) id.UserID {
+func (f *accountFixture) createUser(ctx context.Context, t *testing.T, email string) id.UserID {
 	t.Helper()
 
 	hash, err := f.svc.HashPassword("a perfectly fine password")
@@ -142,7 +142,7 @@ func (f *accountFixture) createUser(t *testing.T, ctx context.Context, email str
 // rawCacheEntry reads what is actually stored in Redis for a token.
 func (f *accountFixture) rawCacheEntry(t *testing.T, token crypto.Token) ([]byte, bool) {
 	t.Helper()
-	value, found, err := f.cache.Client.Get(context.Background(), sessionCacheKey(token.Digest()))
+	value, found, err := f.cache.Get(context.Background(), sessionCacheKey(token.Digest()))
 	require.NoError(t, err)
 	return value, found
 }
@@ -214,7 +214,7 @@ func TestValidateSession_RejectsUnknownToken(t *testing.T) {
 
 	// An unknown token must leave nothing behind, so hammering the endpoint
 	// cannot fill the cache with entries that were never valid.
-	value, found, err := f.cache.Client.Get(ctx,
+	value, found, err := f.cache.Get(ctx,
 		sessionCacheKey(crypto.DigestToken("not-a-real-token")))
 	require.NoError(t, err)
 	assert.False(t, found)
@@ -327,7 +327,7 @@ func TestCacheEntryNeverOutlivesSession(t *testing.T) {
 		_, err = f.svc.ValidateSession(ctx, token.Plaintext())
 		require.NoError(t, err)
 
-		ttl, err := f.cache.Client.TTL(ctx, sessionCacheKey(token.Digest()))
+		ttl, err := f.cache.TTL(ctx, sessionCacheKey(token.Digest()))
 		require.NoError(t, err)
 
 		assert.Greater(t, ttl, time.Duration(0))
@@ -349,14 +349,14 @@ func TestCacheEntryNeverOutlivesSession(t *testing.T) {
 			})
 
 		f := &accountFixture{db: db, cache: redis, svc: svc, repo: repo}
-		f.user = f.createUser(t, ctx, "shortlived@example.com")
+		f.user = f.createUser(ctx, t, "shortlived@example.com")
 
 		token, _, err := svc.IssueSession(ctx, NewSessionParams{UserID: f.user})
 		require.NoError(t, err)
 		_, err = svc.ValidateSession(ctx, token.Plaintext())
 		require.NoError(t, err)
 
-		ttl, err := redis.Client.TTL(ctx, sessionCacheKey(token.Digest()))
+		ttl, err := redis.TTL(ctx, sessionCacheKey(token.Digest()))
 		require.NoError(t, err)
 
 		assert.Greater(t, ttl, time.Duration(0))
@@ -435,7 +435,7 @@ func TestValidateSession_RejectsSuspendedUser(t *testing.T) {
 
 	// Cleared so this exercises the database path rather than a warm entry;
 	// the cached path accepts staleness bounded by the cache window.
-	require.NoError(t, f.cache.Client.Delete(ctx, sessionCacheKey(token.Digest())))
+	require.NoError(t, f.cache.Delete(ctx, sessionCacheKey(token.Digest())))
 
 	_, err = f.svc.ValidateSession(ctx, token.Plaintext())
 	assert.ErrorIs(t, err, ErrSessionInvalid)
