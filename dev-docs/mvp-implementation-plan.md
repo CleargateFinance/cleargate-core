@@ -1596,13 +1596,17 @@ func Decide(req Request, s Snapshot) Decision {
 
 ### Task 5.1: Payment and decision schema
 
-**Files:** `migrations/000006_payment.up.sql` — `payment`, `decision` (partitioned, hash-chained), `decision_check`, `idempotency_key`, `event_outbox`, `fulfillment`.
+**Built** in `migrations/000007_payment.up.sql` (000006 is the mandate) with `payment`, `decision` and `decision_check` (both partitioned monthly), `idempotency_key` and `event_outbox`. The tests are `internal/modules/payment/schema_test.go`. `counterparty` and `fulfillment` are not here: each arrives with the code that writes it (Tasks 5.3 and 5.5). The differences from the sketch are recorded in the Revision notes for 2 November 2026.
 
 Schema per [data-architecture.md](data-architecture.md) §5.3.
 
-- [ ] Payment status is `declined`, or `authorized` → `settled` | `expired` | `failed` (Task 7.7). Authorizing posts customer funds → payee payable; settling and expiring are later entries, never updates.
-- [ ] `decision.mandate_id`, `mandate_version` and `mandate_digest` are nullable, together, and null only when `reason_code = 'no_mandate'` (a CHECK). data-architecture.md §5.3 has them `NOT NULL`, which would make the `no_mandate` decline (Task 4.1) impossible to record.
-- [ ] Record the rail on every payment (`rail text NOT NULL`, `x402-exact-solana` for now). It is a label for reporting and reconciliation only: no mandate rule reads it and no signed payload includes it, so adding Base or another protocol never changes policy or invalidates a signature. The value comes from the settlement `Rail` (Task 7.1). Also record `settled_token` and `settled_network` (for example `USDC`, `solana`), because the ledger counts USD and only the payment says what moved on-chain.
+- [x] Payment status is `declined`, or `authorized` → `settled` | `expired` | `failed` (Task 7.7). Authorizing posts customer funds → payee payable; settling and expiring are later entries, never updates. A trigger enforces it: a payment is inserted `declined` or `authorized`, its request columns never change, and its status moves once.
+- [x] `decision.mandate_id`, `mandate_version` and `mandate_digest` are nullable, all three together. Null is allowed only for the reasons checked before the mandate: `no_mandate`, `invalid_amount` and `account_blocked`. `no_mandate` always has them null. (The first draft of this step said null "only when `no_mandate`", which would refuse an agent with no mandate that also sent a zero amount.) When present, a foreign key holds them to a mandate that exists with exactly that version and digest, for that agent.
+- [x] Record the rail on every payment (`rail text NOT NULL`, `x402-exact-solana` for now). It is a label for reporting and reconciliation only: no mandate rule reads it and no signed payload includes it, so adding Base or another protocol never changes policy or invalidates a signature. The value comes from the settlement `Rail` (Task 7.1). Also record `token` and `network` (`USDC` and a CAIP-2 chain id), because the ledger counts USD and only the payment says what moved on-chain.
+- [x] **One decision per payment, enforced.** A partitioned table cannot have a unique constraint on `payment_id` alone, so the decision's foreign key pins `evaluated_at` to the payment's `decided_at`, and `UNIQUE (payment_id, evaluated_at)` does the rest. A deferred trigger refuses a payment that commits without a decision, or with one whose outcome disagrees.
+- [x] **The reason codes are a CHECK list**, held to `authz.ReasonCodes()` by `TestDecision_ReasonCodesMatchTheEngine`. Adding a code (Task 7.6's "no usable x402 option") is therefore a migration as well as an API change.
+- [x] **Partitions are kept ahead** by `ensure_decision_partitions`, run daily by the worker through the `decisionlog` module.
+- [x] **Tests** (integration): every invariant above is shown refusing a direct write, including the down migration run up, down and up again.
 
 > **Why declines get a full `payment` row**
 > §12.1: *"What exists only inside Cleargate Finance are the declines and holds — and those are the proof of value."* If blocked attempts go to a log line or a side table, the console's headline report ("blocked 14 payments, $3,200 at risk") becomes a log-scraping exercise instead of a `SELECT`. Model them as first-class payments with a non-approving outcome.
@@ -1739,6 +1743,8 @@ func (s *Service) Authorize(ctx context.Context, req Request) (*Result, error) {
 
 **Not in MVP.** Until then `decision` is append-only (a trigger rejects `UPDATE` and `DELETE`) and `prev_hash`, `hash` and `signature` are nullable, so the chain can start later.
 
+**Before the chain starts, move free text out of `decision.features`.** The snapshot holds the agent's `purpose` and `task` and the full `resource_url` (Task 4.2), any of which can carry personal data or a secret in a query string. data-architecture.md §8 keeps personal data out of `decision` so a deletion request can be met by destroying a key (crypto-shredding). Once records are hash-chained, a field that has to be erased can't be. Store such fields encrypted per account, with the snapshot keeping a reference and a digest.
+
 - [ ] **Tests:** `TestRecord_LinksToPreviousHash`, `TestVerifyChain_DetectsTampering`, `TestRecord_SignatureVerifies`
 - [ ] Commit `feat(decisionlog): hash-chained signed decision records`
 
@@ -1842,7 +1848,7 @@ accountMod.RegisterControlVetoRoute(guardianAPI)
 - [ ] `POST /v1/mfa/totp` · `/totp/confirm` · `/step-up` · `/recovery-codes` — Task 2.4 has the service and no routes yet.
 - [ ] `PUT /v1/agents/{id}/mandate` — sets the rules behind a recent TOTP step-up (Task 3.2). With Task 3.1, `POST /v1/agents/{id}/mandate/draft` canonicalises the rules and returns the WebAuthn challenge, and the `PUT` carries the assertion instead.
 - [ ] Update `api/openapi.yaml`; the SDK and MCP repos generate from it.
-- [ ] `POST /v1/payments/authorize` accepts the optional signals of Task 4.2 (`resource_url`, `url_source`, `purpose`, `task`, `session_id`, `session_novel_counterparties`) and bounds their length, refusing with `400` rather than truncating. They are stored on every decision, so the bound is what keeps a decision record a few hundred bytes, and truncating would alter evidence.
+- [ ] `POST /v1/payments/authorize` accepts the optional signals of Task 4.2 (`resource_url`, `url_source`, `purpose`, `task`, `session_id`, `session_novel_counterparties`) and bounds their length, refusing with `400` rather than truncating. They are stored on every decision, so the bound is what keeps a decision record a few hundred bytes, and truncating would alter evidence. The SDK docs say not to put personal data or credentials in `purpose`, `task` or a URL's query string, since they are kept as evidence (Task 5.4).
 - [ ] Publish the reason codes and their order (Task 4.1) as an enum in `api/openapi.yaml`, each with a one-line meaning and what an agent should do about it.
 - [ ] State the spend windows in the API docs: the daily cap resets at 00:00 UTC and the monthly cap on the 1st at 00:00 UTC (Task 1.3). They are calendar windows, not rolling ones, so a customer can predict exactly when an agent may spend again.
 - [ ] State the denomination: amounts are USD, each backed by one USDC, and caps count USDC at face value whatever its market price (the 2 November note).
@@ -2040,12 +2046,15 @@ Three background workers, none in the payment hot path, each solving a distinct 
 
 ### Task 7.6: Signing `exact` payments on Solana
 
-- [ ] Parse the merchant's `PAYMENT-REQUIRED` (x402 v2) and take its `exact` option for USDC on Solana (`solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1` on devnet). No such option is a decline with its own reason code, recorded like any other.
-- [ ] Convert the requirement's token amount to USD at par before `Decide` sees it, and the debit back to base units when building the transaction (see the 31 October note on USD). A token that is not USDC on the configured network is "no option", not a conversion.
+- [ ] Parse the merchant's `PAYMENT-REQUIRED` (x402 v2) and take, from its `accepts` list, the `exact` option whose `network` is our configured Solana network (`solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1` on devnet) and whose `asset` is that network's USDC mint. No such option is a decline with its own reason code, recorded like any other. The code is new, so it needs a migration for `decision`'s reason code CHECK (Task 5.1).
+- [ ] Convert the requirement's `amount` to USD at par before `Decide` sees it. The spec defines `amount` as "required payment amount in atomic token units", so `"10000"` is 0.01 USDC. Divide by 10^6 exactly, as a decimal and never a float. The 6 is fixed by the USDC mint and configured with it, never read from the requirement or anything else the merchant sends. An `amount` that is not a positive integer string is a malformed requirement and declines the same way as no usable option. Building the transaction reverses the conversion: the USD debit times 10^6 must come back to the exact integer the merchant asked for (see the 31 October note on USD). A token that is not USDC on the configured network is "no option", not a conversion.
+
+> **Why par is the protocol's own convention, not an assumption we add**
+> Sellers price in dollars: the x402 seller SDK takes `price: "$0.01"` and, per its docs, "dollar prices automatically use the network's default USDC asset", with no exchange-rate step. So "$0.01" goes on the wire as `amount: "10000"` of USDC. The seller, the agent and Cleargate all count one USDC as one dollar. In a depeg, each side carries the risk of the coins it holds: the seller receives coins worth less, and a seller who reprices to compensate simply asks for more USDC, which the caps then count (2 November note on stablecoin price risk).
 - [ ] Before signing, check the requirement against the decision: amount, asset, network, and `payTo` on the mandate's allowlist.
 - [ ] Build the `exact` transaction (a USDC `TransferChecked` plus a memo) with the x402 Go SDK and sign it through `WalletProvider`, as the `Rail` from Task 7.1. The memo is the payment ID, unless the merchant sets `extra.memo`. Store the memo and the blockhash's `lastValidBlockHeight` on the payment.
 - [ ] `Authorize` commits first (Task 5.3), then signs, since CDP is a network call. It stores the signed transaction before returning it, so an idempotent replay returns the same one; if none was stored, nobody holds the first and signing again is safe. The agent retries the merchant with the `PAYMENT-SIGNATURE` payload. The merchant's facilitator is the fee payer, so account wallets never hold SOL.
-- [ ] **Tests:** `TestSign_RefusesRequirementThatDiffersFromDecision`, `TestSign_MemoIsPaymentID`, `TestSign_ReplayReturnsStoredTransaction`, `TestSign_NoSolanaUSDCOptionIsDeclined`
+- [ ] **Tests:** `TestSign_RefusesRequirementThatDiffersFromDecision`, `TestSign_MemoIsPaymentID`, `TestSign_ReplayReturnsStoredTransaction`, `TestSign_NoSolanaUSDCOptionIsDeclined`, `TestRequirement_ConvertsAtomicUnitsExactly`, `TestRequirement_MalformedAmountIsDeclined`, `TestRequirement_DecimalsComeFromConfigNotMerchant`
 
 > **Why the memo carries the payment ID**
 > It is the only link between an on-chain transaction and our payment row. The transaction's id is the fee payer's signature, which we never see, so Task 7.7 finds the payment by its memo.
@@ -2177,6 +2186,15 @@ Also recorded:
 - **Accepted gap.** A `session_stepup` mandate proves that someone with a valid code was signed in, not what they saw, and a write that bypasses the service can't be detected from the row. Task 3.1 closes this. Until then the service refuses any `webauthn` row, since it has no verifier.
 - **Concurrency.** Two concurrent issues for one agent are settled by the unique indexes. The loser gets `ErrConcurrentChange` and nothing is written, so it never replaces rules it didn't see.
 - **Module boundary.** `mandate` reaches the account module only through its `Accounts` port (`internal/app/adapters.go`). `account.RequireMandateIssuer` requires owner or admin plus a recent step-up. Console routes for this arrive with Task 6.2.
+
+**2 November 2026, Task 5.1.** Built the payment schema as migration 000007. Differences from the task as written:
+
+- **No `fulfillment` or `counterparty` yet.** Delivery reporting is Task 5.5 and not in the MVP, so a `fulfillment` table now would only ever sweep `pending` to `expired`. The payee identity rule (endpoint and `payTo`) belongs with the code that resolves it in Task 5.3. Until then `payment` records the raw `pay_to` and `resource_url`, which is what resolution needs anyway.
+- **`token` and `network`, not `settled_token` and `settled_network`.** A decline settles nothing, but it still has a rail, a token and a network.
+- **The null rule for a decision's mandate is wider than the step said.** See the step, and `TestDecision_MandateIsAbsentOnlyWhenItCouldBe`.
+- **Consistency is held by composite keys**: `agent (id, account_id)` and `mandate (id, agent_id, version, payload_digest)` gain unique constraints so `payment` and `decision` can reference them.
+- **`idempotency_key.payment_id` and `response` are `NOT NULL`**, because only final outcomes are stored (Task 5.2). An expired key is deleted; a stored one is never updated.
+- **Found while building:** `decision.features` holds free text that may need erasing, which conflicts with the hash chain of Task 5.4. Recorded there.
 
 **2 November 2026, stablecoin price risk (owner decision).** The platform never covers a stablecoin's price gap, and USDC is the only token, now and for the foreseeable future. x402 is the only rail; a later one (MPP) fits as is if it settles in USDC.
 

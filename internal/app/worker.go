@@ -8,6 +8,7 @@ import (
 
 	"github.com/CleargateFinance/cleargate-core/internal/infrastructure/config"
 	"github.com/CleargateFinance/cleargate-core/internal/infrastructure/database"
+	"github.com/CleargateFinance/cleargate-core/internal/modules/decisionlog"
 	"github.com/CleargateFinance/cleargate-core/internal/modules/ledger"
 	"github.com/CleargateFinance/cleargate-core/internal/shared/currency"
 )
@@ -47,6 +48,7 @@ func BuildWorker(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Wo
 	}
 
 	ledgerSvc := ledger.New(db, nil).Service()
+	decisionSvc := decisionlog.New(db).Service()
 
 	w := &Worker{
 		log: log,
@@ -75,6 +77,16 @@ func BuildWorker(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Wo
 				every: 24 * time.Hour,
 				run: func(ctx context.Context) error {
 					return ledgerSvc.EnsurePartitions(ctx, 3)
+				},
+			},
+			{
+				// The same for decisions, which are written on every request,
+				// declines included. A missing partition would fail every
+				// payment, not only the approved ones.
+				name:  "decision_partition_maintenance",
+				every: 24 * time.Hour,
+				run: func(ctx context.Context) error {
+					return decisionSvc.EnsurePartitions(ctx, 3)
 				},
 			},
 		},

@@ -72,6 +72,28 @@ const (
 	ReasonProcessingError ReasonCode = "processing_error"
 )
 
+// ReasonCodes returns every code in the order Decide checks them, with
+// ReasonOK first and ReasonProcessingError, which has no place in the order,
+// last. The decision table's CHECK and api/openapi.yaml list the same codes,
+// and tests hold them to this list.
+func ReasonCodes() []ReasonCode {
+	return []ReasonCode{
+		ReasonOK,
+		ReasonInvalidAmount,
+		ReasonAccountBlocked,
+		ReasonNoMandate,
+		ReasonMandateExpired,
+		ReasonAssetNotPermitted,
+		ReasonCategoryNotPermitted,
+		ReasonPayeeNotPermitted,
+		ReasonOverPerTxCap,
+		ReasonOverDailyCap,
+		ReasonOverMonthlyCap,
+		ReasonInsufficientFunds,
+		ReasonProcessingError,
+	}
+}
+
 // Stage names one step of the §6 pipeline.
 //
 // Counterparty, intent and behaviour are the three checks §22 leaves out of
