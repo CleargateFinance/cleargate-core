@@ -1,7 +1,13 @@
-.PHONY: help build test test-int lint fmt migrate-up migrate-down migrate-version run-api run-worker dev-up dev-down
+.PHONY: help check build test test-int lint fmt migrate-up migrate-down migrate-version run-api run-worker dev-up dev-down
 
 help:
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
+
+# Docker must be running: test-int starts real Postgres and Redis.
+check:          ## Everything a change must pass: gofmt, vet, lint, unit and integration tests
+	@test -z "$$(gofmt -l .)" || { echo "gofmt needed on:"; gofmt -l .; exit 1; }
+	go vet -tags=integration ./...
+	$(MAKE) lint test test-int
 
 build:          ## Build all binaries
 	go build ./...

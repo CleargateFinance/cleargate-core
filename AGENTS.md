@@ -53,4 +53,4 @@ Go modular monolith for Cleargate Finance: the buyer-side authorization layer fo
 - Migrations are numbered pairs in `migrations/` (`NNNNNN_name.up.sql` and `.down.sql`). Write the down file too.
 - Config is environment-only; add new variables to `.env.example` with a comment. `DATABASE_DSN` and `CRYPTO_MASTER_KEYS` have no default.
 - Conventional Commits (`feat(account): ...`), work on `feature/*` branches, merged by PR.
-- `make help` lists the commands. Before finishing, run `make test` and `make lint`, plus `make test-int` if you touched SQL or a repository.
+- `make help` lists the commands. A change is done when `make check` is green (gofmt, vet, lint, unit and integration tests, about 30s; needs Docker).
