@@ -8,28 +8,28 @@ import (
 )
 
 func TestParse_ExactDecimal(t *testing.T) {
-	a, err := Parse("0.40", USDCBase)
+	a, err := Parse("0.40", USD)
 	require.NoError(t, err)
 	assert.Equal(t, "0.4", a.String())
 }
 
 func TestAdd_IsExact(t *testing.T) {
 	// The canonical float64 failure. This must hold exactly.
-	x, err := Parse("0.1", USDCBase)
+	x, err := Parse("0.1", USD)
 	require.NoError(t, err)
-	y, err := Parse("0.2", USDCBase)
+	y, err := Parse("0.2", USD)
 	require.NoError(t, err)
 
 	sum, err := x.Add(y)
 	require.NoError(t, err)
 
-	want, err := Parse("0.3", USDCBase)
+	want, err := Parse("0.3", USD)
 	require.NoError(t, err)
 	assert.True(t, sum.Equal(want), "0.1 + 0.2 = %s, want 0.3", sum)
 }
 
 func TestAdd_RejectsAssetMismatch(t *testing.T) {
-	usdc, err := Parse("1", USDCBase)
+	usdc, err := Parse("1", USD)
 	require.NoError(t, err)
 	other, err := Parse("1", Asset("EURC"))
 	require.NoError(t, err)
@@ -39,12 +39,12 @@ func TestAdd_RejectsAssetMismatch(t *testing.T) {
 }
 
 func TestSum_ZeroForBalancedLines(t *testing.T) {
-	debit, err := Parse("-0.40", USDCBase)
+	debit, err := Parse("-0.40", USD)
 	require.NoError(t, err)
-	credit, err := Parse("0.40", USDCBase)
+	credit, err := Parse("0.40", USD)
 	require.NoError(t, err)
 
-	total, err := Sum(USDCBase, debit, credit)
+	total, err := Sum(USD, debit, credit)
 	require.NoError(t, err)
 	assert.True(t, total.IsZero(), "Sum = %s, want 0", total)
 }

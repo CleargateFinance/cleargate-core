@@ -12,7 +12,7 @@ import (
 	"github.com/CleargateFinance/cleargate-core/internal/shared/id"
 )
 
-const testAsset = currency.USDCBase
+const testAsset = currency.USD
 
 var testNow = time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)
 
@@ -55,7 +55,7 @@ func TestRules_Validate(t *testing.T) {
 				other, _ := currency.Parse("20", "USDC-SOL")
 				r.MaxPerTx = other
 			},
-			wantErr: "per-transaction cap must be in USDC-BASE",
+			wantErr: "per-transaction cap must be in USD",
 		},
 		{
 			name:    "zero cap",
@@ -201,7 +201,7 @@ func TestCanonicalise_ExactEncoding(t *testing.T) {
 	got, err := Canonicalise("6f1c3a52-6a3e-4c55-9a51-1c0d7a1b2e33", 2, r)
 	require.NoError(t, err)
 
-	want := `{"agent_id":"6f1c3a52-6a3e-4c55-9a51-1c0d7a1b2e33","asset":"USDC-BASE",` +
+	want := `{"agent_id":"6f1c3a52-6a3e-4c55-9a51-1c0d7a1b2e33","asset":"USD",` +
 		`"categories":["data_api","inference"],"expires_at":"2027-01-01T00:00:00Z",` +
 		`"format":1,"max_per_day":"100","max_per_month":"200","max_per_tx":"0.4",` +
 		`"pay_to":["0xB&<>","7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU"],"version":2}`
