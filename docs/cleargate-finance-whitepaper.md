@@ -535,6 +535,8 @@ Rows are **append-only**. Corrections are new reversing entries, never updates o
 
 An hourly job sums all entries and confirms the total is zero. A non-zero result pages immediately. This single check catches a large class of bugs before they compound.
 
+**Denomination.** The ledger counts in US dollars, and every dollar is backed one for one by USDC, the only token accepted. A customer's balance is a claim on the USDC held for them, not a promise of dollars: if USDC trades away from $1, the console shows the balance's market value beside it, and the ledger is not revalued. Cleargate never covers a stablecoin's price gap, for the same reason it does not absorb losses (§7.3). Spend limits count USDC at face value, which is conservative when the price falls.
+
 ### 8.4 Idempotency
 
 Every money-moving request carries a client-supplied key, stored with its result.
@@ -1098,6 +1100,8 @@ The 78% financial-institution fraud expectation figure, the Unit 42 refund-farm 
 ---
 
 ## Revision notes
+
+**v1.2.2 — 2 November 2026.** Stated the ledger's denomination (§8.3): US dollars backed one for one by USDC, with a balance being a claim on the USDC held. A depeg changes its displayed market value, never the ledger, and is never covered by the platform.
 
 **v1.2.1 — 29 September 2026.** Removed the `approver` permission role introduced in v1.2. The four roles (owner, admin, guardian, viewer) already cover every case, including releasing an escalated payment — that is an owner or admin action, not a distinct role. Reworded §4.2's transaction-role list, §9.2's enterprise dual-control line, and the glossary's `User` entry accordingly. `guardian` is unaffected and remains exactly as built.
 
