@@ -17,13 +17,16 @@ type Asset string
 // USD is the system's unit of account: ledger balances, spend counters,
 // mandate caps and decision records are all in it.
 //
-// Which stablecoin or chain actually carries a payment (USDC on Solana, USDT,
-// USDC on Base) is a property of the settlement rail, not of the money. The
-// rail converts to and from USD at par at its edge, as the only place that
-// knows which token it holds, and records the token and chain on the payment.
-// Par is an assumption, not a fact: if a stablecoin trades away from a dollar,
-// the gap shows up where the on-chain float is reconciled against the chain,
-// not in a customer's caps.
+// Today every USD amount is backed one for one by USDC, and a customer's
+// balance is a claim on that USDC: 1,000 USD in the ledger is 1,000 USDC held
+// for them. The rail converts token amounts to USD at par at its edge, as the
+// only place that knows which token it holds. If USDC trades away from a
+// dollar, the market value of a balance changes but the claim does not, so
+// the ledger never revalues and the platform never covers the difference.
+// Reconciliation is in token units and stays exact either way.
+//
+// A second token cannot share these buckets: pooling would move one token's
+// price risk onto holders of the other.
 const USD Asset = "USD"
 
 // Amount is an exact decimal quantity of a specific Asset.

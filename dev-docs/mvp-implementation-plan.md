@@ -1845,8 +1845,9 @@ accountMod.RegisterControlVetoRoute(guardianAPI)
 - [ ] `POST /v1/payments/authorize` accepts the optional signals of Task 4.2 (`resource_url`, `url_source`, `purpose`, `task`, `session_id`, `session_novel_counterparties`) and bounds their length, refusing with `400` rather than truncating. They are stored on every decision, so the bound is what keeps a decision record a few hundred bytes, and truncating would alter evidence.
 - [ ] Publish the reason codes and their order (Task 4.1) as an enum in `api/openapi.yaml`, each with a one-line meaning and what an agent should do about it.
 - [ ] State the spend windows in the API docs: the daily cap resets at 00:00 UTC and the monthly cap on the 1st at 00:00 UTC (Task 1.3). They are calendar windows, not rolling ones, so a customer can predict exactly when an agent may spend again.
+- [ ] State the denomination: amounts are USD, each backed by one USDC, and caps count USDC at face value whatever its market price (the 2 November note).
 - [ ] Recommend failing closed in the SDK: a timeout, a network error or a 5xx means the payment did not happen, and the agent must not pay by another route.
-- [ ] A **"Known gaps"** page in the API docs, listing plainly what the MVP does not yet do: mandates are approved with a TOTP step-up, not a passkey signature (Task 3.1); there is no guardian or timelock (Task 2.8); `exact` payments to off-platform payees are final, with no hold (§5.5). Overclaiming creates exposure (§6.7), and an integrator who finds a gap we didn't mention stops trusting the rest of the docs.
+- [ ] A **"Known gaps"** page in the API docs, listing plainly what the MVP does not yet do: mandates are approved with a TOTP step-up, not a passkey signature (Task 3.1); there is no guardian or timelock (Task 2.8); balances are shown at par with no market price beside them (the peg monitor in Phase 8); `exact` payments to off-platform payees are final, with no hold (§5.5). Overclaiming creates exposure (§6.7), and an integrator who finds a gap we didn't mention stops trusting the rest of the docs.
 - [ ] An **`llms.txt`** index at the docs root, linking each page with a one-line summary, so an agent or a coding assistant can find the integration guide without crawling the site.
 
 Not in MVP:
@@ -2070,6 +2071,18 @@ Everything below is not in the MVP.
 - [ ] **Mandate enforcement partly below our own backend.** Express per-agent limits as CDP **Spend Permissions** (allowance per spender per period) and **Policies** (value caps, address allow/blocklists, USD limits, network and function restrictions). Our engine enforces what CDP cannot express — intent, behaviour, category, provenance. Where a CDP policy covers a rule, a compromise of our servers still cannot exceed it.
 - [ ] **Gas:** CDP sponsorship covers on-chain agent actions and `exact` payments — no separate paymaster in the common path. Keep the ops requirement regardless: **monitor and auto-refill the settlement wallet's native gas balance.** A settlement failing on an empty own-wallet is a preventable outage.
 - [ ] **KYT:** CDP's built-in address screening on deposits and payouts.
+- [ ] **Peg monitor.** Required before mainnet, pointless before it: devnet USDC has no market price.
+  - A worker reads the USDC/USD price from two independent sources every minute and stores every reading as a fact.
+  - Each token has a status: `pegged`, `impaired` or `unknown`. It becomes `impaired` when both sources stay outside ±0.5% of $1 for 15 consecutive minutes, and returns to `pegged` after both stay inside for 60 minutes, so one bad tick or a flapping price never toggles it. Sources that disagree by more than the band, or that are both stale, make it `unknown`.
+  - While a token is not `pegged`, every balance surface (console, `GET /v1/accounts/{id}/summary`, exports) shows what backs the balance and its market value beside the USD figure: *1,000.00 USD, held as 1,000.00 USDC, worth about $900.00 at $0.90*. `unknown` shows no market value at all, never par as if par were a price.
+  - It never posts to the ledger, never pauses withdrawals and never declines a payment.
+  - Owners are notified when a token enters and leaves `impaired` (Task 2.10). An owner who wants their agents stopped freezes the account (Task 2.8).
+  - The token's status and price at decision time join the feature snapshot as features v2. They are Bucket C: observable only at that instant (data-architecture.md §2).
+  - **Tests:** `TestPegMonitor_ImpairedOnlyAfterSustainedDeviation`, `TestPegMonitor_UnknownWhenSourcesDisagree`, `TestPegMonitor_NeverPostsToLedger`, `TestSummary_ImpairedShowsMarketValueBesideBalance`
+
+> **Why the monitor informs rather than blocks**
+> A balance is a claim on USDC, so a depeg costs its holder whatever they do, and Cleargate covers none of it. Spending the tokens at face value with a merchant who still accepts them is, if anything, the best use of them, so blocking payments would only add a failed task to the customer's loss. That is the false positive §6.6 calls more damaging than with cards, since a blocked agent fails mid-run with nobody watching. Pausing deposits protects nobody either: a deposit of 1,000 cheap USDC is credited as a claim on exactly those 1,000 USDC. The real failure is a customer reading "$1,000" when it isn't, so the monitor's job is the display. Stopping spending stays the owner's decision, through freeze.
+
 - [ ] Alerting: ledger imbalance, spend spikes, elevated decline rate, settlement backlog (§8.10).
 - [ ] Load test to the 100ms p99 budget under realistic concurrency.
 - [ ] Runbooks in `docs/runbooks/`: ledger imbalance, stuck settlement, credential compromise.
@@ -2165,10 +2178,20 @@ Also recorded:
 - **Concurrency.** Two concurrent issues for one agent are settled by the unique indexes. The loser gets `ErrConcurrentChange` and nothing is written, so it never replaces rules it didn't see.
 - **Module boundary.** `mandate` reaches the account module only through its `Accounts` port (`internal/app/adapters.go`). `account.RequireMandateIssuer` requires owner or admin plus a recent step-up. Console routes for this arrive with Task 6.2.
 
-**31 October 2026, USD is the unit of account.** The system counts money in USD (`currency.USD`, replacing `USDCBase`): ledger balances, spend counters, mandate caps, decision records and the console. Which stablecoin carries a payment (USDC on Solana, USDT, USDC on Base) is a property of the settlement rail, not of the money, and is never a customer-facing concept.
+**2 November 2026, stablecoin price risk (owner decision).** The platform never covers a stablecoin's price gap, and USDC is the only token, now and for the foreseeable future. x402 is the only rail; a later one (MPP) fits as is if it settles in USDC.
+
+- **A balance is a claim on the USDC held.** 1,000 USD in the ledger means 1,000 USDC held for that customer. The ledger counts token units at par, so reconciliation against the chain is exact whatever the price does, and a depeg creates no gap in the books. That replaces the 31 October wording, which said the gap would surface in float reconciliation as a platform loss. In units there is no gap, and there is no platform loss, because the platform owes tokens, not dollars.
+- **Par normally, with a peg monitor** (Phase 8, required before mainnet). As proposed on 31 October, the monitor was a circuit breaker that declined payments and paused deposits during a depeg, and revalued balances with ledger entries. On analysis, three parts were wrong and are dropped:
+  - *Revaluation entries.* A revalued balance of 900 USD would no longer say the customer owns 1,000 USDC, so withdrawals would need a rate and the platform would be setting prices. Market value is a display computed from the price, never a ledger fact.
+  - *Declining payments.* It would add a failed task to the customer's loss without saving them anything. See the box in Phase 8.
+  - *Pausing deposits.* No one is harmed by a deposit credited unit for unit.
+- **What a dollar cap means during a depeg.** Caps count USDC at par, so with USDC at $0.90 a 20 USD per-transaction cap lets through payments worth $18. That is the conservative direction. A move above $1 would let through slightly more than the cap in dollar terms; such moves have been rare and small, so this is accepted and stated in the API docs.
+- **A second token changes this.** USDT, or USDC bridged by a third party, needs its own ledger buckets and its own monitor status before it is accepted. Pooling it with USDC would move one token's price risk onto the other's holders, which is the platform covering a gap by another route.
+
+**31 October 2026, USD is the unit of account.** The system counts money in USD (`currency.USD`, replacing `USDCBase`): ledger balances, spend counters, mandate caps, decision records and the console. Which stablecoin carries a payment is a property of the settlement rail, not of the money. Today that is only USDC.
 
 - **The conversion is at the rail's edge, at par.** The rail turns a quoted `1.50 USDC` into `1.50 USD` before `Decide` sees it, and a USD debit into the token amount when it signs. Nothing else in the codebase converts, and `currency` still refuses to mix assets, so a missed conversion fails closed instead of passing a cap.
-- **Par is an assumption.** A stablecoin that trades away from a dollar does not change a customer's caps. The gap shows up where the on-chain float is reconciled against the chain (Task 7.7), which is where a platform-level loss belongs. Revisit this if a rail is added whose token is not a dollar stablecoin.
+- **Par is an assumption.** Corrected on 2 November 2026: a balance is a claim on the USDC held, so a price move changes its market value, not the ledger, and the platform covers nothing. See that note.
 - **The payment records what actually moved:** the token and the network, next to the `rail` label (Task 5.1), so reconciliation and a dispute can name the exact asset. Neither is read by a rule or covered by a signature.
 - **Code:** a mandate still names its `asset` in the payload, which is `USD` for every mandate issued. Keeping the field costs nothing, keeps the signed bytes self-describing, and means `asset_not_permitted` stays a real check rather than dead code. Funding tier limits (`account`) are USD too.
 
