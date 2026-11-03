@@ -1096,6 +1096,25 @@ func (r *postgresRepo) Agent(ctx context.Context, agentID id.AgentID) (Agent, er
 	return agent, nil
 }
 
+// SpendingBlocked reads the two fields that stop an account spending. The
+// rule is the one the account table's comment states: active and not frozen.
+func (r *postgresRepo) SpendingBlocked(ctx context.Context, accountID id.AccountID) (bool, error) {
+	var blocked bool
+	err := r.db.QueryRow(ctx, `
+		SELECT status <> 'active' OR frozen_at IS NOT NULL
+		FROM account
+		WHERE id = $1`,
+		string(accountID),
+	).Scan(&blocked)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, ErrAccountNotFound
+	}
+	if err != nil {
+		return false, fmt.Errorf("account: load spending status: %w", err)
+	}
+	return blocked, nil
+}
+
 // RevokeAgent retires an agent and every credential it holds.
 //
 // Both in one transaction. An agent marked revoked whose keys stayed live is

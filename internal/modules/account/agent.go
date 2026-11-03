@@ -123,6 +123,9 @@ var (
 	// to probe what exists outside the caller's own account.
 	ErrAgentNotFound = apperr.NotFound("agent not found")
 
+	// ErrAccountNotFound reports an account that does not exist.
+	ErrAccountNotFound = apperr.NotFound("account not found")
+
 	// ErrAgentRevoked reports an operation on an agent that has been retired.
 	ErrAgentRevoked = apperr.Conflict("this agent has been revoked")
 
@@ -161,6 +164,16 @@ func ValidateAgentName(name string) error {
 // identifier probe agents in accounts the caller does not belong to.
 func (s *Service) Agent(ctx context.Context, agentID id.AgentID) (Agent, error) {
 	return s.repo.Agent(ctx, agentID)
+}
+
+// SpendingBlocked reports whether an account may not spend at all: the
+// platform has suspended it, or its owners have frozen it. The two are kept
+// apart in storage so lifting one never lifts the other, and either blocks.
+//
+// Like Agent it has no actor check and is for the payment path's port, which
+// asks on behalf of an agent already authenticated to this account.
+func (s *Service) SpendingBlocked(ctx context.Context, accountID id.AccountID) (bool, error) {
+	return s.repo.SpendingBlocked(ctx, accountID)
 }
 
 // RequireMandateIssuer reports whether a session may grant an agent spending
