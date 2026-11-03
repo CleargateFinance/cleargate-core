@@ -1096,6 +1096,46 @@ func (r *postgresRepo) Agent(ctx context.Context, agentID id.AgentID) (Agent, er
 	return agent, nil
 }
 
+// HoldSpending share-locks the account and agent rows. Concurrent payments
+// share the lock with each other; a freeze or revocation, being an UPDATE of
+// one of the rows, waits for them.
+func (r *postgresRepo) HoldSpending(ctx context.Context, accountID id.AccountID, agentID id.AgentID) (bool, error) {
+	var ok bool
+	err := r.db.QueryRow(ctx, `
+		SELECT a.status = 'active' AND a.frozen_at IS NULL AND g.status = 'active'
+		FROM account a JOIN agent g ON g.account_id = a.id
+		WHERE a.id = $1 AND g.id = $2
+		FOR SHARE OF a, g`,
+		string(accountID), string(agentID),
+	).Scan(&ok)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, ErrAgentNotFound
+	}
+	if err != nil {
+		return false, fmt.Errorf("account: hold spending: %w", err)
+	}
+	return ok, nil
+}
+
+// SpendingBlocked reads the two fields that stop an account spending. The
+// rule is the one the account table's comment states: active and not frozen.
+func (r *postgresRepo) SpendingBlocked(ctx context.Context, accountID id.AccountID) (bool, error) {
+	var blocked bool
+	err := r.db.QueryRow(ctx, `
+		SELECT status <> 'active' OR frozen_at IS NOT NULL
+		FROM account
+		WHERE id = $1`,
+		string(accountID),
+	).Scan(&blocked)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, ErrAccountNotFound
+	}
+	if err != nil {
+		return false, fmt.Errorf("account: load spending status: %w", err)
+	}
+	return blocked, nil
+}
+
 // RevokeAgent retires an agent and every credential it holds.
 //
 // Both in one transaction. An agent marked revoked whose keys stayed live is

@@ -110,6 +110,23 @@ func (r *postgresRepo) Active(ctx context.Context, agentID id.AgentID) (Mandate,
 	return m, nil
 }
 
+// HoldActive locks the active row FOR SHARE. Issuing a new version updates
+// that row to superseded, so it waits for the holders to commit.
+func (r *postgresRepo) HoldActive(ctx context.Context, agentID id.AgentID) (id.MandateID, error) {
+	var out string
+	err := r.db.QueryRow(ctx, `
+		SELECT id FROM mandate WHERE agent_id = $1 AND status = 'active' FOR SHARE`,
+		string(agentID),
+	).Scan(&out)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("mandate: hold active: %w", err)
+	}
+	return id.MandateID(out), nil
+}
+
 // ActiveAt returns the mandate whose validity interval contains at.
 //
 // Only active and superseded mandates ever had an interval in force. A pending

@@ -648,19 +648,9 @@ Schema per [data-architecture.md](data-architecture.md) §5.3.
 
 ### Task 5.2: Idempotency
 
-- [ ] **Tests:** `TestAuthorize_ReplayReturnsOriginalResult`, `TestAuthorize_ConcurrentSameKeyChargesOnce`, `TestAuthorize_DifferentKeySameParamsChargesTwice`
+**Built** in `internal/modules/payment` (`domain.go`, `service.go`, `repo_postgres.go`) on the `idempotency_key` table of Task 5.1, with the expiry job in `internal/app/worker.go`. The tests are in `internal/app/authorize_test.go` and `internal/modules/payment/domain_test.go`.
 
-```sql
-CREATE TABLE idempotency_key (
-  account_id  uuid NOT NULL REFERENCES account(id),
-  key         text NOT NULL,
-  request_hash bytea NOT NULL,
-  payment_id  uuid,
-  response    jsonb,
-  created_at  timestamptz NOT NULL DEFAULT now(),
-  PRIMARY KEY (account_id, key)
-);
-```
+- [x] **Tests:** `TestAuthorize_ReplayReturnsOriginalResult`, `TestAuthorize_ConcurrentSameKeyChargesOnce`, `TestAuthorize_DifferentKeySameParamsChargesTwice`, and `TestAuthorize_ReplayOfADeclineDoesNotReEvaluate`.
 
 > **Why the durable constraint is in Postgres and Redis is only a fast path**
 > §8.4: *"Without this, a timeout inside a retry loop produces thousands of duplicate payments in minutes with no attacker involved. This is the most common way payment systems lose money."*
@@ -669,110 +659,23 @@ CREATE TABLE idempotency_key (
 > **Why the request hash is stored**
 > If a client reuses a key with different parameters, that is a client bug, and silently returning the old result hides it. Compare the hash; on mismatch return `409 Conflict`. This is standard practice (Stripe behaves this way) and turns a silent data corruption into a loud integration error.
 
-- [ ] **Only final outcomes are remembered.** An approval or a decline is stored against the key. A server error is not: the transaction rolled back and nothing moved, so a retry with the same key is evaluated again rather than replaying the failure forever.
-- [ ] **Keys are kept for 24 hours**, and the API docs say so. A worker deletes older rows. A retry after that window is a new payment, which is why the SDK generates one key per logical payment and reuses it only for retries of that payment.
-- [ ] **Tests:** `TestAuthorize_ServerErrorIsNotRemembered`, `TestAuthorize_SameKeyDifferentBodyConflicts`, `TestIdempotencyKey_ExpiresAfterRetention`
+- [x] **Only final outcomes are remembered.** An approval or a decline is stored against the key. A server error is not: the transaction rolled back and nothing moved, so a retry with the same key is evaluated again rather than replaying the failure forever.
+- [x] **Keys are kept for 24 hours** (`payment.KeyRetention`), and the API docs must say so (Task 6.2). A key older than that is ignored at once and replaced on its next use, and an hourly worker job deletes old rows. A retry after that window is a new payment, which is why the SDK generates one key per logical payment and reuses it only for retries of that payment.
+- [x] **Tests:** `TestAuthorize_ServerErrorIsNotRemembered`, `TestAuthorize_SameKeyDifferentBodyConflicts`, `TestIdempotencyKey_ExpiresAfterRetention`, and `TestRequest_HashChangesWithEveryField`.
 
 ### Task 5.3: The transaction boundary
 
-- [ ] **Step 1: Failing test** — the one that justifies the whole architecture:
+**Built** as `payment.Service.Authorize`. The adapters in `internal/app/adapters.go` translate the account, mandate, ledger and decisionlog services into the payment module's ports. `decisionlog.Service.Record` writes the decision and its checks, and `outbox.Writer.Append` writes the event. All of it commits in one transaction: the payment, its idempotency key, the ledger debit (customer funds to payee payable) and the spend counters when approved, then the decision and the outbox event. The differences from the sketch are in the Revision notes for 3 November 2026.
 
-```go
-//go:build integration
-
-// If the decision record cannot be written, the money must not move.
-// This is the state the guarantee cannot survive: a payment with no evidence
-// behind it. In a microservice split this test is not expressible without a
-// saga; here it is a rollback.
-func TestAuthorize_LedgerAndDecisionAreAtomic(t *testing.T) {
-	db := fixtures.NewTestDB(t)
-	svc := fixtures.NewPaymentService(t, db,
-		fixtures.WithFailingDecisionLog(errors.New("disk full")))
-
-	_, err := svc.Authorize(ctx, validRequest)
-	if err == nil {
-		t.Fatal("expected failure")
-	}
-
-	bal := fixtures.AccountBalance(t, db, accountID)
-	if !bal.Equal(startingBalance) {
-		t.Fatalf("balance = %s after failed authorize, want unchanged %s",
-			bal, startingBalance)
-	}
-	fixtures.AssertNoPostings(t, db, accountID)
-	fixtures.AssertSpendCounterUnchanged(t, db, agentID)
-}
-```
-
-- [ ] **Step 3: Implement**
-
-```go
-// internal/modules/payment/service.go
-func (s *Service) Authorize(ctx context.Context, req Request) (*Result, error) {
-	if prev, found, err := s.idem.Lookup(ctx, req.AccountID, req.IdempotencyKey, req.Hash()); err != nil {
-		return nil, err
-	} else if found {
-		return prev, nil // §8.4: retries are free
-	}
-
-	// --- Gather. All reads happen before the decision; none happen inside it.
-	agent, err := s.agents.Get(ctx, req.AgentID)
-	if err != nil {
-		return nil, err
-	}
-	if agent.Revoked() {
-		return nil, apperr.Forbidden("agent revoked")
-	}
-	m, err := s.mandates.ActiveFor(ctx, req.AgentID)
-	if err != nil {
-		return nil, err
-	}
-	snap, err := s.snapshot(ctx, agent, m) // counters + balance + clock
-	if err != nil {
-		return nil, err
-	}
-
-	// --- Decide. Pure. No I/O. Fast.
-	d := authz.Decide(req.ToAuthz(), snap)
-
-	// --- Persist. One transaction, all or nothing.
-	var res *Result
-	err = s.uow.Do(ctx, func(ctx context.Context) error {
-		p, err := s.payments.Insert(ctx, req, d.Outcome)
-		if err != nil {
-			return err
-		}
-		if d.Approved() {
-			// One timestamp for the posting and the counter, so a release
-			// lands in the same windows (Task 7.7).
-			if _, err := s.ledger.Post(ctx, req.LedgerEntry(p.ID, snap.Now)); err != nil {
-				return err
-			}
-			totals, err := s.ledger.RecordSpend(ctx, req.AgentID, req.Amount, snap.Now)
-			if err != nil {
-				return err
-			}
-			if m.Breached(totals) { // a concurrent payment won the race
-				return ErrCapRace // rolls back; a retry sees fresh counters and declines
-			}
-		}
-		if err := s.decisions.Record(ctx, p.ID, d, m.Version, m.Digest); err != nil {
-			return err
-		}
-		if err := s.outbox.Append(ctx, d.Event(p.ID)); err != nil {
-			return err
-		}
-		res = newResult(p, d)
-		return s.idem.Store(ctx, req, res)
-	})
-	return res, err
-}
-```
+- [x] **Test that justifies the architecture:** `TestAuthorize_LedgerAndDecisionAreAtomic`. When the decision cannot be written, the balance, postings, counters, payment, key and outbox are all unchanged.
+- [x] **Declines are recorded and move nothing:** `TestAuthorize_DeclineIsRecordedAndMovesNothing`, `TestAuthorize_NoMandateIsARecordedDecline`, `TestAuthorize_FrozenAccountIsARecordedDecline`. A revoked agent is refused, not recorded (`TestAuthorize_RevokedAgentIsRefused`).
+- [x] **Concurrent payments cannot pass a cap or overdraw:** `TestAuthorize_ConcurrentPaymentsCannotExceedDailyCap`, `TestAuthorize_ConcurrentPaymentsCannotOverdraw`. Each loser is recorded as the decline it became.
+- [x] **A freeze, a revocation or a new mandate version stops payments already in flight:** `TestAuthorize_FreezeAfterTheReadsStillStopsThePayment`, `TestAuthorize_RevocationAfterTheReadsStillStopsThePayment`, `TestAuthorize_NewMandateAfterTheReadsIsTheOneApplied`, `TestAuthorize_FreezeWaitsForAPaymentAlreadyCommitting`.
 
 > **Why the reads are outside the transaction and the writes inside**
 > Holding a transaction open across reads lengthens lock duration and pushes p99 latency past the 100ms budget under load. Reads take a consistent-enough snapshot; the atomic increment inside the transaction is what actually prevents the §8.5 double-spend, not the read.
 
-- [ ] **Step 4: Verify. Step 5: Commit** `feat(payment): atomic authorize — ledger, counter, decision, outbox`
+- [x] Commit `feat(payment): atomic, idempotent authorize (Tasks 5.2, 5.3)`
 
 ### Task 5.4: Hash-chained decision log
 
@@ -1209,6 +1112,20 @@ Tasks marked **Not in MVP** are outside this total. Phase 6 grows because no han
 ---
 
 ## Revision notes
+
+**3 November 2026, Tasks 5.2 and 5.3.** Built `Authorize`. Differences from the tasks as written:
+
+- **The idempotency key is stored first, not last.** It is inserted right after the payment row and before any money moves. A concurrent request with the same key waits on that key's primary key, then answers with the first request's result. It never takes a lock on the account's funds.
+- **A lost race is decided again, not returned.** The sketch returned `ErrCapRace` to the caller. Now a debit that would overdraw, or a counter that lands past its cap, rolls the transaction back, and `Authorize` decides again on fresh inputs. The loser is then recorded as the `over_daily_cap` or `insufficient_funds` decline it became. After three lost races it returns `ErrBusy` (429) and records nothing.
+- **Decisions are written by `decisionlog`**, which owns the decision tables and will own their hash chain (Task 5.4). `payment` reaches it through a port.
+- **No Redis fast path yet.** The key lookup is one primary-key read in Postgres. Whether a cache in front of it is worth it is for Task 6.3's latency gate to show.
+- **Expiry does not wait for the worker.** A key older than 24 hours is ignored, and the next request under it deletes and replaces the row (rows are never updated).
+- **The request hash covers the agent, the amount and asset, the category, the payee and every signal.** Empty fields are left out, so a field added in a later release does not turn an in-flight retry into a conflict.
+- **The payee is not resolved to a counterparty yet.** The Task 5.1 note placed that here. It is the in-MVP part of Task 5.5, and until then `payment` keeps the raw `pay_to` and `resource_url`.
+- **The rows a status lives on are re-checked inside the transaction.** The reads stay outside it, as the Why box says. Before debiting, though, an approval re-checks the account, the agent and the mandate version, and holds them `FOR SHARE` until commit. Without that, a freeze committed between the reads and the transaction was still followed by an approval, which breaks "freezing must be instant for everyone" (Task 2.8). Now a freeze, a revocation or a new version waits for the payments already committing, and every later payment sees it and is decided again. Concurrent payments share the lock, so they do not wait on each other. Found by an independent review of the build.
+- **The service bounds the agent's text, and refuses NUL characters and invalid UTF-8.** Postgres cannot store those, so letting them through would fail the decision's insert on every retry and the attempt would never be recorded. The bounds are starting values for Task 6.2 to publish: idempotency key 255, category 256, payee 256, resource URL 2048, purpose 512, task 1024, session id 128 characters.
+- **Not wired into `BuildAPI` yet.** That comes with the route in Task 6.2, as the mandate module's does.
+- **Latency to watch (Task 6.3):** each approval looks up both ledger buckets with `EnsureAccount`, which adds round trips that a cached bucket id would save.
 
 **30 October 2026.** Built Task 3.2 with a TOTP step-up standing in for the passkey signature. It differs from the task's SQL in three deliberate ways:
 

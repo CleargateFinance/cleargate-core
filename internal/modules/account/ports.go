@@ -191,6 +191,14 @@ type Repository interface {
 	// none.
 	Agent(ctx context.Context, agentID id.AgentID) (Agent, error)
 
+	// SpendingBlocked reports whether the account is suspended or frozen,
+	// reporting ErrAccountNotFound when there is no such account.
+	SpendingBlocked(ctx context.Context, accountID id.AccountID) (bool, error)
+
+	// HoldSpending reports whether the account may spend and the agent is
+	// active, and share-locks both rows until the caller's transaction ends.
+	HoldSpending(ctx context.Context, accountID id.AccountID, agentID id.AgentID) (bool, error)
+
 	// RevokeAgent retires an agent and every credential it holds, together.
 	//
 	// One transaction, because an agent marked revoked while its keys stay live

@@ -30,6 +30,10 @@ type Repository interface {
 	// ErrNoMandate when none was. This is the dispute query: which authority
 	// applied to a payment made then, whatever has happened since.
 	ActiveAt(ctx context.Context, agentID id.AgentID, at time.Time) (Mandate, error)
+
+	// HoldActive share-locks the agent's active mandate until the caller's
+	// transaction ends and returns its id, or "" when there is none.
+	HoldActive(ctx context.Context, agentID id.AgentID) (id.MandateID, error)
 }
 
 // Accounts is what this module needs from the account module.
