@@ -7,6 +7,7 @@ import (
 
 	"github.com/CleargateFinance/cleargate-core/internal/modules/account"
 	"github.com/CleargateFinance/cleargate-core/internal/modules/authz"
+	"github.com/CleargateFinance/cleargate-core/internal/modules/counterparty"
 	"github.com/CleargateFinance/cleargate-core/internal/modules/decisionlog"
 	"github.com/CleargateFinance/cleargate-core/internal/modules/ledger"
 	"github.com/CleargateFinance/cleargate-core/internal/modules/mandate"
@@ -111,6 +112,21 @@ func (m PaymentMandates) Current(ctx context.Context, agentID id.AgentID) (*paym
 // HoldCurrent implements payment.Mandates.
 func (m PaymentMandates) HoldCurrent(ctx context.Context, agentID id.AgentID, mandateID id.MandateID) (bool, error) {
 	return m.Mandates.HoldCurrent(ctx, agentID, mandateID)
+}
+
+// PaymentCounterparties satisfies payment.Counterparties with the
+// counterparty module.
+type PaymentCounterparties struct {
+	Counterparties *counterparty.Service
+}
+
+var _ payment.Counterparties = PaymentCounterparties{}
+
+// Resolve implements payment.Counterparties.
+func (c PaymentCounterparties) Resolve(ctx context.Context, p payment.Payee) (*id.CounterpartyID, error) {
+	return c.Counterparties.Resolve(ctx, counterparty.Observation{
+		ResourceURL: p.ResourceURL, Network: p.Network, PayTo: p.PayTo,
+	})
 }
 
 // PaymentLedger satisfies payment.Ledger with the ledger module.

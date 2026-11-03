@@ -21,11 +21,12 @@ type Deps struct {
 	DB    *database.DB
 	Clock Clock
 
-	Accounts  Accounts
-	Mandates  Mandates
-	Ledger    Ledger
-	Decisions DecisionLog
-	Outbox    Outbox
+	Accounts       Accounts
+	Mandates       Mandates
+	Counterparties Counterparties
+	Ledger         Ledger
+	Decisions      DecisionLog
+	Outbox         Outbox
 
 	// Rail is recorded on every payment. Required, since a payment row with
 	// no rail cannot be reconciled with the chain.
@@ -45,6 +46,8 @@ func New(d Deps) (*Module, error) {
 		return nil, fmt.Errorf("%w: accounts", ErrMissingDependency)
 	case d.Mandates == nil:
 		return nil, fmt.Errorf("%w: mandates", ErrMissingDependency)
+	case d.Counterparties == nil:
+		return nil, fmt.Errorf("%w: counterparties", ErrMissingDependency)
 	case d.Ledger == nil:
 		return nil, fmt.Errorf("%w: ledger", ErrMissingDependency)
 	case d.Decisions == nil:
@@ -60,6 +63,7 @@ func New(d Deps) (*Module, error) {
 		uow:       d.DB.UoW,
 		accounts:  d.Accounts,
 		mandates:  d.Mandates,
+		payees:    d.Counterparties,
 		ledger:    d.Ledger,
 		decisions: d.Decisions,
 		events:    d.Outbox,

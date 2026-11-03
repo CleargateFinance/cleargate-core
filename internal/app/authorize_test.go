@@ -17,6 +17,7 @@ import (
 	"github.com/CleargateFinance/cleargate-core/internal/infrastructure/outbox"
 	"github.com/CleargateFinance/cleargate-core/internal/modules/account"
 	"github.com/CleargateFinance/cleargate-core/internal/modules/authz"
+	"github.com/CleargateFinance/cleargate-core/internal/modules/counterparty"
 	"github.com/CleargateFinance/cleargate-core/internal/modules/decisionlog"
 	"github.com/CleargateFinance/cleargate-core/internal/modules/ledger"
 	"github.com/CleargateFinance/cleargate-core/internal/modules/mandate"
@@ -123,12 +124,13 @@ func newAuthorizeFixture(t *testing.T, balance string) *authorizeFixture {
 		Clock: clock,
 		// Agent and SpendingBlocked read only the repository, so the account
 		// service needs none of its login machinery here.
-		Accounts:  PaymentAccounts{Accounts: account.NewService(account.NewPostgresRepository(db.DB), nil, nil, nil, nil, nil, clock, nil, account.Options{})},
-		Mandates:  PaymentMandates{Mandates: mandate.NewService(mandate.NewPostgresRepository(db.DB), nil, clock, nil)},
-		Ledger:    PaymentLedger{Ledger: f.ledger},
-		Decisions: PaymentDecisions{Decisions: decisionlog.New(db.DB).Service()},
-		Outbox:    outbox.NewWriter(db.DB),
-		Rail:      devnetRail,
+		Accounts:       PaymentAccounts{Accounts: account.NewService(account.NewPostgresRepository(db.DB), nil, nil, nil, nil, nil, clock, nil, account.Options{})},
+		Mandates:       PaymentMandates{Mandates: mandate.NewService(mandate.NewPostgresRepository(db.DB), nil, clock, nil)},
+		Counterparties: PaymentCounterparties{Counterparties: counterparty.New(db.DB, clock).Service()},
+		Ledger:         PaymentLedger{Ledger: f.ledger},
+		Decisions:      PaymentDecisions{Decisions: decisionlog.New(db.DB).Service()},
+		Outbox:         outbox.NewWriter(db.DB),
+		Rail:           devnetRail,
 	}
 	f.rebuild()
 	return f
@@ -626,4 +628,36 @@ func TestAuthorize_FreezeWaitsForAPaymentAlreadyCommitting(t *testing.T) {
 	release()
 	require.NoError(t, <-done)
 	assert.Equal(t, "49.6", f.balance())
+}
+
+// TestAuthorize_EveryPaymentNamesItsCounterparty: the directory is built from
+// traffic (§11), declines included, and two spellings of one endpoint are
+// one payee.
+func TestAuthorize_EveryPaymentNamesItsCounterparty(t *testing.T) {
+	f := newAuthorizeFixture(t, "50")
+	ctx := context.Background()
+
+	approved, err := f.svc.Authorize(ctx, f.request("k1", "0.40"))
+	require.NoError(t, err)
+	declined := f.request("k2", "25")
+	declined.Signals.ResourceURL = "HTTPS://API.EXAMPLE.COM/v1/quote/?session=abc"
+	declinedRes, err := f.svc.Authorize(ctx, declined)
+	require.NoError(t, err)
+	require.Equal(t, payment.StatusDeclined, declinedRes.Status)
+
+	noURL := f.request("k3", "0.40")
+	noURL.Signals.ResourceURL = ""
+	noURLRes, err := f.svc.Authorize(ctx, noURL)
+	require.NoError(t, err)
+
+	key := func(p payment.Result) string {
+		var k string
+		require.NoError(t, f.db.QueryRow(ctx, `
+			SELECT c.canonical_key FROM payment p JOIN counterparty c ON c.id = p.counterparty_id
+			WHERE p.id = $1`, string(p.PaymentID)).Scan(&k))
+		return k
+	}
+	assert.Equal(t, "endpoint:api.example.com/v1/quote", key(approved))
+	assert.Equal(t, key(approved), key(declinedRes))
+	assert.Equal(t, "address:"+devnetRail.Network+":7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU", key(noURLRes))
 }

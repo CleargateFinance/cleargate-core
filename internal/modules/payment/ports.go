@@ -46,6 +46,10 @@ type Payment struct {
 	Rail        Rail
 	Status      Status
 	DecidedAt   time.Time
+
+	// CounterpartyID is the payee, or nil when the payment named nothing to
+	// identify one by.
+	CounterpartyID *id.CounterpartyID
 }
 
 // RememberedKey is one idempotency_key row.
@@ -99,6 +103,20 @@ type Mandate struct {
 	Version int
 	Digest  []byte
 	Rules   authz.Rules
+}
+
+// Counterparties is what this module needs from the counterparty module.
+type Counterparties interface {
+	// Resolve returns the payee's counterparty, creating it on the first
+	// payment to it, or nil when there is nothing to identify it by.
+	Resolve(ctx context.Context, p Payee) (*id.CounterpartyID, error)
+}
+
+// Payee is what a payment says about who it pays.
+type Payee struct {
+	ResourceURL string
+	Network     string
+	PayTo       string
 }
 
 // Ledger is what this module needs from the ledger.
