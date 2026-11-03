@@ -752,7 +752,7 @@ Three surfaces: `public` (no credential), `agent` (a bearer API key) and `consol
 - [ ] `GET /v1/accounts/{id}/summary` — balance, spend against caps, blocked count.
 - [ ] `GET /v1/accounts/{id}/deposit-address` — the account wallet's address (Task 7.5).
 - [ ] `POST /v1/accounts/{id}/freeze` · `/unfreeze` — owner or admin, instant (Task 2.8).
-- [ ] `POST /v1/mfa/totp` · `/totp/confirm` · `/step-up` · `/recovery-codes` — Task 2.4 has the service and no routes yet.
+- [x] `GET /v1/mfa` · `POST /v1/mfa/totp` · `/totp/confirm` · `/step-up`. **Built** in `internal/modules/account/handler.go` (`RegisterConsoleRoutes`); the tests are `internal/app/mfa_routes_test.go`. A recovery code is spent through `/step-up`, and there is no `/recovery-codes` route (Revision notes, 3 November 2026, "second-factor routes").
 - [x] `PUT /v1/agents/{id}/mandate` — sets the rules behind a recent TOTP step-up (Task 3.2). With Task 3.1, `POST /v1/agents/{id}/mandate/draft` canonicalises the rules and returns the WebAuthn challenge, and the `PUT` carries the assertion instead.
 - [ ] Update `api/openapi.yaml`; the SDK and MCP repos generate from it.
 - [ ] `POST /v1/payments/authorize` accepts the optional signals of Task 4.2 (`resource_url`, `url_source`, `purpose`, `task`, `session_id`, `session_novel_counterparties`) and bounds their length, refusing with `400` rather than truncating. They are stored on every decision, so the bound is what keeps a decision record a few hundred bytes, and truncating would alter evidence. The SDK docs say not to put personal data or credentials in `purpose`, `task` or a URL's query string, since they are kept as evidence (Task 5.4).
@@ -1082,6 +1082,15 @@ Tasks marked **Not in MVP** are outside this total. Phase 6 grows because no han
 
 ## Revision notes
 
+**3 November 2026, second-factor routes (Tasks 2.4 and 6.2).** Differences from the plan:
+
+- **A recovery code steps up through `POST /v1/mfa/step-up`**, which takes exactly one of `code` or `recovery_code`. The service behind the planned `/recovery-codes` spends a code; it does not issue codes, so a separate route would have been a second way to step up. **Regenerating recovery codes is not built.** Someone who uses all ten cannot re-enrol either: enrolment is refused while a factor is confirmed, and removing a factor is not built, in the service or as a route.
+- **`GET /v1/mfa` was added** and reports `{"totp": true|false}`, so the console knows whether to offer enrolment before it tries a gated action.
+- **Enrolment does not satisfy the step-up.** Confirming spends that code's step, so the console asks for the next code before a gated action.
+- **`BeginTOTPEnrolment` takes no label.** It looks up the person's address, so no caller can make the authenticator app list the code under another name.
+- **The secret and the recovery codes are sent `Cache-Control: no-store`.**
+- **Found while building, not fixed:** enrolment needs only a session. Someone holding a stolen session for a person with no factor can enrol their own authenticator, then pass step-ups and fund or invite; the real owner then cannot enrol. Requiring the password to start enrolment would close this. Task 2.10's email on enrolment would at least surface it.
+
 **3 November 2026, public auth routes and rate limits (Tasks 2.3 and 6.1).** Differences from the plan:
 
 - **The console is limited per person, not per account.** A console route need not name an account (`PUT /v1/agents/{id}/mandate` names an agent), so the account is known only after the handler's own lookup. The person is known as soon as the session validates. Agents are limited per agent and public routes per client address, as planned.
@@ -1092,7 +1101,7 @@ Tasks marked **Not in MVP** are outside this total. Phase 6 grows because no han
 - **Login sets the token only in the cookie**, with `Max-Age` equal to the session lifetime and no `Domain`. The body carries `expires_at` alone. Logout ends the session and clears the cookie, and answers `204` even with no session.
 - **Unauthenticated bodies are capped at 16 KiB**, and the `User-Agent` stored on a session is cut to 512 bytes of valid UTF-8, since Postgres refuses invalid UTF-8 and NUL.
 - **Fixed, found while building:** a password longer than `crypto.MaxPasswordLength` reached the hasher only for a registered address, which answered `500` where an unknown one answered `401`. Login now refuses the length before the lookup (`TestLogin_OverlongPasswordAnswersAlikeForKnownAndUnknown`). Sign-up now also bounds the display name to 100 characters and refuses NUL, invalid UTF-8 and control characters.
-- **Not built:** CORS. The console must reach the API from an origin the browser allows, either the same origin behind a proxy or a CORS allowlist added for `CONSOLE_URL`. MFA routes (`/v1/mfa/*`) remain open in Task 6.2, so a session from login has no second factor yet and cannot pass a step-up.
+- **Not built:** CORS. The console must reach the API from an origin the browser allows, either the same origin behind a proxy or a CORS allowlist added for `CONSOLE_URL`.
 
 **3 November 2026, Task 6.1.** Built the surfaces. Differences from the sketch:
 
