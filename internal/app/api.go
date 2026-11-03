@@ -10,8 +10,11 @@ import (
 
 	"github.com/CleargateFinance/cleargate-core/internal/infrastructure/cache"
 	"github.com/CleargateFinance/cleargate-core/internal/infrastructure/config"
+	"github.com/CleargateFinance/cleargate-core/internal/infrastructure/crypto"
 	"github.com/CleargateFinance/cleargate-core/internal/infrastructure/database"
 	"github.com/CleargateFinance/cleargate-core/internal/infrastructure/server"
+	"github.com/CleargateFinance/cleargate-core/internal/modules/account"
+	"github.com/CleargateFinance/cleargate-core/internal/modules/mandate"
 )
 
 // API is the fully wired HTTP application, plus the resources it owns.
@@ -23,6 +26,13 @@ type API struct {
 	db    *database.DB
 	cache *cache.Client
 	log   *slog.Logger
+
+	accounts *account.Module
+	mandates *mandate.Module
+
+	// surfaces are kept so a test can add a probe route to each and check the
+	// group's middleware, not only the routes registered today.
+	surfaces surfaces
 }
 
 // BuildAPI constructs the HTTP application: infrastructure, modules,
@@ -63,11 +73,42 @@ func BuildAPI(ctx context.Context, cfg *config.Config, log *slog.Logger) (*API, 
 		return nil, nil, fmt.Errorf("app: cache: %w", err)
 	}
 
+	// From here a failure must release both connections it already holds.
+	fail := func(err error) (*API, func(), error) {
+		_ = cacheClient.Close()
+		db.Close()
+		return nil, nil, err
+	}
+
+	mailer, err := newMailer(cfg, log)
+	if err != nil {
+		return fail(err)
+	}
+	keyring, err := crypto.NewKeyring(cfg.Crypto.MasterKeys, cfg.Crypto.ActiveKeyID)
+	if err != nil {
+		return fail(fmt.Errorf("app: keyring: %w", err))
+	}
+
+	accounts, err := account.New(account.Deps{
+		DB: db, Cache: cacheClient, Log: log, Mailer: mailer, Sealer: keyring,
+	})
+	if err != nil {
+		return fail(fmt.Errorf("app: account module: %w", err))
+	}
+	mandates, err := mandate.New(mandate.Deps{
+		DB: db, Log: log, Accounts: MandateAccounts{Accounts: accounts.Service()},
+	})
+	if err != nil {
+		return fail(fmt.Errorf("app: mandate module: %w", err))
+	}
+
 	api := &API{
-		Engine: server.New(server.Options{Mode: cfg.Server.Mode}, log),
-		db:     db,
-		cache:  cacheClient,
-		log:    log,
+		Engine:   server.New(server.Options{Mode: cfg.Server.Mode}, log),
+		db:       db,
+		cache:    cacheClient,
+		log:      log,
+		accounts: accounts,
+		mandates: mandates,
 	}
 
 	api.registerRoutes()
@@ -80,22 +121,6 @@ func BuildAPI(ctx context.Context, cfg *config.Config, log *slog.Logger) (*API, 
 	}
 
 	return api, cleanup, nil
-}
-
-// registerRoutes wires every module's routes onto the engine.
-//
-// Route grouping is a security boundary, not decoration. Two caller classes
-// exist and must not overlap:
-//
-//	agentAPI   - API-key credential held by the SDK, may REQUEST payments
-//	consoleAPI - human session, may CREATE and SIGN mandates
-//
-// Mandate-mutating routes will be registered only under consoleAPI, so an
-// agent credential cannot reach them even if a handler forgets its check. The
-// route simply does not exist on that surface.
-func (a *API) registerRoutes() {
-	v1 := a.Engine.Group("/v1")
-	v1.GET("/health", a.health)
 }
 
 // healthResponse is the body returned by the health endpoint.

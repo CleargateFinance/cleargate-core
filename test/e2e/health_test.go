@@ -6,6 +6,7 @@ package e2e
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/CleargateFinance/cleargate-core/internal/app"
 	"github.com/CleargateFinance/cleargate-core/internal/infrastructure/config"
+	"github.com/CleargateFinance/cleargate-core/internal/infrastructure/crypto"
 	"github.com/CleargateFinance/cleargate-core/test/fixtures"
 )
 
@@ -39,10 +41,18 @@ func TestHealth_ReturnsOKAgainstRealDependencies(t *testing.T) {
 	db := fixtures.NewTestDB(t)
 	redis := fixtures.NewTestCache(t)
 
+	key := make([]byte, crypto.MasterKeySize)
+	_, err := rand.Read(key)
+	require.NoError(t, err)
+
 	cfg := &config.Config{
-		Server:   config.Server{Mode: "release"},
+		// Debug, because that is the only mode the logging mail transport is
+		// allowed in, and no other transport exists yet.
+		Server:   config.Server{Mode: "debug"},
 		Database: config.Database{DSN: db.DSN, MaxConns: 4, MinConns: 1},
 		Cache:    config.Cache{Addr: redis.Addr},
+		Crypto:   config.Crypto{MasterKeys: map[byte][]byte{1: key}, ActiveKeyID: 1},
+		Mail:     config.Mail{Transport: "log", ConsoleURL: "http://localhost:3000"},
 		Log:      config.Log{Level: "error", Format: "text"},
 	}
 	// ConnectTimeout has no default here because this Config is built

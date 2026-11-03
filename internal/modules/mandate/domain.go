@@ -121,6 +121,12 @@ func (r Rules) Validate(now time.Time) error {
 	if r.Asset == "" {
 		return errInvalid("an asset is required")
 	}
+	// The unit of account. A mandate in anything else would be refused by
+	// the engine on every payment (asset_not_permitted), so it is refused
+	// here, where the person setting it can be told why.
+	if r.Asset != currency.USD {
+		return errInvalid("mandates are in " + string(currency.USD))
+	}
 
 	caps := []struct {
 		name   string

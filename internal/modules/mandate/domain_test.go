@@ -50,6 +50,16 @@ func TestRules_Validate(t *testing.T) {
 			wantErr: "asset is required",
 		},
 		{
+			name: "asset other than the unit of account",
+			mutate: func(r *Rules) {
+				r.Asset = "EUR"
+				r.MaxPerTx, _ = currency.Parse("20", "EUR")
+				r.MaxPerDay, _ = currency.Parse("100", "EUR")
+				r.MaxPerMonth, _ = currency.Parse("200", "EUR")
+			},
+			wantErr: "mandates are in USD",
+		},
+		{
 			name: "cap in another asset",
 			mutate: func(r *Rules) {
 				other, _ := currency.Parse("20", "USDC-SOL")

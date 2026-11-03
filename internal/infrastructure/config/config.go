@@ -20,6 +20,7 @@ type Config struct {
 	Database Database
 	Cache    Cache
 	Crypto   Crypto
+	Mail     Mail
 	Log      Log
 }
 
@@ -71,6 +72,20 @@ type Crypto struct {
 	ActiveKeyID byte
 }
 
+// Mail selects how the API delivers transactional email. Only the API sends
+// any, so it is checked where the API is built rather than here: the worker
+// and the migrate tool must not need it.
+type Mail struct {
+	// Transport has no default. "log" writes the links to the log, which
+	// hands out working credentials, so it is accepted only in debug mode.
+	// No production transport exists yet, and the API refuses to start in
+	// release mode until one does.
+	Transport string
+
+	// ConsoleURL is where emailed links point.
+	ConsoleURL string
+}
+
 // Log holds logging settings.
 type Log struct {
 	// Level is one of debug, info, warn or error.
@@ -104,6 +119,10 @@ func Load() (*Config, error) {
 			Addr:     env("CACHE_ADDR", "localhost:6379"),
 			Password: env("CACHE_PASSWORD", ""),
 			DB:       envInt("CACHE_DB", 0),
+		},
+		Mail: Mail{
+			Transport:  os.Getenv("MAIL_TRANSPORT"),
+			ConsoleURL: env("CONSOLE_URL", "http://localhost:3000"),
 		},
 		Log: Log{
 			Level:  env("LOG_LEVEL", "info"),
