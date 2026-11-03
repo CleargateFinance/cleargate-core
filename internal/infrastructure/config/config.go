@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
@@ -16,12 +17,13 @@ import (
 // package gets only the section it needs, translated by internal/app, so no
 // infrastructure package has to import this one.
 type Config struct {
-	Server   Server
-	Database Database
-	Cache    Cache
-	Crypto   Crypto
-	Mail     Mail
-	Log      Log
+	Server    Server
+	RateLimit RateLimit
+	Database  Database
+	Cache     Cache
+	Crypto    Crypto
+	Mail      Mail
+	Log       Log
 }
 
 // Server holds HTTP listener settings.
@@ -38,6 +40,23 @@ type Server struct {
 	ShutdownTimeout time.Duration
 	// Mode selects the Gin mode, either "debug" or "release".
 	Mode string
+	// TrustedProxies are the addresses or CIDR ranges of the load balancers in
+	// front of the API, the only peers whose X-Forwarded-For is believed.
+	// Empty trusts nobody and uses the connection's own address. Trusting
+	// everyone would let any client name its own address and step around the
+	// per-address limits and the login throttle.
+	TrustedProxies []string
+}
+
+// RateLimit caps requests per minute on each surface (Task 6.1).
+type RateLimit struct {
+	// Public is per client address, on sign-up, login and the other routes
+	// that need no credential.
+	Public int
+	// Agent is per agent, on the agent surface.
+	Agent int
+	// Console is per signed-in person, on the console surface.
+	Console int
 }
 
 // Database holds Postgres connection settings.
@@ -108,6 +127,12 @@ func Load() (*Config, error) {
 			WriteTimeout:    envDuration("SERVER_WRITE_TIMEOUT", 10*time.Second),
 			ShutdownTimeout: envDuration("SERVER_SHUTDOWN_TIMEOUT", 15*time.Second),
 			Mode:            env("SERVER_MODE", "debug"),
+			TrustedProxies:  envList("SERVER_TRUSTED_PROXIES"),
+		},
+		RateLimit: RateLimit{
+			Public:  envInt("RATE_LIMIT_PUBLIC_PER_MINUTE", 30),
+			Agent:   envInt("RATE_LIMIT_AGENT_PER_MINUTE", 600),
+			Console: envInt("RATE_LIMIT_CONSOLE_PER_MINUTE", 300),
 		},
 		Database: Database{
 			DSN:            env("DATABASE_DSN", ""),
@@ -212,6 +237,23 @@ func (c *Config) validate() error {
 		problems = append(problems, fmt.Errorf(
 			"SERVER_MODE must be debug or release, got %q", c.Server.Mode))
 	}
+	for _, p := range c.Server.TrustedProxies {
+		if _, err := netip.ParsePrefix(p); err != nil {
+			if _, err := netip.ParseAddr(p); err != nil {
+				problems = append(problems, fmt.Errorf(
+					"SERVER_TRUSTED_PROXIES entry %q is not an address or CIDR range", p))
+			}
+		}
+	}
+	for name, limit := range map[string]int{
+		"RATE_LIMIT_PUBLIC_PER_MINUTE":  c.RateLimit.Public,
+		"RATE_LIMIT_AGENT_PER_MINUTE":   c.RateLimit.Agent,
+		"RATE_LIMIT_CONSOLE_PER_MINUTE": c.RateLimit.Console,
+	} {
+		if limit <= 0 {
+			problems = append(problems, fmt.Errorf("%s must be a positive number, got %d", name, limit))
+		}
+	}
 
 	// Every key is checked, not just the active one. A retired key that decodes
 	// to the wrong length would otherwise pass here and fail much later, at the
@@ -249,6 +291,18 @@ func env(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// envList splits a comma-separated variable, dropping empty entries, and is
+// nil when the variable is unset.
+func envList(key string) []string {
+	var out []string
+	for _, v := range strings.Split(os.Getenv(key), ",") {
+		if v = strings.TrimSpace(v); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 // envInt behaves like env but parses an integer, falling back on any parse error.

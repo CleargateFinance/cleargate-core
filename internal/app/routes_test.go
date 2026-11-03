@@ -9,7 +9,9 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -30,16 +32,19 @@ import (
 // agent's key.
 
 type apiFixture struct {
-	t   *testing.T
-	db  *fixtures.TestDB
-	api *API
+	t    *testing.T
+	db   *fixtures.TestDB
+	api  *API
+	mail *mailLog
 
 	accountID id.AccountID
 	agentID   id.AgentID
 	agentKey  string
 }
 
-func newAPIFixture(t *testing.T) *apiFixture {
+// newAPIFixture builds the API with limits high enough that no test meets
+// them by accident. configure may change the config before the build.
+func newAPIFixture(t *testing.T, configure ...func(*config.Config)) *apiFixture {
 	t.Helper()
 	db := fixtures.NewTestDB(t)
 	redis := fixtures.NewTestCache(t)
@@ -48,20 +53,71 @@ func newAPIFixture(t *testing.T) *apiFixture {
 	_, err := rand.Read(key)
 	require.NoError(t, err)
 
-	api, cleanup, err := BuildAPI(context.Background(), &config.Config{
-		Server:   config.Server{Mode: "debug"},
-		Database: config.Database{DSN: db.DSN, MaxConns: 4, MinConns: 1, ConnectTimeout: 10 * time.Second},
-		Cache:    config.Cache{Addr: redis.Addr},
-		Crypto:   config.Crypto{MasterKeys: map[byte][]byte{1: key}, ActiveKeyID: 1},
-		Mail:     config.Mail{Transport: "log", ConsoleURL: "http://localhost:3000"},
-		Log:      config.Log{Level: "error", Format: "text"},
-	}, slog.New(slog.DiscardHandler))
+	cfg := &config.Config{
+		Server:    config.Server{Mode: "debug"},
+		RateLimit: config.RateLimit{Public: 1000, Agent: 1000, Console: 1000},
+		Database:  config.Database{DSN: db.DSN, MaxConns: 4, MinConns: 1, ConnectTimeout: 10 * time.Second},
+		Cache:     config.Cache{Addr: redis.Addr},
+		Crypto:    config.Crypto{MasterKeys: map[byte][]byte{1: key}, ActiveKeyID: 1},
+		Mail:      config.Mail{Transport: "log", ConsoleURL: "http://localhost:3000"},
+		Log:       config.Log{Level: "error", Format: "text"},
+	}
+	for _, c := range configure {
+		c(cfg)
+	}
+
+	mail := &mailLog{tokens: map[string]string{}}
+	api, cleanup, err := BuildAPI(context.Background(), cfg, slog.New(mail))
 	require.NoError(t, err)
 	t.Cleanup(cleanup)
 
-	f := &apiFixture{t: t, db: db, api: api}
+	f := &apiFixture{t: t, db: db, api: api, mail: mail}
 	f.seedAgent()
 	return f
+}
+
+// mailLog is the API's logger. The logging mailer writes each link it would
+// have sent as a "link" attribute, so a test can follow it as the recipient
+// would. Everything else logged is dropped.
+type mailLog struct {
+	mu     sync.Mutex
+	tokens map[string]string // "<to> <path>" -> token
+}
+
+func (m *mailLog) Enabled(context.Context, slog.Level) bool { return true }
+func (m *mailLog) WithAttrs([]slog.Attr) slog.Handler       { return m }
+func (m *mailLog) WithGroup(string) slog.Handler            { return m }
+
+func (m *mailLog) Handle(_ context.Context, r slog.Record) error {
+	var to, link string
+	r.Attrs(func(a slog.Attr) bool {
+		switch a.Key {
+		case "to":
+			to = a.Value.String()
+		case "link":
+			link = a.Value.String()
+		}
+		return true
+	})
+	if link == "" {
+		return nil
+	}
+	u, err := url.Parse(link)
+	if err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.tokens[to+" "+u.Path] = u.Query().Get("token")
+	return nil
+}
+
+// token is the token in the last link of kind path ("/verify-email",
+// "/reset-password") mailed to to, or "" if none was.
+func (m *mailLog) token(to, path string) string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.tokens[to+" "+path]
 }
 
 // seedAgent creates an account with one agent holding one live API key.
@@ -174,7 +230,16 @@ func TestSurfaces_EachTakesOnlyItsOwnCredential(t *testing.T) {
 	f.api.surfaces.console.GET("/probe/console", probe)
 	session := f.session("admin@example.com", "admin", true)
 
-	public := map[string]bool{"GET /v1/health": true}
+	// Adding a route here is a decision that anyone may call it.
+	public := map[string]bool{
+		"GET /v1/health":                       true,
+		"POST /v1/auth/signup":                 true,
+		"POST /v1/auth/verify-email":           true,
+		"POST /v1/auth/login":                  true,
+		"POST /v1/auth/logout":                 true,
+		"POST /v1/auth/password/reset-request": true,
+		"POST /v1/auth/password/reset":         true,
+	}
 	authenticated := func(code int) bool { return code != http.StatusUnauthorized }
 
 	routes := f.api.Engine.Routes()
@@ -184,13 +249,15 @@ func TestSurfaces_EachTakesOnlyItsOwnCredential(t *testing.T) {
 		path := strings.ReplaceAll(r.Path, ":id", string(f.agentID))
 		t.Run(name, func(t *testing.T) {
 			none := f.do(r.Method, path, "", credentials{})
-			asAgent := f.do(r.Method, path, "", credentials{agentKey: f.agentKey})
-			asUser := f.do(r.Method, path, "", credentials{sessionToken: session, consoleHeader: true})
-
 			if public[name] {
+				// Only the anonymous request: sending the session to logout
+				// would end it for the routes after this one.
 				assert.True(t, authenticated(none.Code), "public routes need no credential")
 				return
 			}
+
+			asAgent := f.do(r.Method, path, "", credentials{agentKey: f.agentKey})
+			asUser := f.do(r.Method, path, "", credentials{sessionToken: session, consoleHeader: true})
 			assert.Equal(t, http.StatusUnauthorized, none.Code, "no credential, no answer")
 			assert.False(t, authenticated(asAgent.Code) && authenticated(asUser.Code),
 				"a route that accepts both an agent key and a session joins the two surfaces")

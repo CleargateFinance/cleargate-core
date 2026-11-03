@@ -102,8 +102,17 @@ func BuildAPI(ctx context.Context, cfg *config.Config, log *slog.Logger) (*API, 
 		return fail(fmt.Errorf("app: mandate module: %w", err))
 	}
 
+	limits, err := newLimiters(cfg.RateLimit, cacheClient, log)
+	if err != nil {
+		return fail(fmt.Errorf("app: rate limits: %w", err))
+	}
+	engine, err := server.New(server.Options{Mode: cfg.Server.Mode, TrustedProxies: cfg.Server.TrustedProxies}, log)
+	if err != nil {
+		return fail(fmt.Errorf("app: %w", err))
+	}
+
 	api := &API{
-		Engine:   server.New(server.Options{Mode: cfg.Server.Mode}, log),
+		Engine:   engine,
 		db:       db,
 		cache:    cacheClient,
 		log:      log,
@@ -111,7 +120,7 @@ func BuildAPI(ctx context.Context, cfg *config.Config, log *slog.Logger) (*API, 
 		mandates: mandates,
 	}
 
-	api.registerRoutes()
+	api.registerRoutes(limits)
 
 	cleanup := func() {
 		if err := cacheClient.Close(); err != nil {
