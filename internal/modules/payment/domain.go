@@ -3,6 +3,8 @@ package payment
 import (
 	"crypto/sha256"
 	"encoding/json"
+	"fmt"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -20,14 +22,19 @@ import (
 // that payment (Task 5.2). The API docs publish this figure.
 const KeyRetention = 24 * time.Hour
 
-// Bounds the database holds too (migration 000007), checked here so an
-// over-long field fails as a bad request naming the field, not as a
-// constraint violation.
+// Length bounds, in characters. The first four the database holds too
+// (migration 000007), checked here so an over-long field fails as a bad
+// request naming the field, not as a constraint violation. The signals have
+// no column of their own, but every decision stores them, so their bound is
+// what keeps a decision record small (Task 6.2 publishes all of these).
 const (
 	maxKeyLength         = 255
 	maxCategoryLength    = 256
 	maxPayToLength       = 256
 	maxResourceURLLength = 2048
+	maxPurposeLength     = 512
+	maxTaskLength        = 1024
+	maxSessionIDLength   = 128
 )
 
 // payment.amount is numeric(38, 18). A value it cannot hold exactly would be
@@ -61,12 +68,13 @@ type Request struct {
 // Validate refuses a request that cannot be recorded faithfully. Everything
 // about whether it may be paid is the engine's to decide and is recorded as a
 // decision, including a zero or negative amount.
+//
+// Text that Postgres cannot store, invalid UTF-8 or a NUL character, is
+// refused here too. Let through, it would fail the decision's insert on every
+// retry, and the attempt would never be recorded at all.
 func (r Request) Validate() error {
-	switch n := utf8.RuneCountInString(r.IdempotencyKey); {
-	case n == 0:
+	if r.IdempotencyKey == "" {
 		return apperr.Invalid("an idempotency key is required")
-	case n > maxKeyLength:
-		return apperr.Invalid("the idempotency key is longer than 255 characters")
 	}
 	if r.Amount.Asset() == "" {
 		return apperr.Invalid("the amount has no asset")
@@ -74,14 +82,30 @@ func (r Request) Validate() error {
 	if d := r.Amount.Decimal(); !d.Equal(d.Round(maxAmountScale)) || d.Abs().GreaterThanOrEqual(maxAmount) {
 		return apperr.Invalid("the amount has more than 18 decimal places or is too large")
 	}
-	if utf8.RuneCountInString(r.Category) > maxCategoryLength {
-		return apperr.Invalid("the category is longer than 256 characters")
+	switch r.Signals.URLSource {
+	case "", authz.URLSourceTask, authz.URLSourceFetched, authz.URLSourceUnknown:
+	default:
+		return apperr.Invalid("url_source must be task, fetched or unknown")
 	}
-	if utf8.RuneCountInString(r.PayTo) > maxPayToLength {
-		return apperr.Invalid("the payee is longer than 256 characters")
-	}
-	if utf8.RuneCountInString(r.Signals.ResourceURL) > maxResourceURLLength {
-		return apperr.Invalid("the resource URL is longer than 2048 characters")
+
+	for _, f := range []struct {
+		name, value string
+		max         int
+	}{
+		{"idempotency key", r.IdempotencyKey, maxKeyLength},
+		{"category", r.Category, maxCategoryLength},
+		{"payee", r.PayTo, maxPayToLength},
+		{"resource URL", r.Signals.ResourceURL, maxResourceURLLength},
+		{"purpose", r.Signals.Purpose, maxPurposeLength},
+		{"task", r.Signals.Task, maxTaskLength},
+		{"session id", r.Signals.SessionID, maxSessionIDLength},
+	} {
+		if !utf8.ValidString(f.value) || strings.ContainsRune(f.value, 0) {
+			return apperr.Invalid("the " + f.name + " is not valid text")
+		}
+		if utf8.RuneCountInString(f.value) > f.max {
+			return apperr.Invalid(fmt.Sprintf("the %s is longer than %d characters", f.name, f.max))
+		}
 	}
 	return nil
 }

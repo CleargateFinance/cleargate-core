@@ -38,6 +38,13 @@ func TestRequest_ValidateRefusesWhatCannotBeRecorded(t *testing.T) {
 		"long category":       func(r *Request) { r.Category = strings.Repeat("c", 257) },
 		"long payee":          func(r *Request) { r.PayTo = strings.Repeat("p", 257) },
 		"long resource url":   func(r *Request) { r.Signals.ResourceURL = strings.Repeat("u", 2049) },
+		"long purpose":        func(r *Request) { r.Signals.Purpose = strings.Repeat("p", 513) },
+		"long task":           func(r *Request) { r.Signals.Task = strings.Repeat("t", 1025) },
+		"long session id":     func(r *Request) { r.Signals.SessionID = strings.Repeat("s", 129) },
+		"unknown url source":  func(r *Request) { r.Signals.URLSource = "inbox" },
+		"nul in purpose":      func(r *Request) { r.Signals.Purpose = "a\x00b" },
+		"nul in key":          func(r *Request) { r.IdempotencyKey = "k\x00" },
+		"invalid utf-8":       func(r *Request) { r.Category = "data\xff" },
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
