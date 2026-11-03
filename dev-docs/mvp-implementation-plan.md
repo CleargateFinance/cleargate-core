@@ -257,6 +257,8 @@ A hold commits funds without releasing them, verifies delivery, and returns the 
 
 Endpoints (Phase 6 registers these on an *unauthenticated* group):
 
+**Routes built** in `internal/modules/account/handler.go` (`RegisterPublicRoutes`), on the public surface under `/v1/auth`. The tests are `internal/app/auth_routes_test.go`. The differences are in the Revision notes for 3 November 2026, "public auth routes".
+
 - [x] `POST /v1/auth/signup` — creates `principal(kind='person')`, `principal_identity`, `app_user`, and an `email_verify` token. Records `user_consent` for the ToS version shown. Always answers `202`.
 - [x] `POST /v1/auth/verify-email`, `POST /v1/auth/login`, `POST /v1/auth/logout`
 - [x] `POST /v1/auth/password/reset-request`, `POST /v1/auth/password/reset`
@@ -739,7 +741,7 @@ Three surfaces: `public` (no credential), `agent` (a bearer API key) and `consol
 - [x] **Test:** `TestAgentCredentialCannotReachMandateRoutes` asserts `401` or `404`, never `200`, for a valid agent key sent as a bearer token, with the console header, or in the session cookie.
 - [x] **Test:** `TestSurfaces_EachTakesOnlyItsOwnCredential` walks every registered route, including ones added later. No route answers without a credential except the public ones, and none accepts both kinds.
 - [x] **Test:** `TestConsole_ChangesNeedTheConsoleHeader` checks the CSRF defence.
-- [ ] Rate limits: per IP on `public`, per agent on `agent`, per account on `console`. Not built yet; they come with the login routes, the first public routes worth throttling.
+- [x] Rate limits: per client address on `public`, per agent on `agent`, per person on `console`. **Built** in `internal/infrastructure/ratelimit` and wired in `internal/app/routes.go`; the tests are `TestRateLimit_*` in `internal/app/auth_routes_test.go`. The console is limited per person, not per account (Revision notes, 3 November 2026).
 
 ### Task 6.2: Endpoints
 
@@ -1080,13 +1082,25 @@ Tasks marked **Not in MVP** are outside this total. Phase 6 grows because no han
 
 ## Revision notes
 
+**3 November 2026, public auth routes and rate limits (Tasks 2.3 and 6.1).** Differences from the plan:
+
+- **The console is limited per person, not per account.** A console route need not name an account (`PUT /v1/agents/{id}/mandate` names an agent), so the account is known only after the handler's own lookup. The person is known as soon as the session validates. Agents are limited per agent and public routes per client address, as planned.
+- **Limits are fixed one-minute windows in Redis**, and set by `RATE_LIMIT_PUBLIC_PER_MINUTE` (30), `RATE_LIMIT_AGENT_PER_MINUTE` (600) and `RATE_LIMIT_CONSOLE_PER_MINUTE` (300). A fixed window lets a caller send up to twice the limit across a boundary, which is acceptable for shedding load. When Redis is down the limiter lets requests through. It sheds load, and the login throttle, not this limiter, is what slows guessing.
+- **`GET /v1/health` is outside every surface and limit.** A load balancer polls it from a few addresses, and throttling it would drain healthy instances.
+- **Forwarded addresses are believed only from `SERVER_TRUSTED_PROXIES`.** Gin trusted every peer by default, so any client could set `X-Forwarded-For` and choose the address its rate limit and login throttle count against. Empty trusts nobody. **Behind a load balancer the deployment must name it**, or every client shares the balancer's allowance.
+- **The auth routes need `X-Cleargate-Console` too**, although they are public. Without it another site could post a form that signs a visitor into an account the attacker controls (login CSRF), and whatever the visitor then funds lands there.
+- **Login sets the token only in the cookie**, with `Max-Age` equal to the session lifetime and no `Domain`. The body carries `expires_at` alone. Logout ends the session and clears the cookie, and answers `204` even with no session.
+- **Unauthenticated bodies are capped at 16 KiB**, and the `User-Agent` stored on a session is cut to 512 bytes of valid UTF-8, since Postgres refuses invalid UTF-8 and NUL.
+- **Fixed, found while building:** a password longer than `crypto.MaxPasswordLength` reached the hasher only for a registered address, which answered `500` where an unknown one answered `401`. Login now refuses the length before the lookup (`TestLogin_OverlongPasswordAnswersAlikeForKnownAndUnknown`). Sign-up now also bounds the display name to 100 characters and refuses NUL, invalid UTF-8 and control characters.
+- **Not built:** CORS. The console must reach the API from an origin the browser allows, either the same origin behind a proxy or a CORS allowlist added for `CONSOLE_URL`. MFA routes (`/v1/mfa/*`) remain open in Task 6.2, so a session from login has no second factor yet and cannot pass a step-up.
+
 **3 November 2026, Task 6.1.** Built the surfaces. Differences from the sketch:
 
-- **A session travels in a cookie, and console changes need a header.** `cg_session` is the session cookie (Phase 2: "hash the cookie"). Login, when it arrives, sets it HttpOnly, Secure and SameSite=Strict. Every console request that changes something must also send `X-Cleargate-Console`. Another site can make a browser send the cookie, but not a custom header, so this is the OWASP custom-header defence against CSRF behind SameSite, which a same-site subdomain gets past. The console repo must send the header.
+- **A session travels in a cookie, and console changes need a header.** `cg_session` is the session cookie (Phase 2: "hash the cookie"). Login sets it HttpOnly, Secure and SameSite=Strict. Every console request that changes something must also send `X-Cleargate-Console`. Another site can make a browser send the cookie, but not a custom header, so this is the OWASP custom-header defence against CSRF behind SameSite, which a same-site subdomain gets past. The console repo must send the header.
 - **The caller travels in the request context** through `internal/shared/caller`, as an `Agent` or a `User`, never both. Another module's handler can read it without importing the account module.
 - **No idempotency middleware.** `Authorize` owns idempotency (Task 5.2), so the agent group needs only authentication.
 - **No guardian group and no WebAuthn assertion.** Guardians are not in the MVP (Task 2.8), and the mandate route keeps the TOTP step-up until Task 3.1.
-- **Rate limits are not built yet** (the open step above).
+- **Rate limits** came with the login routes (the next note).
 - **`BuildAPI` needs a mail transport.** `MAIL_TRANSPORT` has no default, and `log`, the only transport that exists, is refused outside `SERVER_MODE=debug`. **Before any release deployment, the owner must choose an email provider**; until then the API refuses to start in release mode.
 - **A mandate must be in USD.** `Rules.Validate` now refuses any other asset, since the engine would decline every payment against it (`asset_not_permitted`).
 - **Found while building, not fixed:** a signed-in person outside the agent's account gets `403` from the mandate route, while an unknown agent gets `404`. That contradicts `account.ErrAgentNotFound`'s "one answer". Agent ids are random UUIDs, so probing them is not practical, but the answers should match when the account routes arrive.
