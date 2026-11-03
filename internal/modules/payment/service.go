@@ -1,6 +1,317 @@
 package payment
 
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"time"
+
+	"github.com/CleargateFinance/cleargate-core/internal/infrastructure/database"
+	"github.com/CleargateFinance/cleargate-core/internal/infrastructure/outbox"
+	"github.com/CleargateFinance/cleargate-core/internal/modules/authz"
+	"github.com/CleargateFinance/cleargate-core/internal/shared/apperr"
+	"github.com/CleargateFinance/cleargate-core/internal/shared/currency"
+	"github.com/CleargateFinance/cleargate-core/internal/shared/id"
+)
+
+// maxAttempts bounds how often Authorize re-decides after losing a race. One
+// retry normally settles it, since the second decision sees the winner's
+// spend and declines; the bound only stops a pathological loop.
+const maxAttempts = 3
+
+var (
+	// errRaceLost is a concurrent payment taking the funds or budget this
+	// decision counted on, between the read and the write. The transaction
+	// rolls back and Authorize decides again on fresh inputs.
+	errRaceLost = errors.New("payment: a concurrent payment changed the inputs")
+
+	// errKeyTaken is a concurrent request with the same key committing first.
+	errKeyTaken = errors.New("payment: idempotency key stored by a concurrent request")
+)
+
 // Service implements this module's use cases. Depends on the interfaces
 // declared in ports.go, never on repo_postgres.go or handler_http.go.
-// TODO(scaffold).
-type Service struct{}
+type Service struct {
+	repo      Repository
+	uow       database.UnitOfWork
+	accounts  Accounts
+	mandates  Mandates
+	ledger    Ledger
+	decisions DecisionLog
+	events    Outbox
+	clock     Clock
+	rail      Rail
+}
+
+// Authorize decides one payment and records the decision.
+//
+// Reads happen first, outside any transaction, then the pure engine decides,
+// then every write commits in one transaction: the payment, its idempotency
+// key, the ledger debit and spend counters when approved, the decision record
+// and the outbox event. If any of them fails, none of them happened, so money
+// never moves without its evidence (§5.4). A decline is recorded like an
+// approval, minus the money.
+//
+// Errors are only for requests that cannot be judged: malformed input, an
+// agent that is gone, or a failure in the system itself. None of those is
+// remembered against the key, so a retry is evaluated afresh (Task 5.2).
+func (s *Service) Authorize(ctx context.Context, req Request) (Result, error) {
+	if err := req.Validate(); err != nil {
+		return Result{}, err
+	}
+	hash := req.hash()
+
+	for attempt := 1; ; attempt++ {
+		res, err := s.authorizeOnce(ctx, req, hash)
+		switch {
+		case errors.Is(err, errKeyTaken):
+			// The concurrent request's result is now committed, so answer
+			// with it, exactly as a later retry would be answered.
+			res, found, err := s.remembered(ctx, req, hash)
+			if err == nil && !found {
+				err = apperr.Internal("payment: idempotency key taken but not readable", nil)
+			}
+			return res, err
+		case errors.Is(err, errRaceLost) && attempt < maxAttempts:
+			continue
+		case errors.Is(err, errRaceLost):
+			return Result{}, ErrBusy
+		default:
+			return res, err
+		}
+	}
+}
+
+func (s *Service) authorizeOnce(ctx context.Context, req Request, hash []byte) (Result, error) {
+	// One instant for the whole decision: the payment, the decision, the
+	// posting, the counters and the key all carry it, so a later release
+	// lands in the same counter windows (Task 7.7).
+	now := s.clock.Now().UTC()
+
+	if res, found, err := s.remembered(ctx, req, hash); err != nil || found {
+		return res, err // §8.4: a retry is free and changes nothing
+	}
+
+	// --- Gather. Every read happens before the decision, none inside it.
+	agent, err := s.accounts.Agent(ctx, req.AgentID)
+	if err != nil {
+		return Result{}, err
+	}
+	if agent.AccountID != req.AccountID {
+		// The credential named one account and the agent belongs to another.
+		// Authentication produced both, so this is a defect, never a request.
+		return Result{}, apperr.Internal("payment: agent does not belong to the authenticated account", nil)
+	}
+	if !agent.Active {
+		return Result{}, ErrAgentRevoked
+	}
+	blocked, err := s.accounts.SpendingBlocked(ctx, req.AccountID)
+	if err != nil {
+		return Result{}, err
+	}
+	mandate, err := s.mandates.Current(ctx, req.AgentID)
+	if err != nil {
+		return Result{}, err
+	}
+	// Counters and balance in the unit of account, whatever the request says.
+	// A request in another asset is the engine's to decline.
+	day, month, err := s.ledger.Spent(ctx, req.AgentID, currency.USD, now)
+	if err != nil {
+		return Result{}, err
+	}
+	balance, err := s.ledger.Balance(ctx, req.AccountID, currency.USD)
+	if err != nil {
+		return Result{}, err
+	}
+
+	snap := authz.Snapshot{
+		AccountBlocked: blocked,
+		DaySpent:       day,
+		MonthSpent:     month,
+		AccountBalance: balance,
+		Now:            now,
+	}
+	if mandate != nil {
+		rules := mandate.Rules
+		snap.Mandate = &rules
+	}
+
+	// --- Decide. Pure, no I/O.
+	d := authz.Decide(req.authz(), snap)
+
+	features, err := json.Marshal(d.Features)
+	if err != nil {
+		return Result{}, apperr.Internal("payment: encode features", err)
+	}
+	res := Result{
+		Status:     StatusDeclined,
+		Outcome:    d.Outcome,
+		ReasonCode: d.ReasonCode,
+		Reason:     d.Reason,
+		DecidedAt:  now,
+	}
+	if d.Approved() {
+		res.Status = StatusAuthorized
+	}
+	latency := s.clock.Now().Sub(now)
+
+	// --- Persist. One transaction, all or nothing.
+	err = s.uow.Do(ctx, func(ctx context.Context) error {
+		paymentID, err := s.repo.InsertPayment(ctx, Payment{
+			AccountID:   req.AccountID,
+			AgentID:     req.AgentID,
+			Amount:      req.Amount,
+			Category:    req.Category,
+			PayTo:       req.PayTo,
+			ResourceURL: req.Signals.ResourceURL,
+			Rail:        s.rail,
+			Status:      res.Status,
+			DecidedAt:   now,
+		})
+		if err != nil {
+			return err
+		}
+		res.PaymentID = paymentID
+
+		// The key goes in before any money moves. A concurrent request with
+		// the same key waits here for this one to commit and then gives up,
+		// so it never takes a lock on the account's funds.
+		response, err := encodeResult(res)
+		if err != nil {
+			return apperr.Internal("payment: encode result", err)
+		}
+		if err := s.repo.Remember(ctx, RememberedKey{
+			AccountID:   req.AccountID,
+			Key:         req.IdempotencyKey,
+			RequestHash: hash,
+			PaymentID:   paymentID,
+			Response:    response,
+			StoredAt:    now,
+		}, now.Add(-KeyRetention)); err != nil {
+			return err
+		}
+
+		if d.Approved() {
+			if err := s.charge(ctx, req, mandate, paymentID, now); err != nil {
+				return err
+			}
+		}
+
+		if err := s.decisions.Record(ctx, DecisionRecord{
+			PaymentID:   paymentID,
+			AccountID:   req.AccountID,
+			AgentID:     req.AgentID,
+			Decision:    d,
+			Features:    features,
+			Mandate:     mandate,
+			EvaluatedAt: now,
+			Latency:     latency,
+		}); err != nil {
+			return err
+		}
+
+		return s.events.Append(ctx, event(req, res))
+	})
+	if err != nil {
+		return Result{}, err
+	}
+	return res, nil
+}
+
+// charge debits the account and counts the spend, inside the transaction.
+//
+// The reads before Decide were a snapshot, and a concurrent payment may have
+// spent the same funds or budget since. Both writes here are atomic and
+// report the state after them, so this is where a lost race is caught (§8.5):
+// the debit refuses to overdraw, and a counter past its cap means the
+// snapshot was stale. Either way the transaction rolls back and Authorize
+// decides again on fresh inputs, which then records the decline.
+func (s *Service) charge(ctx context.Context, req Request, m *Mandate, paymentID id.PaymentID, now time.Time) error {
+	funded, err := s.ledger.Debit(ctx, Debit{
+		PaymentID: paymentID,
+		AccountID: req.AccountID,
+		AgentID:   req.AgentID,
+		Amount:    req.Amount,
+		At:        now,
+	})
+	if err != nil {
+		return err
+	}
+	if !funded {
+		return errRaceLost
+	}
+
+	day, month, err := s.ledger.RecordSpend(ctx, req.AgentID, req.Amount, now)
+	if err != nil {
+		return err
+	}
+	for _, c := range []struct{ total, limit currency.Amount }{
+		{day, m.Rules.MaxPerDay},
+		{month, m.Rules.MaxPerMonth},
+	} {
+		over, err := c.total.GreaterThan(c.limit)
+		if err != nil {
+			return apperr.Internal("payment: compare spend with cap", err)
+		}
+		if over {
+			return errRaceLost
+		}
+	}
+	return nil
+}
+
+// remembered returns the stored answer for this request's key, if it is
+// still within retention. A stored answer for a different request is a
+// conflict.
+func (s *Service) remembered(ctx context.Context, req Request, hash []byte) (Result, bool, error) {
+	k, found, err := s.repo.Remembered(ctx, req.AccountID, req.IdempotencyKey, s.clock.Now().Add(-KeyRetention))
+	if err != nil || !found {
+		return Result{}, false, err
+	}
+	if !bytes.Equal(k.RequestHash, hash) {
+		return Result{}, false, ErrKeyReused
+	}
+	res, err := decodeResult(k.Response)
+	if err != nil {
+		return Result{}, false, err
+	}
+	res.Replayed = true
+	return res, true, nil
+}
+
+// event reports the decision. Identifiers and amounts only, never the
+// agent's free text (data-architecture.md §8).
+func event(req Request, res Result) outbox.Event {
+	eventType := "payment.declined"
+	if res.Status == StatusAuthorized {
+		eventType = "payment.authorized"
+	}
+	return outbox.Event{
+		AggregateType: "payment",
+		AggregateID:   string(res.PaymentID),
+		EventType:     eventType,
+		Payload: map[string]string{
+			"payment_id":  string(res.PaymentID),
+			"account_id":  string(req.AccountID),
+			"agent_id":    string(req.AgentID),
+			"reason_code": string(res.ReasonCode),
+			"amount":      req.Amount.String(),
+			"asset":       string(req.Amount.Asset()),
+		},
+		OccurredAt: res.DecidedAt,
+	}
+}
+
+// Retention deletes idempotency keys past KeyRetention. It is separate from
+// Service so the worker can run it without wiring the payment path's ports.
+type Retention struct {
+	repo  Repository
+	clock Clock
+}
+
+// ExpireKeys deletes keys past retention, reporting how many. Authorize
+// already ignores an expired key, so this only keeps the table small.
+func (r *Retention) ExpireKeys(ctx context.Context) (int64, error) {
+	return r.repo.DeleteKeysBefore(ctx, r.clock.Now().Add(-KeyRetention))
+}
