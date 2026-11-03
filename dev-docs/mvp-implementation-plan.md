@@ -729,52 +729,17 @@ Counterparty is its **own entity, never a column on an account** (§4.1). It may
 
 ### Task 6.1: Route groups as an authorization boundary
 
-```go
-// internal/app/api.go
-v1 := r.Group("/v1")
+**Built** in `internal/app/routes.go` (the surfaces, `newMailer`) and `internal/app/api.go` (`BuildAPI` now builds the account and mandate modules). The middleware is `account.Module.AgentAuth` and `UserAuth` in `internal/modules/account/handler.go`, and `internal/shared/caller` carries the authenticated caller to handlers. The first console route is `PUT /v1/agents/{id}/mandate` (Task 6.2). The tests are in `internal/app/routes_test.go`. The differences from the sketch are in the Revision notes for 3 November 2026.
 
-// Unauthenticated by definition: this is where sessions come from (Task 2.3).
-// Throttled hard, because these are the endpoints an attacker can reach first.
-publicAPI := v1.Group("", server.RateLimitPerIP(cfg.Limits))
-accountMod.RegisterAuthRoutes(publicAPI)   // signup, login, verify, reset
-
-agentAPI := v1.Group("",
-	server.AgentAuth(accountMod.Service()),
-	server.Idempotency(idemStore),
-	server.RateLimitPerAgent(cfg.Limits),
-)
-paymentMod.RegisterAgentRoutes(agentAPI)   // POST /payments/authorize
-
-consoleAPI := v1.Group("", server.UserAuth(sessions), server.RateLimitPerAccount(cfg.Limits))
-accountMod.RegisterRoutes(consoleAPI)
-decisionMod.RegisterRoutes(consoleAPI)
-
-// Authority-granting routes require a WebAuthn assertion over the exact
-// payload, not a step-up window — the role says who may propose, the
-// signature says who actually approved these bytes (Tasks 2.4, 3.1).
-// Until Task 3.1 ships, a recent TOTP step-up stands in for the assertion.
-mandateMod.RegisterRoutes(consoleAPI,
-	server.RequireRole(domain.RoleAdmin),
-	server.RequireStepUp(), // server.RequireAssertion() with Task 3.1
-)
-
-// Veto is the guardian's only power here, and admins do not hold it —
-// otherwise a single compromised admin could clear its own proposal (Task 2.8).
-// Vetoing, like proposing, is a signature over the exact payload being
-// stopped, not a step-up window — the same reasoning as the mandate group
-// above, applied to the party on the other side of it.
-guardianAPI := consoleAPI.Group("",
-	server.RequireRole(domain.RoleGuardian),
-	server.RequireAssertion(),
-)
-mandateMod.RegisterVetoRoute(guardianAPI)
-accountMod.RegisterControlVetoRoute(guardianAPI)
-```
+Three surfaces: `public` (no credential), `agent` (a bearer API key) and `console` (the session cookie). Each authenticated surface reads only its own credential, so a request carrying the other kind is unauthenticated there.
 
 > **Why grouping rather than per-handler checks**
 > Mandate-mutating routes are registered *only* under `consoleAPI`. An agent credential therefore cannot reach them even if a handler forgets its check — the route does not exist on that surface. This is the structural expression of §6.1: model output is a request, never an instruction, and a compromised agent must not be able to widen its own authority. A per-handler check is one forgotten line away from failing; an unregistered route is not reachable at all.
 
-- [ ] **Test:** `TestAgentCredentialCannotReachMandateRoutes` — asserts `404`/`401`, never `200`.
+- [x] **Test:** `TestAgentCredentialCannotReachMandateRoutes` asserts `401` or `404`, never `200`, for a valid agent key sent as a bearer token, with the console header, or in the session cookie.
+- [x] **Test:** `TestSurfaces_EachTakesOnlyItsOwnCredential` walks every registered route, including ones added later. No route answers without a credential except the public ones, and none accepts both kinds.
+- [x] **Test:** `TestConsole_ChangesNeedTheConsoleHeader` checks the CSRF defence.
+- [ ] Rate limits: per IP on `public`, per agent on `agent`, per account on `console`. Not built yet; they come with the login routes, the first public routes worth throttling.
 
 ### Task 6.2: Endpoints
 
@@ -786,7 +751,7 @@ accountMod.RegisterControlVetoRoute(guardianAPI)
 - [ ] `GET /v1/accounts/{id}/deposit-address` — the account wallet's address (Task 7.5).
 - [ ] `POST /v1/accounts/{id}/freeze` · `/unfreeze` — owner or admin, instant (Task 2.8).
 - [ ] `POST /v1/mfa/totp` · `/totp/confirm` · `/step-up` · `/recovery-codes` — Task 2.4 has the service and no routes yet.
-- [ ] `PUT /v1/agents/{id}/mandate` — sets the rules behind a recent TOTP step-up (Task 3.2). With Task 3.1, `POST /v1/agents/{id}/mandate/draft` canonicalises the rules and returns the WebAuthn challenge, and the `PUT` carries the assertion instead.
+- [x] `PUT /v1/agents/{id}/mandate` — sets the rules behind a recent TOTP step-up (Task 3.2). With Task 3.1, `POST /v1/agents/{id}/mandate/draft` canonicalises the rules and returns the WebAuthn challenge, and the `PUT` carries the assertion instead.
 - [ ] Update `api/openapi.yaml`; the SDK and MCP repos generate from it.
 - [ ] `POST /v1/payments/authorize` accepts the optional signals of Task 4.2 (`resource_url`, `url_source`, `purpose`, `task`, `session_id`, `session_novel_counterparties`) and bounds their length, refusing with `400` rather than truncating. They are stored on every decision, so the bound is what keeps a decision record a few hundred bytes, and truncating would alter evidence. The SDK docs say not to put personal data or credentials in `purpose`, `task` or a URL's query string, since they are kept as evidence (Task 5.4).
 - [ ] Publish the reason codes and their order (Task 4.1) as an enum in `api/openapi.yaml`, each with a one-line meaning and what an agent should do about it.
@@ -1114,6 +1079,17 @@ Tasks marked **Not in MVP** are outside this total. Phase 6 grows because no han
 ---
 
 ## Revision notes
+
+**3 November 2026, Task 6.1.** Built the surfaces. Differences from the sketch:
+
+- **A session travels in a cookie, and console changes need a header.** `cg_session` is the session cookie (Phase 2: "hash the cookie"). Login, when it arrives, sets it HttpOnly, Secure and SameSite=Strict. Every console request that changes something must also send `X-Cleargate-Console`. Another site can make a browser send the cookie, but not a custom header, so this is the OWASP custom-header defence against CSRF behind SameSite, which a same-site subdomain gets past. The console repo must send the header.
+- **The caller travels in the request context** through `internal/shared/caller`, as an `Agent` or a `User`, never both. Another module's handler can read it without importing the account module.
+- **No idempotency middleware.** `Authorize` owns idempotency (Task 5.2), so the agent group needs only authentication.
+- **No guardian group and no WebAuthn assertion.** Guardians are not in the MVP (Task 2.8), and the mandate route keeps the TOTP step-up until Task 3.1.
+- **Rate limits are not built yet** (the open step above).
+- **`BuildAPI` needs a mail transport.** `MAIL_TRANSPORT` has no default, and `log`, the only transport that exists, is refused outside `SERVER_MODE=debug`. **Before any release deployment, the owner must choose an email provider**; until then the API refuses to start in release mode.
+- **A mandate must be in USD.** `Rules.Validate` now refuses any other asset, since the engine would decline every payment against it (`asset_not_permitted`).
+- **Found while building, not fixed:** a signed-in person outside the agent's account gets `403` from the mandate route, while an unknown agent gets `404`. That contradicts `account.ErrAgentNotFound`'s "one answer". Agent ids are random UUIDs, so probing them is not practical, but the answers should match when the account routes arrive.
 
 **3 November 2026, Task 5.5 counterparty identity (owner decision).** A counterparty is identified by the endpoint the agent reports paying for, normalised to host and path: lower-case ASCII host, no default port or trailing dot, cleaned path, and no scheme, user info, query or fragment. The query is left out because it varies per request and can carry an API key. Its registrable domain (from the public suffix list) and its host are stored beside it, the two levels data-architecture.md §4.4 scores distrust at. With no usable URL, the payee is the network and `payTo` address the money went to. A payment that names neither has no counterparty and can still be judged.
 
