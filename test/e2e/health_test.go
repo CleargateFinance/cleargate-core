@@ -48,12 +48,13 @@ func TestHealth_ReturnsOKAgainstRealDependencies(t *testing.T) {
 	cfg := &config.Config{
 		// Debug, because that is the only mode the logging mail transport is
 		// allowed in, and no other transport exists yet.
-		Server:   config.Server{Mode: "debug"},
-		Database: config.Database{DSN: db.DSN, MaxConns: 4, MinConns: 1},
-		Cache:    config.Cache{Addr: redis.Addr},
-		Crypto:   config.Crypto{MasterKeys: map[byte][]byte{1: key}, ActiveKeyID: 1},
-		Mail:     config.Mail{Transport: "log", ConsoleURL: "http://localhost:3000"},
-		Log:      config.Log{Level: "error", Format: "text"},
+		Server:    config.Server{Mode: "debug"},
+		RateLimit: config.RateLimit{Public: 30, Agent: 600, Console: 300},
+		Database:  config.Database{DSN: db.DSN, MaxConns: 4, MinConns: 1},
+		Cache:     config.Cache{Addr: redis.Addr},
+		Crypto:    config.Crypto{MasterKeys: map[byte][]byte{1: key}, ActiveKeyID: 1},
+		Mail:      config.Mail{Transport: "log", ConsoleURL: "http://localhost:3000"},
+		Log:       config.Log{Level: "error", Format: "text"},
 	}
 	// ConnectTimeout has no default here because this Config is built
 	// directly rather than through config.Load, so it is set explicitly.

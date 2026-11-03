@@ -5,6 +5,7 @@
 package server
 
 import (
+	"fmt"
 	"log/slog"
 
 	"github.com/gin-gonic/gin"
@@ -15,6 +16,12 @@ import (
 type Options struct {
 	// Mode selects the Gin mode, either "debug" or "release".
 	Mode string
+
+	// TrustedProxies are the only peers whose X-Forwarded-For header
+	// c.ClientIP believes. Nil trusts nobody. Gin's own default trusts every
+	// peer, which lets a client choose the address its rate limits and login
+	// throttle are counted against.
+	TrustedProxies []string
 }
 
 // New builds the Gin engine with the standard middleware chain already
@@ -32,10 +39,13 @@ type Options struct {
 // gin.New is used rather than gin.Default because Default installs Gin's own
 // logger and recovery, which would duplicate ours and log in a different
 // format.
-func New(opts Options, log *slog.Logger) *gin.Engine {
+func New(opts Options, log *slog.Logger) (*gin.Engine, error) {
 	gin.SetMode(ginMode(opts.Mode))
 
 	engine := gin.New()
+	if err := engine.SetTrustedProxies(opts.TrustedProxies); err != nil {
+		return nil, fmt.Errorf("server: trusted proxies: %w", err)
+	}
 	engine.Use(
 		RequestID(),
 		Recovery(log),
@@ -43,7 +53,7 @@ func New(opts Options, log *slog.Logger) *gin.Engine {
 		ErrorMapper(),
 	)
 
-	return engine
+	return engine, nil
 }
 
 // ginMode translates our mode name to Gin's constant, defaulting to release.

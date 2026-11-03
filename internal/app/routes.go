@@ -4,18 +4,21 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
 	"github.com/CleargateFinance/cleargate-core/internal/infrastructure/config"
 	"github.com/CleargateFinance/cleargate-core/internal/infrastructure/mail"
+	"github.com/CleargateFinance/cleargate-core/internal/infrastructure/ratelimit"
 	"github.com/CleargateFinance/cleargate-core/internal/modules/account"
+	"github.com/CleargateFinance/cleargate-core/internal/shared/caller"
 )
 
 // surfaces are the three ways into the API (Task 6.1). Route grouping is a
 // security boundary, not decoration:
 //
-//	public  - no credential: health, and later sign-up and login, which are
+//	public  - no credential: sign-up, login and password reset, which are
 //	          where sessions come from
 //	agent   - an agent's API key; may REQUEST payments
 //	console - a person's session; may CREATE and SIGN mandates
@@ -32,18 +35,64 @@ type surfaces struct {
 	console *gin.RouterGroup
 }
 
+// limiters cap each surface's callers (Task 6.1): the public surface per
+// client address, since it has no other name for a caller; the agent surface
+// per agent; the console per person.
+type limiters struct {
+	public, agent, console *ratelimit.Limiter
+}
+
+func newLimiters(cfg config.RateLimit, counter ratelimit.Counter, log *slog.Logger) (limiters, error) {
+	var l limiters
+	var err error
+	if l.public, err = ratelimit.New(counter, "public", cfg.Public, time.Minute, log); err != nil {
+		return limiters{}, err
+	}
+	if l.agent, err = ratelimit.New(counter, "agent", cfg.Agent, time.Minute, log); err != nil {
+		return limiters{}, err
+	}
+	if l.console, err = ratelimit.New(counter, "console", cfg.Console, time.Minute, log); err != nil {
+		return limiters{}, err
+	}
+	return l, nil
+}
+
 // registerRoutes builds the surfaces and registers every module's routes on
 // the one it belongs to.
-func (a *API) registerRoutes() {
+//
+// Each authenticated surface limits after it authenticates, because the limit
+// is per caller and the caller is not known before. Health sits outside every
+// surface and every limit: a load balancer polls it from a handful of
+// addresses, and throttling it would take healthy instances out of rotation.
+func (a *API) registerRoutes(l limiters) {
 	v1 := a.Engine.Group("/v1")
+	v1.GET("/health", a.health)
+
 	a.surfaces = surfaces{
-		public:  v1,
-		agent:   v1.Group("", a.accounts.AgentAuth()),
-		console: v1.Group("", a.accounts.UserAuth()),
+		public:  v1.Group("", l.public.Middleware(byClientIP)),
+		agent:   v1.Group("", a.accounts.AgentAuth(), l.agent.Middleware(byAgent)),
+		console: v1.Group("", a.accounts.UserAuth(), l.console.Middleware(byUser)),
 	}
 
-	a.surfaces.public.GET("/health", a.health)
+	a.accounts.RegisterPublicRoutes(a.surfaces.public)
 	a.mandates.RegisterConsoleRoutes(a.surfaces.console)
+}
+
+// byClientIP counts against the address server.New's trusted proxies let
+// c.ClientIP believe, so a client cannot pick its own.
+func byClientIP(c *gin.Context) (string, bool) {
+	ip := c.ClientIP()
+	return ip, ip != ""
+}
+
+func byAgent(c *gin.Context) (string, bool) {
+	agent, ok := caller.AgentFrom(c.Request.Context())
+	return string(agent.AgentID), ok
+}
+
+func byUser(c *gin.Context) (string, bool) {
+	user, ok := caller.UserFrom(c.Request.Context())
+	return string(user.UserID), ok
 }
 
 // errNoMailTransport stops the API starting where it cannot send email
