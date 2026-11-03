@@ -5,6 +5,7 @@ import (
 	"net/mail"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/CleargateFinance/cleargate-core/internal/infrastructure/crypto"
@@ -199,6 +200,30 @@ func ValidatePassword(password string) error {
 	}
 	if len(password) > crypto.MaxPasswordLength {
 		return errInvalid("password is too long")
+	}
+	return nil
+}
+
+// MaxDisplayNameLength bounds an account's name, in characters. Sign-up is
+// unauthenticated, so without a bound anyone could store a page of text per
+// request.
+const MaxDisplayNameLength = 100
+
+// ValidateDisplayName reports whether a name can be stored and shown. Postgres
+// refuses NUL and invalid UTF-8, so letting either through would turn a typo
+// into a 500; control characters are refused because the name is printed in
+// emails and the console, where a newline can forge a second line.
+func ValidateDisplayName(name string) error {
+	if !utf8.ValidString(name) {
+		return errInvalid("display name is not valid text")
+	}
+	if utf8.RuneCountInString(name) > MaxDisplayNameLength {
+		return errInvalid(fmt.Sprintf("display name must be at most %d characters", MaxDisplayNameLength))
+	}
+	for _, r := range name {
+		if unicode.IsControl(r) {
+			return errInvalid("display name cannot contain control characters")
+		}
 	}
 	return nil
 }

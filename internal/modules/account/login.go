@@ -29,6 +29,15 @@ type LoginParams struct {
 // is nothing left to leak, so those answers can be specific and useful.
 func (s *Service) Login(ctx context.Context, p LoginParams) (crypto.Token, Session, error) {
 	email := NormalizeEmail(p.Email)
+
+	// Refused before the address is looked up. The hasher rejects a password
+	// this long, and it only gets the chance where a stored hash exists, so
+	// checking later would answer a registered address differently from an
+	// unknown one. The email bound keeps the throttle key small.
+	if len(p.Password) > crypto.MaxPasswordLength || len(email) > MaxEmailLength {
+		return crypto.Token{}, Session{}, errInvalid("email or password is too long")
+	}
+
 	key := ThrottleKey("login", p.IP, email)
 
 	// the throttle check runs before anything touches the database or hashes a password

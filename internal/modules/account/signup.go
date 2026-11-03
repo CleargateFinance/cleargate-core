@@ -49,6 +49,9 @@ func (s *Service) Signup(ctx context.Context, p SignupParams) error {
 	if err := ValidatePassword(p.Password); err != nil {
 		return err
 	}
+	if err := ValidateDisplayName(p.DisplayName); err != nil {
+		return err
+	}
 
 	// Hashing happens before the address is looked up, so the expensive part
 	// of the request runs identically on both paths. Doing it only for new

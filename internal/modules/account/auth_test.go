@@ -5,6 +5,7 @@ package account
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -197,6 +198,11 @@ func TestSignup_RejectsWeakOrMalformedInput(t *testing.T) {
 		"empty email":     {Email: "", Password: goodPassword},
 		"malformed email": {Email: "not-an-address", Password: goodPassword},
 		"email with name": {Email: "Anna <anna@example.com>", Password: goodPassword},
+		"long name": {Email: "b@example.com", Password: goodPassword,
+			DisplayName: strings.Repeat("n", MaxDisplayNameLength+1)},
+		"name with a nul":     {Email: "c@example.com", Password: goodPassword, DisplayName: "acme\x00"},
+		"name not utf-8":      {Email: "d@example.com", Password: goodPassword, DisplayName: "acme\xff"},
+		"name with a newline": {Email: "e@example.com", Password: goodPassword, DisplayName: "acme\nltd"},
 	}
 
 	for name, params := range cases {
@@ -321,6 +327,23 @@ func TestLogin_UnknownAndWrongPasswordAreIndistinguishable(t *testing.T) {
 		"an unknown address and a wrong password must be indistinguishable")
 	assert.ErrorIs(t, unknownErr, ErrCredentialsInvalid)
 	assert.ErrorIs(t, wrongErr, ErrCredentialsInvalid)
+}
+
+// TestLogin_OverlongPasswordAnswersAlikeForKnownAndUnknown: a password past
+// what the hasher accepts must not fail only where there is a hash to verify
+// it against, or its length tells a prober which addresses are registered.
+func TestLogin_OverlongPasswordAnswersAlikeForKnownAndUnknown(t *testing.T) {
+	ctx := context.Background()
+	f := newAuthFixture(t)
+	f.signupAndVerify(t, "real@example.com")
+	long := strings.Repeat("p", crypto.MaxPasswordLength+1)
+
+	_, _, knownErr := f.svc.Login(ctx, LoginParams{Email: "real@example.com", Password: long})
+	_, _, unknownErr := f.svc.Login(ctx, LoginParams{Email: "nobody@example.com", Password: long})
+
+	require.Error(t, knownErr)
+	assert.Equal(t, apperr.KindInvalid, apperr.KindOf(knownErr))
+	assert.Equal(t, unknownErr.Error(), knownErr.Error())
 }
 
 // TestLogin_SuspendedUserIsNotRevealedByWrongPassword pins the order of the
