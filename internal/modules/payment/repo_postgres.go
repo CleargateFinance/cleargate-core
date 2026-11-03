@@ -34,13 +34,13 @@ func (r *postgresRepo) InsertPayment(ctx context.Context, p Payment) (id.Payment
 	var out string
 	err := r.db.QueryRow(ctx, `
 		INSERT INTO payment (account_id, agent_id, amount, asset, category, pay_to, resource_url,
-		                     rail, token, network, status, decided_at, resolved_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		                     rail, token, network, status, decided_at, resolved_at, counterparty_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 		RETURNING id`,
 		string(p.AccountID), string(p.AgentID), p.Amount.Decimal(), string(p.Amount.Asset()),
 		nullable(p.Category), nullable(p.PayTo), nullable(p.ResourceURL),
 		p.Rail.Name, p.Rail.Token, p.Rail.Network,
-		string(p.Status), p.DecidedAt, resolvedAt,
+		string(p.Status), p.DecidedAt, resolvedAt, p.CounterpartyID,
 	).Scan(&out)
 	if err != nil {
 		return "", fmt.Errorf("payment: insert payment: %w", err)

@@ -37,6 +37,7 @@ type Service struct {
 	uow       database.UnitOfWork
 	accounts  Accounts
 	mandates  Mandates
+	payees    Counterparties
 	ledger    Ledger
 	decisions DecisionLog
 	events    Outbox
@@ -126,6 +127,17 @@ func (s *Service) authorizeOnce(ctx context.Context, req Request, hash []byte) (
 	if err != nil {
 		return Result{}, err
 	}
+	// Resolved outside the transaction, so a counterparty can outlive a
+	// payment that then fails. It was still observed: an agent tried to pay
+	// it, and the directory is built from exactly that (Task 5.5).
+	payee, err := s.payees.Resolve(ctx, Payee{
+		ResourceURL: req.Signals.ResourceURL,
+		Network:     s.rail.Network,
+		PayTo:       req.PayTo,
+	})
+	if err != nil {
+		return Result{}, err
+	}
 
 	snap := authz.Snapshot{
 		AccountBlocked: blocked,
@@ -170,6 +182,8 @@ func (s *Service) authorizeOnce(ctx context.Context, req Request, hash []byte) (
 			Rail:        s.rail,
 			Status:      res.Status,
 			DecidedAt:   now,
+
+			CounterpartyID: payee,
 		})
 		if err != nil {
 			return err

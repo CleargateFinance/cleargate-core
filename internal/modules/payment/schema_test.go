@@ -386,6 +386,18 @@ func TestPayment_StatusMovesForwardOnce(t *testing.T) {
 	_, err = f.db.Exec(ctx, `UPDATE payment SET amount = 1000 WHERE id = $1`, declined)
 	assert.Error(t, err, "the request is immutable")
 
+	var counterpartyID string
+	require.NoError(t, f.db.QueryRow(ctx, `
+		INSERT INTO counterparty (kind, network, address, first_seen_at)
+		VALUES ('address', $1, 'someone-else', now()) RETURNING id`, devnet).Scan(&counterpartyID))
+	// Riding on a settlement, the one update a payment allows, so nothing
+	// but the guard on counterparty_id can refuse it.
+	open, err := f.record(f.approved())
+	require.NoError(t, err)
+	_, err = f.db.Exec(ctx, `UPDATE payment SET status = 'settled', resolved_at = $2, counterparty_id = $3 WHERE id = $1`,
+		open, later, counterpartyID)
+	assert.Error(t, err, "who a payment was made to is part of its request")
+
 	_, err = f.db.Exec(ctx, `DELETE FROM payment WHERE id = $1`, declined)
 	assert.Error(t, err)
 }
