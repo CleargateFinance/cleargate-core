@@ -31,9 +31,16 @@ func sealContext(userID id.UserID, factorType MFAFactorType) string {
 // Starting again simply replaces any pending secret. Re-enrolling over a
 // *confirmed* factor is refused: that is a credential replacement, and it runs
 // through removal, which is itself step-up gated.
-func (s *Service) BeginTOTPEnrolment(ctx context.Context, userID id.UserID, accountName string) (crypto.TOTPEnrolment, error) {
+//
+// The code is labelled with the person's own address, which is what their
+// authenticator app lists it under, so the caller cannot label it otherwise.
+func (s *Service) BeginTOTPEnrolment(ctx context.Context, userID id.UserID) (crypto.TOTPEnrolment, error) {
 	if userID == "" {
 		return crypto.TOTPEnrolment{}, errInvalid("enrolment needs a user")
+	}
+	user, err := s.repo.UserByID(ctx, userID)
+	if err != nil {
+		return crypto.TOTPEnrolment{}, err
 	}
 
 	existing, err := s.repo.MFAFactor(ctx, userID, FactorTOTP)
@@ -44,7 +51,7 @@ func (s *Service) BeginTOTPEnrolment(ctx context.Context, userID id.UserID, acco
 		return crypto.TOTPEnrolment{}, err
 	}
 
-	generated, err := crypto.NewTOTPEnrolment(s.mfaIssuer, accountName)
+	generated, err := crypto.NewTOTPEnrolment(s.mfaIssuer, user.Email)
 	if err != nil {
 		return crypto.TOTPEnrolment{}, err
 	}

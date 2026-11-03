@@ -93,7 +93,7 @@ func (f *memberFixture) addMemberWithMFA(t *testing.T, email string, role Permis
 	plaintext, session, err := f.svc.AcceptInviteAsNewUser(ctx, token, goodPassword, "203.0.113.9", "test")
 	require.NoError(t, err)
 
-	enrolment, err := f.svc.BeginTOTPEnrolment(ctx, session.UserID, email)
+	enrolment, err := f.svc.BeginTOTPEnrolment(ctx, session.UserID)
 	require.NoError(t, err)
 
 	_, err = f.svc.ConfirmTOTPEnrolment(ctx, session.UserID,

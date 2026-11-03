@@ -104,7 +104,7 @@ func (f *mfaFixture) enrol(t *testing.T) (secret string, recoveryCodes []string)
 	t.Helper()
 	ctx := context.Background()
 
-	enrolment, err := f.svc.BeginTOTPEnrolment(ctx, f.user, f.email)
+	enrolment, err := f.svc.BeginTOTPEnrolment(ctx, f.user)
 	require.NoError(t, err)
 
 	codes, err := f.svc.ConfirmTOTPEnrolment(ctx, f.user,
@@ -127,7 +127,7 @@ func TestTOTPEnrolment_RequiresConfirmingCode(t *testing.T) {
 	ctx := context.Background()
 	f := newMFAFixture(t)
 
-	enrolment, err := f.svc.BeginTOTPEnrolment(ctx, f.user, f.email)
+	enrolment, err := f.svc.BeginTOTPEnrolment(ctx, f.user)
 	require.NoError(t, err)
 	require.NotEmpty(t, enrolment.Secret)
 
@@ -310,7 +310,7 @@ func TestEnrolment_CannotSilentlyReplaceAConfirmedFactor(t *testing.T) {
 
 	f.enrol(t)
 
-	_, err := f.svc.BeginTOTPEnrolment(ctx, f.user, f.email)
+	_, err := f.svc.BeginTOTPEnrolment(ctx, f.user)
 	assert.ErrorIs(t, err, ErrMFAAlreadyEnrolled)
 }
 
@@ -320,10 +320,10 @@ func TestEnrolment_CanBeRestartedBeforeConfirming(t *testing.T) {
 	ctx := context.Background()
 	f := newMFAFixture(t)
 
-	abandoned, err := f.svc.BeginTOTPEnrolment(ctx, f.user, f.email)
+	abandoned, err := f.svc.BeginTOTPEnrolment(ctx, f.user)
 	require.NoError(t, err)
 
-	restarted, err := f.svc.BeginTOTPEnrolment(ctx, f.user, f.email)
+	restarted, err := f.svc.BeginTOTPEnrolment(ctx, f.user)
 	require.NoError(t, err)
 	require.NotEqual(t, abandoned.Secret, restarted.Secret)
 
@@ -451,7 +451,7 @@ func TestSatisfyTOTP_RequiresAConfirmedFactor(t *testing.T) {
 	ctx := context.Background()
 	f := newMFAFixture(t)
 
-	enrolment, err := f.svc.BeginTOTPEnrolment(ctx, f.user, f.email)
+	enrolment, err := f.svc.BeginTOTPEnrolment(ctx, f.user)
 	require.NoError(t, err)
 
 	token, _ := f.session(t)
