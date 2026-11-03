@@ -690,9 +690,11 @@ Schema per [data-architecture.md](data-architecture.md) §5.3.
 
 **Not in MVP**, except resolve-or-create keyed by endpoint and `payTo` address: every payment needs a payee id.
 
+**Built** (the MVP part) in `migrations/000008_counterparty.up.sql` and `internal/modules/counterparty`. `Authorize` resolves the payee before it decides and records `payment.counterparty_id`. The identity rule is in the Revision notes for 3 November 2026. The tests are `internal/modules/counterparty/domain_test.go`, `repo_postgres_test.go`, and `TestAuthorize_EveryPaymentNamesItsCounterparty`.
+
 Counterparty is its **own entity, never a column on an account** (§4.1). It may be an external endpoint or another account, and reputation attaches to the counterparty rather than to whoever it turns out to belong to — which is what lets a record accumulate before anyone signs up and be *linked* to an account later without losing its history.
 
-- [ ] Every payment resolves or creates a counterparty record, keyed by endpoint identity.
+- [x] Every payment resolves or creates a counterparty record, keyed by endpoint identity.
 - [ ] Two listing tiers (§11): `observed` — created by routed traffic, limited display — and `registered` — claimed by a verified payee, full statistics. An observed listing carries a claim hook.
 - [ ] Record **payment observed** and **delivery observed** as two distinct facts. Never collapse them into one status: we always know the first, and know the second only where delivery was confirmed.
 - [ ] Linking an observed record to an account later must preserve its accumulated history.
@@ -1112,6 +1114,14 @@ Tasks marked **Not in MVP** are outside this total. Phase 6 grows because no han
 ---
 
 ## Revision notes
+
+**3 November 2026, Task 5.5 counterparty identity (owner decision).** A counterparty is identified by the endpoint the agent reports paying for, normalised to host and path: lower-case ASCII host, no default port or trailing dot, cleaned path, and no scheme, user info, query or fragment. The query is left out because it varies per request and can carry an API key. Its registrable domain (from the public suffix list) and its host are stored beside it, the two levels data-architecture.md §4.4 scores distrust at. With no usable URL, the payee is the network and `payTo` address the money went to. A payment that names neither has no counterparty and can still be judged.
+
+- **Why the endpoint and not the address.** A merchant keeps its endpoint but can rotate its address for nothing, so reputation keyed to the address would reset on every rotation. The address stays on each payment, so an address change behind a known endpoint is visible. The URL is the agent's own report, though, and a compromised agent can name a reputable endpoint for a payment that went elsewhere. Scoring (not in the MVP) must weigh the endpoint against the address before trusting either.
+- **The table is a projection of facts that are kept.** `pay_to`, `resource_url` and `network` stay on every payment, so the counterparties can be rebuilt if the rule changes.
+- **Enforced in the database:** `canonical_key` is generated from the identity columns and unique, identity columns are immutable, a counterparty is never deleted and is claimed once, and `payment.counterparty_id` joins the payment's immutable request.
+- **Resolved outside the payment's transaction**, so a counterparty can outlive a payment that then fails. It was still observed, and the directory is built from observations.
+- **Paths are kept whole.** An endpoint with an identifier in its path (`/v1/orders/123`) becomes one counterparty per identifier. Grouping those needs the merchant's own description of its routes, which arrives with registered listings.
 
 **3 November 2026, Tasks 5.2 and 5.3.** Built `Authorize`. Differences from the tasks as written:
 
