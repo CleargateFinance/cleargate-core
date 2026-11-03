@@ -102,6 +102,140 @@ func (m *Module) RegisterPublicRoutes(rg *gin.RouterGroup) {
 	auth.POST("/password/reset", m.resetPassword)
 }
 
+// RegisterConsoleRoutes adds the second-factor routes (Task 2.4). Pass the
+// console group: each acts on the signed-in person's own factor, and a
+// session is the only thing that names them.
+func (m *Module) RegisterConsoleRoutes(rg *gin.RouterGroup) {
+	mfa := rg.Group("/mfa")
+	mfa.GET("", m.mfaStatus)
+	mfa.POST("/totp", m.beginTOTP)
+	mfa.POST("/totp/confirm", m.confirmTOTP)
+	mfa.POST("/step-up", m.stepUp)
+}
+
+var (
+	errNoConsoleSession = apperr.Internal("account: route reached without a console session", nil)
+	errOneCode          = apperr.Invalid("send exactly one of code or recovery_code")
+)
+
+type mfaStatusResponse struct {
+	TOTP bool `json:"totp"`
+}
+
+type totpEnrolmentResponse struct {
+	Secret string `json:"secret"`
+	URI    string `json:"uri"`
+}
+
+type recoveryCodesResponse struct {
+	RecoveryCodes []string `json:"recovery_codes"`
+}
+
+type stepUpBody struct {
+	Code         string `json:"code"`
+	RecoveryCode string `json:"recovery_code"`
+}
+
+type stepUpResponse struct {
+	MFASatisfiedAt *time.Time `json:"mfa_satisfied_at"`
+}
+
+// mfaStatus tells the console whether to offer enrolment or ask for a code,
+// without it having to attempt a gated action first.
+func (m *Module) mfaStatus(c *gin.Context) {
+	user, ok := consoleUser(c)
+	if !ok {
+		return
+	}
+	enrolled, err := m.svc.MFAEnrolled(c.Request.Context(), Session{UserID: user.UserID})
+	if err != nil {
+		abort(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, mfaStatusResponse{TOTP: enrolled})
+}
+
+// beginTOTP returns the shared secret once, for the console to render as a QR
+// code. It is not stored in the clear anywhere, so the response must not be
+// either.
+func (m *Module) beginTOTP(c *gin.Context) {
+	user, ok := consoleUser(c)
+	if !ok {
+		return
+	}
+	enrolment, err := m.svc.BeginTOTPEnrolment(c.Request.Context(), user.UserID)
+	if err != nil {
+		abort(c, err)
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	c.JSON(http.StatusOK, totpEnrolmentResponse{Secret: enrolment.Secret, URI: enrolment.URI})
+}
+
+// confirmTOTP completes enrolment and returns the recovery codes, the only
+// time they exist in the clear.
+func (m *Module) confirmTOTP(c *gin.Context) {
+	user, ok := consoleUser(c)
+	if !ok {
+		return
+	}
+	var body stepUpBody
+	if !bind(c, &body) {
+		return
+	}
+	ip, ua := client(c)
+	codes, err := m.svc.ConfirmTOTPEnrolment(c.Request.Context(), user.UserID, body.Code, ip, ua)
+	if err != nil {
+		abort(c, err)
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	c.JSON(http.StatusOK, recoveryCodesResponse{RecoveryCodes: codes})
+}
+
+// stepUp starts the session's step-up window with an authenticator code or,
+// for someone whose phone is gone, one recovery code.
+func (m *Module) stepUp(c *gin.Context) {
+	if _, ok := consoleUser(c); !ok {
+		return
+	}
+	var body stepUpBody
+	if !bind(c, &body) {
+		return
+	}
+	if (body.Code == "") == (body.RecoveryCode == "") {
+		abort(c, errOneCode)
+		return
+	}
+
+	// The service marks the session the cookie names, which UserAuth has
+	// already validated.
+	token, _ := c.Cookie(SessionCookie)
+	ip, ua := client(c)
+	var session Session
+	var err error
+	if body.Code != "" {
+		session, err = m.svc.SatisfyTOTP(c.Request.Context(), token, body.Code, ip, ua)
+	} else {
+		session, err = m.svc.SatisfyRecoveryCode(c.Request.Context(), token, body.RecoveryCode, ip, ua)
+	}
+	if err != nil {
+		abort(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, stepUpResponse{MFASatisfiedAt: session.MFASatisfiedAt})
+}
+
+// consoleUser is the person UserAuth signed in. Its absence means the route
+// was registered outside the console group, and the request is refused.
+func consoleUser(c *gin.Context) (caller.User, bool) {
+	user, ok := caller.UserFrom(c.Request.Context())
+	if !ok {
+		abort(c, errNoConsoleSession)
+	}
+	return user, ok
+}
+
 // maxAuthBody bounds what an unauthenticated caller can make the server read.
 // The largest honest body is a password at crypto.MaxPasswordLength plus an
 // address and a name.
