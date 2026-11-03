@@ -68,6 +68,11 @@ func (a PaymentAccounts) SpendingBlocked(ctx context.Context, accountID id.Accou
 	return a.Accounts.SpendingBlocked(ctx, accountID)
 }
 
+// HoldSpending implements payment.Accounts.
+func (a PaymentAccounts) HoldSpending(ctx context.Context, accountID id.AccountID, agentID id.AgentID) (bool, error) {
+	return a.Accounts.HoldSpending(ctx, accountID, agentID)
+}
+
 // PaymentMandates satisfies payment.Mandates with the mandate module.
 type PaymentMandates struct {
 	Mandates *mandate.Service
@@ -101,6 +106,11 @@ func (m PaymentMandates) Current(ctx context.Context, agentID id.AgentID) (*paym
 			ExpiresAt:   r.ExpiresAt,
 		},
 	}, nil
+}
+
+// HoldCurrent implements payment.Mandates.
+func (m PaymentMandates) HoldCurrent(ctx context.Context, agentID id.AgentID, mandateID id.MandateID) (bool, error) {
+	return m.Mandates.HoldCurrent(ctx, agentID, mandateID)
 }
 
 // PaymentLedger satisfies payment.Ledger with the ledger module.

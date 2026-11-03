@@ -112,6 +112,21 @@ func (s *Service) Current(ctx context.Context, agentID id.AgentID) (Mandate, err
 	return s.verified(m)
 }
 
+// HoldCurrent reports whether m is still the agent's mandate in force, and
+// holds it until the caller's transaction commits.
+//
+// The payment path reads the mandate before deciding. Holding it inside the
+// payment's transaction makes a new version wait for payments already
+// committing against the old one, so once Issue returns, every payment is
+// checked against the new authority.
+func (s *Service) HoldCurrent(ctx context.Context, agentID id.AgentID, mandateID id.MandateID) (bool, error) {
+	held, err := s.repo.HoldActive(ctx, agentID)
+	if err != nil {
+		return false, err
+	}
+	return held == mandateID, nil
+}
+
 // At returns the mandate that was in force for an agent at an instant: the
 // question a dispute asks about a payment made then.
 func (s *Service) At(ctx context.Context, agentID id.AgentID, at time.Time) (Mandate, error) {

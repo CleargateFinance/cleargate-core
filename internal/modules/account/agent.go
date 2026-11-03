@@ -176,6 +176,18 @@ func (s *Service) SpendingBlocked(ctx context.Context, accountID id.AccountID) (
 	return s.repo.SpendingBlocked(ctx, accountID)
 }
 
+// HoldSpending re-checks, inside the payment's transaction, that the account
+// may spend and the agent is active, and holds both rows until it commits.
+//
+// The payment path reads these before deciding, outside any transaction, so
+// a freeze or a revocation could otherwise commit in between and still be
+// followed by an approval. Holding the rows makes a freeze wait for payments
+// already committing, and every payment after it sees the freeze: freezing is
+// instant (Task 2.8), not instant except for whatever was in flight.
+func (s *Service) HoldSpending(ctx context.Context, accountID id.AccountID, agentID id.AgentID) (bool, error) {
+	return s.repo.HoldSpending(ctx, accountID, agentID)
+}
+
 // RequireMandateIssuer reports whether a session may grant an agent spending
 // authority in this account.
 //

@@ -68,7 +68,7 @@ func (s *Service) Authorize(ctx context.Context, req Request) (Result, error) {
 		case errors.Is(err, errKeyTaken):
 			// The concurrent request's result is now committed, so answer
 			// with it, exactly as a later retry would be answered.
-			res, found, err := s.remembered(ctx, req, hash)
+			res, found, err := s.remembered(ctx, req, hash, s.clock.Now().UTC())
 			if err == nil && !found {
 				err = apperr.Internal("payment: idempotency key taken but not readable", nil)
 			}
@@ -86,10 +86,12 @@ func (s *Service) Authorize(ctx context.Context, req Request) (Result, error) {
 func (s *Service) authorizeOnce(ctx context.Context, req Request, hash []byte) (Result, error) {
 	// One instant for the whole decision: the payment, the decision, the
 	// posting, the counters and the key all carry it, so a later release
-	// lands in the same counter windows (Task 7.7).
-	now := s.clock.Now().UTC()
+	// lands in the same counter windows (Task 7.7). start keeps the monotonic
+	// reading that UTC() strips, so latency survives a wall-clock step.
+	start := s.clock.Now()
+	now := start.UTC()
 
-	if res, found, err := s.remembered(ctx, req, hash); err != nil || found {
+	if res, found, err := s.remembered(ctx, req, hash, now); err != nil || found {
 		return res, err // §8.4: a retry is free and changes nothing
 	}
 
@@ -154,7 +156,7 @@ func (s *Service) authorizeOnce(ctx context.Context, req Request, hash []byte) (
 	if d.Approved() {
 		res.Status = StatusAuthorized
 	}
-	latency := s.clock.Now().Sub(now)
+	latency := max(s.clock.Now().Sub(start), 0)
 
 	// --- Persist. One transaction, all or nothing.
 	err = s.uow.Do(ctx, func(ctx context.Context) error {
@@ -221,13 +223,28 @@ func (s *Service) authorizeOnce(ctx context.Context, req Request, hash []byte) (
 
 // charge debits the account and counts the spend, inside the transaction.
 //
-// The reads before Decide were a snapshot, and a concurrent payment may have
-// spent the same funds or budget since. Both writes here are atomic and
-// report the state after them, so this is where a lost race is caught (§8.5):
-// the debit refuses to overdraw, and a counter past its cap means the
-// snapshot was stale. Either way the transaction rolls back and Authorize
-// decides again on fresh inputs, which then records the decline.
+// The reads before Decide were a snapshot, and two kinds of change can land
+// after it. A freeze, a revocation or a new mandate version is re-checked
+// first, with the rows held until commit, so the change either waits for this
+// payment or this payment sees it. A concurrent payment spending the same
+// funds or budget is caught by the writes themselves, which are atomic and
+// report the state after them (§8.5): the debit refuses to overdraw, and a
+// counter past its cap means the snapshot was stale. Any of these rolls the
+// transaction back, and Authorize decides again on fresh inputs, which then
+// records the decline.
 func (s *Service) charge(ctx context.Context, req Request, m *Mandate, paymentID id.PaymentID, now time.Time) error {
+	spendable, err := s.accounts.HoldSpending(ctx, req.AccountID, req.AgentID)
+	if err != nil {
+		return err
+	}
+	current, err := s.mandates.HoldCurrent(ctx, req.AgentID, m.ID)
+	if err != nil {
+		return err
+	}
+	if !spendable || !current {
+		return errRaceLost
+	}
+
 	funded, err := s.ledger.Debit(ctx, Debit{
 		PaymentID: paymentID,
 		AccountID: req.AccountID,
@@ -262,10 +279,13 @@ func (s *Service) charge(ctx context.Context, req Request, m *Mandate, paymentID
 }
 
 // remembered returns the stored answer for this request's key, if it is
-// still within retention. A stored answer for a different request is a
-// conflict.
-func (s *Service) remembered(ctx context.Context, req Request, hash []byte) (Result, bool, error) {
-	k, found, err := s.repo.Remembered(ctx, req.AccountID, req.IdempotencyKey, s.clock.Now().Add(-KeyRetention))
+// still within retention at now. A stored answer for a different request is
+// a conflict.
+//
+// now must be the instant Remember will expire keys against, or a key that
+// expires between the two reads is neither replayed nor replaced.
+func (s *Service) remembered(ctx context.Context, req Request, hash []byte, now time.Time) (Result, bool, error) {
+	k, found, err := s.repo.Remembered(ctx, req.AccountID, req.IdempotencyKey, now.Add(-KeyRetention))
 	if err != nil || !found {
 		return Result{}, false, err
 	}

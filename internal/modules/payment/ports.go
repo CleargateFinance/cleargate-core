@@ -66,6 +66,11 @@ type Accounts interface {
 
 	// SpendingBlocked reports whether the account is suspended or frozen.
 	SpendingBlocked(ctx context.Context, accountID id.AccountID) (bool, error)
+
+	// HoldSpending reports whether the account may still spend and the agent
+	// is still active, and holds both until the transaction on ctx ends, so a
+	// freeze or revocation cannot commit between this check and the payment.
+	HoldSpending(ctx context.Context, accountID id.AccountID, agentID id.AgentID) (bool, error)
 }
 
 // Agent is what this module needs to know about the agent paying.
@@ -80,6 +85,11 @@ type Mandates interface {
 	// Current returns the agent's mandate in force now, or nil when it has
 	// none. Having none is an input to the decision, not an error (Task 4.1).
 	Current(ctx context.Context, agentID id.AgentID) (*Mandate, error)
+
+	// HoldCurrent reports whether mandateID is still the one in force, and
+	// holds it until the transaction on ctx ends, so a new version cannot
+	// commit between this check and the payment.
+	HoldCurrent(ctx context.Context, agentID id.AgentID, mandateID id.MandateID) (bool, error)
 }
 
 // Mandate is the authority a payment is checked against, with what the

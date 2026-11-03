@@ -66,6 +66,28 @@ type authorizeFixture struct {
 	// data_api only. bareAgentID, on the same account, holds none.
 	agentID     id.AgentID
 	bareAgentID id.AgentID
+	userID      string
+}
+
+// issueMandate makes version the agent's mandate in force, superseding the
+// one before it the way mandate issuance does.
+func (f *authorizeFixture) issueMandate(version int, maxPerTx string) {
+	ctx := context.Background()
+	payload := fmt.Sprintf(`{"agent_id":%q,"asset":"USD","categories":["data_api"],`+
+		`"expires_at":"2030-01-01T00:00:00Z","format":1,"max_per_day":"100",`+
+		`"max_per_month":"200","max_per_tx":%q,"pay_to":[],"version":%d}`, f.agentID, maxPerTx, version)
+	require.NoError(f.t, f.db.UoW.Do(ctx, func(ctx context.Context) error {
+		if _, err := f.db.Exec(ctx, `
+			UPDATE mandate SET status = 'superseded', effective_to = GREATEST(now(), effective_from)
+			WHERE agent_id = $1 AND status = 'active'`, string(f.agentID)); err != nil {
+			return err
+		}
+		_, err := f.db.Exec(ctx,
+			`INSERT INTO mandate (agent_id, version, payload, signature_scheme, signed_by, status, effective_from)
+			 VALUES ($1, $2, $3, 'session_stepup', $4, 'active', $5)`,
+			string(f.agentID), version, []byte(payload), f.userID, f.clock.Now().Add(-time.Hour))
+		return err
+	}))
 }
 
 func newAuthorizeFixture(t *testing.T, balance string) *authorizeFixture {
@@ -91,16 +113,9 @@ func newAuthorizeFixture(t *testing.T, balance string) *authorizeFixture {
 	require.NoError(t, db.QueryRow(ctx,
 		`INSERT INTO agent (account_id, name) VALUES ($1, 'idle') RETURNING id`, accountID).Scan(&bareAgentID))
 
-	payload := fmt.Sprintf(`{"agent_id":%q,"asset":"USD","categories":["data_api"],`+
-		`"expires_at":"2030-01-01T00:00:00Z","format":1,"max_per_day":"100",`+
-		`"max_per_month":"200","max_per_tx":"20","pay_to":[],"version":1}`, agentID)
-	_, err := db.Exec(ctx,
-		`INSERT INTO mandate (agent_id, version, payload, signature_scheme, signed_by, status, effective_from)
-		 VALUES ($1, 1, $2, 'session_stepup', $3, 'active', $4)`,
-		agentID, []byte(payload), userID, clock.now.Add(-time.Hour))
-	require.NoError(t, err)
-
 	f.accountID, f.agentID, f.bareAgentID = id.AccountID(accountID), id.AgentID(agentID), id.AgentID(bareAgentID)
+	f.userID = userID
+	f.issueMandate(1, "20")
 	f.fund(balance)
 
 	f.deps = payment.Deps{
@@ -495,4 +510,120 @@ func TestIdempotencyKey_ExpiresAfterRetention(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), deleted)
 	assert.Zero(t, f.count(`SELECT count(*) FROM idempotency_key`))
+}
+
+// hookedLedger runs a hook once, after the last read Authorize makes before
+// its transaction, so a test can land a change exactly in that gap. Debit can
+// be paused, to hold a payment inside its transaction.
+type hookedLedger struct {
+	payment.Ledger
+	once        *sync.Once
+	afterReads  func()
+	debitEnters chan struct{}
+	debitWaits  chan struct{}
+}
+
+func (l hookedLedger) Balance(ctx context.Context, accountID id.AccountID, asset currency.Asset) (currency.Amount, error) {
+	b, err := l.Ledger.Balance(ctx, accountID, asset)
+	if l.afterReads != nil {
+		l.once.Do(l.afterReads)
+	}
+	return b, err
+}
+
+func (l hookedLedger) Debit(ctx context.Context, d payment.Debit) (bool, error) {
+	if l.debitEnters != nil {
+		close(l.debitEnters)
+		<-l.debitWaits
+	}
+	return l.Ledger.Debit(ctx, d)
+}
+
+func (f *authorizeFixture) afterReads(hook func()) {
+	f.deps.Ledger = hookedLedger{Ledger: f.deps.Ledger, once: &sync.Once{}, afterReads: hook}
+	f.rebuild()
+}
+
+// TestAuthorize_FreezeAfterTheReadsStillStopsThePayment: freezing is instant
+// (Task 2.8). A payment that read the account before the freeze committed
+// must not be approved after it.
+func TestAuthorize_FreezeAfterTheReadsStillStopsThePayment(t *testing.T) {
+	f := newAuthorizeFixture(t, "50")
+	f.afterReads(func() {
+		_, err := f.db.Exec(context.Background(), `UPDATE account SET frozen_at = now() WHERE id = $1`, string(f.accountID))
+		require.NoError(t, err)
+	})
+
+	res, err := f.svc.Authorize(context.Background(), f.request("k1", "0.40"))
+	require.NoError(t, err)
+
+	assert.Equal(t, authz.ReasonAccountBlocked, res.ReasonCode, "decided again, and recorded as the decline it became")
+	assert.Equal(t, "50", f.balance())
+	assert.Zero(t, f.paymentPostings())
+}
+
+func TestAuthorize_RevocationAfterTheReadsStillStopsThePayment(t *testing.T) {
+	f := newAuthorizeFixture(t, "50")
+	f.afterReads(func() {
+		_, err := f.db.Exec(context.Background(),
+			`UPDATE agent SET status = 'revoked', revoked_at = now() WHERE id = $1`, string(f.agentID))
+		require.NoError(t, err)
+	})
+
+	_, err := f.svc.Authorize(context.Background(), f.request("k1", "0.40"))
+
+	require.ErrorIs(t, err, payment.ErrAgentRevoked)
+	assert.Equal(t, "50", f.balance())
+	assert.Zero(t, f.payments())
+}
+
+// TestAuthorize_NewMandateAfterTheReadsIsTheOneApplied: once a new version
+// is issued, no payment is approved against the old one.
+func TestAuthorize_NewMandateAfterTheReadsIsTheOneApplied(t *testing.T) {
+	f := newAuthorizeFixture(t, "50")
+	f.afterReads(func() { f.issueMandate(2, "0.10") })
+
+	res, err := f.svc.Authorize(context.Background(), f.request("k1", "0.40"))
+	require.NoError(t, err)
+
+	assert.Equal(t, authz.ReasonOverPerTxCap, res.ReasonCode)
+	assert.Equal(t, 1, f.count(`SELECT count(*) FROM decision WHERE payment_id = $1 AND mandate_version = 2`,
+		string(res.PaymentID)))
+	assert.Equal(t, "50", f.balance())
+}
+
+// TestAuthorize_FreezeWaitsForAPaymentAlreadyCommitting: the other order. A
+// payment holding the account inside its transaction makes a freeze wait,
+// so when the freeze returns, nothing approved can still be on its way.
+func TestAuthorize_FreezeWaitsForAPaymentAlreadyCommitting(t *testing.T) {
+	f := newAuthorizeFixture(t, "50")
+	enters, waits := make(chan struct{}), make(chan struct{})
+	f.deps.Ledger = hookedLedger{Ledger: f.deps.Ledger, debitEnters: enters, debitWaits: waits}
+	f.rebuild()
+	// Registered after the fixture, so it runs before the database closes:
+	// a failed assertion must still let the paused payment finish, or closing
+	// the pool waits for its connection forever.
+	release := sync.OnceFunc(func() { close(waits) })
+	t.Cleanup(release)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := f.svc.Authorize(context.Background(), f.request("k1", "0.40"))
+		done <- err
+	}()
+	<-enters
+
+	err := f.db.UoW.Do(context.Background(), func(ctx context.Context) error {
+		if _, err := f.db.Exec(ctx, `SET LOCAL lock_timeout = '200ms'`); err != nil {
+			return err
+		}
+		_, err := f.db.Exec(ctx, `UPDATE account SET frozen_at = now() WHERE id = $1`, string(f.accountID))
+		return err
+	})
+	require.Error(t, err, "the freeze must wait for the payment holding the account")
+	assert.Contains(t, err.Error(), "lock timeout")
+
+	release()
+	require.NoError(t, <-done)
+	assert.Equal(t, "49.6", f.balance())
 }

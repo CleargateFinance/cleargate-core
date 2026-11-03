@@ -72,6 +72,13 @@ func (f *fakeRepo) ActiveAt(ctx context.Context, agentID id.AgentID, _ time.Time
 	return f.Active(ctx, agentID)
 }
 
+func (f *fakeRepo) HoldActive(context.Context, id.AgentID) (id.MandateID, error) {
+	if f.active == nil {
+		return "", nil
+	}
+	return f.active.ID, nil
+}
+
 const (
 	testAgent   = id.AgentID("6f1c3a52-6a3e-4c55-9a51-1c0d7a1b2e33")
 	testAccount = id.AccountID("0b8e2f4c-1d2a-4b7e-9c3f-5a6d7e8f9a0b")
@@ -190,6 +197,26 @@ func TestCurrent_ReportsNoMandate(t *testing.T) {
 
 	_, err := svc.Current(context.Background(), testAgent)
 	assert.True(t, errors.Is(err, ErrNoMandate))
+}
+
+// TestHoldCurrent_IsFalseOnceAnotherVersionIsInForce: the payment path asks
+// whether the mandate it decided against is still the one in force.
+func TestHoldCurrent_IsFalseOnceAnotherVersionIsInForce(t *testing.T) {
+	repo := &fakeRepo{active: &Mandate{ID: "m2"}}
+	svc := newTestService(repo, activeAgent())
+
+	still, err := svc.HoldCurrent(context.Background(), testAgent, "m2")
+	require.NoError(t, err)
+	assert.True(t, still)
+
+	still, err = svc.HoldCurrent(context.Background(), testAgent, "m1")
+	require.NoError(t, err)
+	assert.False(t, still)
+
+	repo.active = nil
+	still, err = svc.HoldCurrent(context.Background(), testAgent, "m2")
+	require.NoError(t, err)
+	assert.False(t, still, "no mandate in force is not the one decided against")
 }
 
 func TestNew_RefusesMissingAccounts(t *testing.T) {
