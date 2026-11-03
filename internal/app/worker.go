@@ -10,6 +10,7 @@ import (
 	"github.com/CleargateFinance/cleargate-core/internal/infrastructure/database"
 	"github.com/CleargateFinance/cleargate-core/internal/modules/decisionlog"
 	"github.com/CleargateFinance/cleargate-core/internal/modules/ledger"
+	"github.com/CleargateFinance/cleargate-core/internal/modules/payment"
 	"github.com/CleargateFinance/cleargate-core/internal/shared/currency"
 )
 
@@ -49,6 +50,7 @@ func BuildWorker(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Wo
 
 	ledgerSvc := ledger.New(db, nil).Service()
 	decisionSvc := decisionlog.New(db).Service()
+	keyRetention := payment.NewRetention(db, nil)
 
 	w := &Worker{
 		log: log,
@@ -87,6 +89,20 @@ func BuildWorker(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Wo
 				every: 24 * time.Hour,
 				run: func(ctx context.Context) error {
 					return decisionSvc.EnsurePartitions(ctx, 3)
+				},
+			},
+			{
+				// Idempotency keys are remembered for 24 hours (Task 5.2).
+				// Authorize already ignores an older key, so this only stops
+				// the table growing with every payment ever made.
+				name:  "idempotency_key_expiry",
+				every: time.Hour,
+				run: func(ctx context.Context) error {
+					n, err := keyRetention.ExpireKeys(ctx)
+					if err == nil {
+						log.Info("idempotency keys expired", slog.Int64("deleted", n))
+					}
+					return err
 				},
 			},
 		},
