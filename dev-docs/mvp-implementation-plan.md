@@ -381,7 +381,7 @@ Three separate things, in order, and each is useless without the next: the **reg
 
 ### Task 2.8: Guardian, timelock and account control changes
 
-**Not in MVP.** Every account is Simple tier. Only freeze ships: owner or admin sets `frozen_at`, authorization declines everything (Task 4.1), and unfreezing is instant (Task 6.2).
+**Not in MVP.** Every account is Simple tier. Only freeze ships: owner or admin sets `frozen_at`, authorization declines everything (Task 4.1), and unfreezing is instant (Task 6.2). **Built** as `Service.FreezeAccount` and `UnfreezeAccount` in `internal/modules/account/accounts.go`. A freeze sets `frozen_at`, not `status`; the "Freeze semantics" paragraph below predates the schema, which keeps a customer's freeze apart from a platform suspension.
 
 Protection here is **opt-in and tiered**. An account with no guardian and no timelock behaves simply: changes take effect immediately. Appointing a guardian, or setting a timelock, switches the controls on.
 
@@ -747,11 +747,12 @@ Three surfaces: `public` (no credential), `agent` (a bearer API key) and `consol
 
 - [ ] `POST /v1/payments/authorize` — the hot path. Requires `Idempotency-Key`. Takes the merchant's x402 payment requirements and returns the signed `PAYMENT-SIGNATURE` payload, or the decline and its reason (Task 7.6).
 - [ ] `GET /v1/agents/{id}/decisions` — the console's decision log, including declines.
-- [ ] `POST /v1/accounts/{id}/agents` — **connects** an existing external agent, returning a registration. `POST /v1/agents/{id}/revoke` disconnects it.
-- [ ] `POST /v1/agents/{id}/credentials` · `POST /v1/agents/{id}/credentials/{cid}/revoke` — issue and revoke named keys, so rotation never requires destroying the agent.
+- [x] `POST /v1/accounts/{id}/agents` — **connects** an existing external agent, returning a registration. `POST /v1/agents/{id}/revoke` disconnects it.
+- [x] `POST /v1/agents/{id}/credentials` · `POST /v1/agents/{id}/credentials/{cid}/revoke` — issue and revoke named keys, so rotation never requires destroying the agent.
 - [ ] `GET /v1/accounts/{id}/summary` — balance, spend against caps, blocked count.
 - [ ] `GET /v1/accounts/{id}/deposit-address` — the account wallet's address (Task 7.5).
-- [ ] `POST /v1/accounts/{id}/freeze` · `/unfreeze` — owner or admin, instant (Task 2.8).
+- [x] `POST /v1/accounts/{id}/freeze` · `/unfreeze` — owner or admin, instant (Task 2.8).
+- **Built** for the agent, key and freeze routes in `internal/modules/account/handler.go` (`RegisterConsoleRoutes`), with `GET /v1/accounts`, `GET /v1/accounts/{id}/agents` and `GET /v1/agents/{id}/credentials` beside them. The service is `internal/modules/account/accounts.go`; the tests are `internal/app/agent_routes_test.go` and `internal/modules/account/freeze_test.go`. A guardian may freeze, and unfreezing needs a step-up (Revision notes, 4 November 2026).
 - [x] `GET /v1/mfa` · `POST /v1/mfa/totp` · `/totp/confirm` · `/step-up`. **Built** in `internal/modules/account/handler.go` (`RegisterConsoleRoutes`); the tests are `internal/app/mfa_routes_test.go`. A recovery code is spent through `/step-up`, and there is no `/recovery-codes` route (Revision notes, 3 November 2026, "second-factor routes").
 - [x] `PUT /v1/agents/{id}/mandate` — sets the rules behind a recent TOTP step-up (Task 3.2). With Task 3.1, `POST /v1/agents/{id}/mandate/draft` canonicalises the rules and returns the WebAuthn challenge, and the `PUT` carries the assertion instead.
 - [ ] Update `api/openapi.yaml`; the SDK and MCP repos generate from it.
@@ -1082,6 +1083,18 @@ Tasks marked **Not in MVP** are outside this total. Phase 6 grows because no han
 
 ## Revision notes
 
+**4 November 2026, passkeys after the first version (owner decision).** The first version ships with TOTP only: mandates stay approved by a TOTP step-up (Task 3.2's stand-in), and Tasks 2.9 and 3.1 come after it. When they are built, the Relying Party ID is `cleargatefinance.xyz`, the domain in use now. Passkeys are bound to it for good, so moving to another domain later means every customer enrols again.
+
+**4 November 2026, agent, key and freeze routes (Task 6.2).** Differences from the plan:
+
+- **Three read routes were added.** `GET /v1/accounts` lists the person's accounts with their role and `frozen_at`. Without it the console has no way to learn the id that sign-up created. `GET /v1/accounts/{id}/agents` lists agents, revoked ones included, for any member. `GET /v1/agents/{id}/credentials` lists keys without secrets, for owners and admins, so a rotation can check the old key is idle (`last_used_at`).
+- **Connecting returns the agent**, `201` with its id, name and status. That is the planned "registration". A key is a separate step, behind a step-up, returned once with `Cache-Control: no-store`.
+- **A guardian may freeze.** Task 6.2 said owner or admin, but the guardian role is defined as able to freeze, and Task 2.8 puts freezing in the risk-reducing class open to owner, admin or guardian. No step-up is needed, as for revoking. Freezing a frozen account changes nothing, so `frozen_by` keeps whoever acted first.
+- **Unfreezing needs a step-up, for an owner or admin.** It restores every agent's authority at once, and an account is usually frozen because somebody suspects a compromise, so a stolen session alone must not undo it. It is instant for any owner or admin. Delaying it for everyone but the person who froze it is Task 2.8. It never lifts a platform suspension.
+- **An outsider is told the agent does not exist.** On every agent route, the mandate route included, a person outside the agent's account gets `404`, as an unknown agent does. A member whose role is too low gets `403`. On account routes, an unknown account and one the person is not in both get `403` (`MembershipRole`). An id that is not a UUID gets the same answer as an unknown one.
+- **No notification on freeze, unfreeze or a new key.** Task 2.10 is not in the MVP. Each is logged.
+- **Not built:** routes for invitations and membership changes. The service exists (Task 2.5), and Task 6.2 lists no MVP route for it, so for now an account has only the person who signed up.
+
 **3 November 2026, second-factor routes (Tasks 2.4 and 6.2).** Differences from the plan:
 
 - **A recovery code steps up through `POST /v1/mfa/step-up`**, which takes exactly one of `code` or `recovery_code`. The service behind the planned `/recovery-codes` spends a code; it does not issue codes, so a separate route would have been a second way to step up. **Regenerating recovery codes is not built.** Someone who uses all ten cannot re-enrol either: enrolment is refused while a factor is confirmed, and removing a factor is not built, in the service or as a route.
@@ -1112,7 +1125,7 @@ Tasks marked **Not in MVP** are outside this total. Phase 6 grows because no han
 - **Rate limits** came with the login routes (the next note).
 - **`BuildAPI` needs a mail transport.** `MAIL_TRANSPORT` has no default, and `log`, the only transport that exists, is refused outside `SERVER_MODE=debug`. **Before any release deployment, the owner must choose an email provider**; until then the API refuses to start in release mode.
 - **A mandate must be in USD.** `Rules.Validate` now refuses any other asset, since the engine would decline every payment against it (`asset_not_permitted`).
-- **Found while building, not fixed:** a signed-in person outside the agent's account gets `403` from the mandate route, while an unknown agent gets `404`. That contradicts `account.ErrAgentNotFound`'s "one answer". Agent ids are random UUIDs, so probing them is not practical, but the answers should match when the account routes arrive.
+- **Found while building, not fixed:** a signed-in person outside the agent's account gets `403` from the mandate route, while an unknown agent gets `404`. That contradicts `account.ErrAgentNotFound`'s "one answer". Agent ids are random UUIDs, so probing them is not practical, but the answers should match when the account routes arrive. (Fixed on 4 November 2026.)
 
 **3 November 2026, Task 5.5 counterparty identity (owner decision).** A counterparty is identified by the endpoint the agent reports paying for, normalised to host and path: lower-case ASCII host, no default port or trailing dot, cleaned path, and no scheme, user info, query or fragment. The query is left out because it varies per request and can carry an API key. Its registrable domain (from the public suffix list) and its host are stored beside it, the two levels data-architecture.md §4.4 scores distrust at. With no usable URL, the payee is the network and `payTo` address the money went to. A payment that names neither has no counterparty and can still be judged.
 
