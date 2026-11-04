@@ -51,16 +51,21 @@ func newMFAFixture(t *testing.T) *mfaFixture {
 		mailer: mailer, clock: clock, email: "founder@example.com",
 	}
 
-	auth := &authFixture{db: db, cache: redis, svc: svc, repo: repo, mailer: mailer}
-	f.user = auth.signupAndVerify(t, f.email)
-
 	// Anchor the controllable clock to the database's own, so that the several
 	// tests below which advance it past a TOTP period or a step-up window are
 	// moving relative to a known instant rather than to wherever the host's
 	// clock happened to sit when this fixture was built.
+	//
+	// Before sign-up, not after: sign-up stamps password_changed_at from this
+	// clock, and a session counts only if issued at or after it. Anchored
+	// after, a database clock a few milliseconds behind the host's (Docker's
+	// VM drifts) put every session before the password and invalidated it.
 	var dbNow time.Time
 	require.NoError(t, db.QueryRow(context.Background(), `SELECT now()`).Scan(&dbNow))
 	clock.Set(dbNow)
+
+	auth := &authFixture{db: db, cache: redis, svc: svc, repo: repo, mailer: mailer}
+	f.user = auth.signupAndVerify(t, f.email)
 
 	return f
 }

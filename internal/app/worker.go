@@ -48,7 +48,7 @@ func BuildWorker(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Wo
 	}
 
 	ledgerSvc := ledger.New(db, nil).Service()
-	decisionSvc := decisionlog.New(db).Service()
+	decisionSvc := decisionlog.NewService(decisionlog.NewPostgresRepository(db))
 	keyRetention := payment.NewRetention(db, nil)
 
 	w := &Worker{

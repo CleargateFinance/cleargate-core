@@ -238,3 +238,41 @@ func (p PaymentDecisions) Record(ctx context.Context, r payment.DecisionRecord) 
 	})
 	return err
 }
+
+// DecisionAccounts satisfies decisionlog.Accounts with the account module.
+type DecisionAccounts struct {
+	Accounts *account.Service
+}
+
+var _ decisionlog.Accounts = DecisionAccounts{}
+
+// RequireAgentReader implements decisionlog.Accounts. Membership is the only
+// thing it checks, so the session needs only who the person is.
+func (a DecisionAccounts) RequireAgentReader(ctx context.Context, actor decisionlog.Actor, agentID id.AgentID) error {
+	return a.Accounts.RequireAgentReader(ctx, account.Session{UserID: actor.UserID}, agentID)
+}
+
+// DecisionPayments satisfies decisionlog.Payments with the payment module.
+type DecisionPayments struct {
+	Payments *payment.Lookup
+}
+
+var _ decisionlog.Payments = DecisionPayments{}
+
+// AgentPayments implements decisionlog.Payments.
+func (p DecisionPayments) AgentPayments(
+	ctx context.Context, agentID id.AgentID, ids []id.PaymentID,
+) (map[id.PaymentID]decisionlog.Payment, error) {
+	recorded, err := p.Payments.AgentPayments(ctx, agentID, ids)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[id.PaymentID]decisionlog.Payment, len(recorded))
+	for _, r := range recorded {
+		out[r.ID] = decisionlog.Payment{
+			Amount: r.Amount, Category: r.Category, PayTo: r.PayTo, ResourceURL: r.ResourceURL,
+			Status: string(r.Status),
+		}
+	}
+	return out, nil
+}

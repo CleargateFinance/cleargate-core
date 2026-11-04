@@ -748,7 +748,7 @@ Three surfaces: `public` (no credential), `agent` (a bearer API key) and `consol
 ### Task 6.2: Endpoints
 
 - [ ] `POST /v1/payments/authorize` — the hot path. Requires `Idempotency-Key`. Takes the merchant's x402 payment requirements and returns the signed `PAYMENT-SIGNATURE` payload, or the decline and its reason (Task 7.6).
-- [ ] `GET /v1/agents/{id}/decisions` — the console's decision log, including declines.
+- [x] `GET /v1/agents/{id}/decisions` — the console's decision log, including declines. **Built** in `internal/modules/decisionlog` (`Log` in `service.go`, `AgentDecisions` in `repo_postgres.go`, `handler_http.go`), with `payment.Lookup` for what each decision was about and `account.Service.RequireAgentReader` for who may read it. Any member may, a viewer included. Paging is by cursor, filtered by `?outcome=`. The tests are `internal/app/decision_routes_test.go`, `internal/modules/decisionlog/domain_test.go`, `service_test.go` and `repo_postgres_test.go`, and `internal/modules/payment/repo_postgres_test.go` (Revision notes, 4 November 2026, "decision log route").
 - [x] `POST /v1/accounts/{id}/agents` — **connects** an existing external agent, returning a registration. `POST /v1/agents/{id}/revoke` disconnects it.
 - [x] `POST /v1/agents/{id}/credentials` · `POST /v1/agents/{id}/credentials/{cid}/revoke` — issue and revoke named keys, so rotation never requires destroying the agent.
 - [ ] `GET /v1/accounts/{id}/summary` — balance, spend against caps, blocked count.
@@ -1084,6 +1084,14 @@ Tasks marked **Not in MVP** are outside this total. Phase 6 grows because no han
 ---
 
 ## Revision notes
+
+**4 November 2026, decision log route (Task 6.2).** Differences from the plan:
+
+- **Any member of the account may read it**, a viewer included, and a revoked agent's log stays readable. Somebody outside the account gets `404 agent not found`, the same answer an unknown agent gets, so the route cannot be used to learn which agent ids are real.
+- **Each entry carries its payment** (amount, asset, category, payee, resource URL and current status) as well as the decision, its mandate version and digest, and its checks in order. The payment fields come from the payment module through a port (`payment.Lookup`), not from a join on its table: one query for the page, one lookup by id for its payments.
+- **The feature snapshot is not returned.** It is the engine's versioned evidence (Task 4.2) and holds the agent's `purpose` and `task`. Task 5.4 moves those out first, and publishing the snapshot now would make its shape a public contract. Add it to the entry once Task 5.4 is done, if the console needs it.
+- **Paging is by cursor, newest first**, keyed on `(evaluated_at, id)`. Decisions arrive while the console reads, so an offset would repeat entries, and one agent can have two decisions in the same microsecond, so the instant alone would skip or repeat one at a page boundary. `?limit=` defaults to 50, up to 100. `?outcome=approved|declined` filters. The cursor is opaque, and a cursor this API did not issue is a `400`.
+- **`decisionlog.New` now takes `Deps`** and refuses a missing `Accounts` or `Payments` port. The worker and the payment path only write, so they build a `Service` with `NewService` and wire neither.
 
 **4 November 2026, Task 1.4.** The hourly book check and the daily counter check already ran in the worker. Finishing the task changed four things:
 

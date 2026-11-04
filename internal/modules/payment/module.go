@@ -82,6 +82,11 @@ func NewRetention(db *database.DB, clock Clock) *Retention {
 	return &Retention{repo: NewPostgresRepository(db), clock: clockOrSystem(clock)}
 }
 
+// NewLookup builds the read of recorded payments the decision log uses.
+func NewLookup(db *database.DB) *Lookup {
+	return &Lookup{repo: NewPostgresRepository(db)}
+}
+
 type systemClock struct{}
 
 func (systemClock) Now() time.Time { return time.Now() }

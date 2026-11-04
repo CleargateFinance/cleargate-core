@@ -8,8 +8,10 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/shopspring/decimal"
 
 	"github.com/CleargateFinance/cleargate-core/internal/infrastructure/database"
+	"github.com/CleargateFinance/cleargate-core/internal/shared/currency"
 	"github.com/CleargateFinance/cleargate-core/internal/shared/id"
 )
 
@@ -106,6 +108,45 @@ func (r *postgresRepo) DeleteKeysBefore(ctx context.Context, before time.Time) (
 		return 0, fmt.Errorf("payment: delete expired idempotency keys: %w", err)
 	}
 	return tag.RowsAffected(), nil
+}
+
+// AgentPayments reads a page's worth of payments by primary key. The agent is
+// in the filter as well as the ids, so a caller that passed the wrong ids
+// still sees only this agent's payments.
+func (r *postgresRepo) AgentPayments(ctx context.Context, agentID id.AgentID, ids []id.PaymentID) ([]Recorded, error) {
+	keys := make([]string, len(ids))
+	for i, p := range ids {
+		keys[i] = string(p)
+	}
+
+	rows, err := r.db.Query(ctx, `
+		SELECT id, amount, asset, COALESCE(category, ''), COALESCE(pay_to, ''),
+		       COALESCE(resource_url, ''), status
+		FROM payment
+		WHERE id = ANY($1::uuid[]) AND agent_id = $2`, keys, string(agentID))
+	if err != nil {
+		return nil, fmt.Errorf("payment: read payments: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Recorded
+	for rows.Next() {
+		var p Recorded
+		var paymentID, asset, status string
+		var amount decimal.Decimal
+		if err := rows.Scan(&paymentID, &amount, &asset, &p.Category, &p.PayTo, &p.ResourceURL, &status); err != nil {
+			return nil, fmt.Errorf("payment: scan payment: %w", err)
+		}
+		if p.Amount, err = currency.Parse(amount.String(), currency.Asset(asset)); err != nil {
+			return nil, fmt.Errorf("payment: parse payment amount: %w", err)
+		}
+		p.ID, p.Status = id.PaymentID(paymentID), Status(status)
+		out = append(out, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("payment: read payments: %w", err)
+	}
+	return out, nil
 }
 
 // nullable stores an empty string as NULL: not sent is not the same as sent

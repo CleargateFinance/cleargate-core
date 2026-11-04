@@ -3,6 +3,7 @@ package decisionlog
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/CleargateFinance/cleargate-core/internal/infrastructure/database"
 	"github.com/CleargateFinance/cleargate-core/internal/shared/id"
@@ -71,4 +72,75 @@ func (r *postgresRepo) Insert(ctx context.Context, rec Record) (id.DecisionID, e
 		return "", fmt.Errorf("decisionlog: insert decision: %w", err)
 	}
 	return id.DecisionID(out), nil
+}
+
+// AgentDecisions reads one page along decision_by_agent, the index the
+// migration made for it.
+//
+// The cursor is applied twice. The row comparison is what is exact, and the
+// plain bound on evaluated_at beside it is what the index and partition
+// pruning can use, so a late page does not scan the months after it.
+func (r *postgresRepo) AgentDecisions(ctx context.Context, agentID id.AgentID, q Query) ([]Entry, error) {
+	const stmt = `
+		SELECT d.id, d.payment_id, d.outcome, d.reason_code, d.reason_text,
+		       d.mandate_id, d.mandate_version, d.mandate_digest,
+		       d.evaluated_at, d.latency_ms, c.stages, c.results
+		FROM decision d
+		CROSS JOIN LATERAL (
+			SELECT array_agg(stage ORDER BY ordinal) AS stages,
+			       array_agg(result ORDER BY ordinal) AS results
+			FROM decision_check
+			WHERE decision_id = d.id AND evaluated_at = d.evaluated_at
+		) c
+		WHERE d.agent_id = $1
+		  AND ($2::text IS NULL OR d.outcome = $2)
+		  AND ($3::timestamptz IS NULL
+		       OR (d.evaluated_at <= $3 AND (d.evaluated_at, d.id) < ($3, $4::uuid)))
+		ORDER BY d.evaluated_at DESC, d.id DESC
+		LIMIT $5`
+
+	var outcome, afterAt, afterID any
+	if q.Outcome != "" {
+		outcome = q.Outcome
+	}
+	if q.After != nil {
+		afterAt, afterID = q.After.EvaluatedAt, string(q.After.ID)
+	}
+
+	rows, err := r.db.Query(ctx, stmt, string(agentID), outcome, afterAt, afterID, q.Limit)
+	if err != nil {
+		return nil, fmt.Errorf("decisionlog: read decisions: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Entry
+	for rows.Next() {
+		var e Entry
+		var decisionID, paymentID string
+		var mandateID *string
+		var mandateVersion *int
+		var mandateDigest []byte
+		var latencyMS int64
+		var stages, results []string
+		if err := rows.Scan(&decisionID, &paymentID, &e.Outcome, &e.ReasonCode, &e.Reason,
+			&mandateID, &mandateVersion, &mandateDigest,
+			&e.EvaluatedAt, &latencyMS, &stages, &results); err != nil {
+			return nil, fmt.Errorf("decisionlog: scan decision: %w", err)
+		}
+
+		e.ID, e.PaymentID = id.DecisionID(decisionID), id.PaymentID(paymentID)
+		e.Latency = time.Duration(latencyMS) * time.Millisecond
+		if mandateID != nil && mandateVersion != nil {
+			e.Mandate = &MandateRef{ID: id.MandateID(*mandateID), Version: *mandateVersion, Digest: mandateDigest}
+		}
+		e.Checks = make([]Check, len(stages))
+		for i := range stages {
+			e.Checks[i] = Check{Stage: stages[i], Result: results[i]}
+		}
+		out = append(out, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("decisionlog: read decisions: %w", err)
+	}
+	return out, nil
 }

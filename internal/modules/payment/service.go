@@ -349,3 +349,22 @@ type Retention struct {
 func (r *Retention) ExpireKeys(ctx context.Context) (int64, error) {
 	return r.repo.DeleteKeysBefore(ctx, r.clock.Now().Add(-KeyRetention))
 }
+
+// Lookup reads payments already recorded, for the decision log to show what
+// each decision was about. Separate from Service for the reason Retention is:
+// reading a payment needs none of the payment path's ports.
+//
+// It has no actor check. Its caller has already established that the person
+// asking may read this agent's records.
+type Lookup struct {
+	repo Repository
+}
+
+// AgentPayments returns the agent's payments among ids. An id that is not
+// one of this agent's payments is left out rather than reported.
+func (l *Lookup) AgentPayments(ctx context.Context, agentID id.AgentID, ids []id.PaymentID) ([]Recorded, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	return l.repo.AgentPayments(ctx, agentID, ids)
+}
