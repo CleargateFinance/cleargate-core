@@ -181,10 +181,19 @@ func TestVerify_ConstantTimeOnMismatch(t *testing.T) {
 	unknown, err := crypto.NewAPIKey()
 	require.NoError(t, err)
 
+	// other is a character that differs from c. A fixed replacement would be
+	// no change at all whenever the random secret already had it there.
+	other := func(c byte) string {
+		if c == 'x' {
+			return "y"
+		}
+		return "x"
+	}
+
 	tests := map[string]string{
 		"unknown handle":      unknown.Plaintext(),
-		"wrong secret":        crypto.KeyEnvironmentLive + "_" + key.Prefix() + "_" + "x" + secret[1:],
-		"secret wrong at end": crypto.KeyEnvironmentLive + "_" + key.Prefix() + "_" + secret[:len(secret)-1] + "x",
+		"wrong secret":        crypto.KeyEnvironmentLive + "_" + key.Prefix() + "_" + other(secret[0]) + secret[1:],
+		"secret wrong at end": crypto.KeyEnvironmentLive + "_" + key.Prefix() + "_" + secret[:len(secret)-1] + other(secret[len(secret)-1]),
 		"empty secret half":   crypto.KeyEnvironmentLive + "_" + key.Prefix() + "_",
 		"garbage":             "not-a-key",
 	}
@@ -385,6 +394,37 @@ func TestAgentManagement_RequiresTheRightRole(t *testing.T) {
 	assert.ErrorIs(t, err, ErrNotPermitted)
 }
 
+// TestAgentManagement_OutsiderIsToldTheAgentDoesNotExist: an agent in an
+// account the caller does not belong to gets the answer an unknown agent gets,
+// so an agent id cannot be used to learn that the agent exists.
+func TestAgentManagement_OutsiderIsToldTheAgentDoesNotExist(t *testing.T) {
+	ctx := context.Background()
+	f := newAgentFixture(t)
+
+	agent := f.connect(t, "invoice-runner")
+	f.issue(t, agent.ID, "prod-worker-1")
+	retired := f.connect(t, "retired")
+	require.NoError(t, f.svc.RevokeAgent(ctx, f.owner, retired.ID))
+
+	// The stranger owns an account of their own, so they are a real user with
+	// a role somewhere, only not here.
+	stranger, err := f.svc.ValidateSession(ctx, f.signInStranger(t, "outsider@example.com"))
+	require.NoError(t, err)
+
+	_, _, err = f.svc.IssueCredential(ctx, stranger, agent.ID, "rogue-key")
+	assert.ErrorIs(t, err, ErrAgentNotFound)
+	_, _, err = f.svc.IssueCredential(ctx, stranger, retired.ID, "rogue-key")
+	assert.ErrorIs(t, err, ErrAgentNotFound, "not even that the agent was revoked")
+	_, err = f.svc.ListCredentials(ctx, stranger, agent.ID)
+	assert.ErrorIs(t, err, ErrAgentNotFound)
+	assert.ErrorIs(t, f.svc.RevokeCredential(ctx, stranger, agent.ID, "00000000-0000-0000-0000-000000000000"), ErrAgentNotFound)
+	assert.ErrorIs(t, f.svc.RevokeAgent(ctx, stranger, agent.ID), ErrAgentNotFound)
+
+	reloaded, err := f.svc.Agent(ctx, agent.ID)
+	require.NoError(t, err)
+	assert.True(t, reloaded.Active())
+}
+
 // TestStartAgentSession_GroupsARun covers the record that cannot be
 // reconstructed afterwards.
 func TestStartAgentSession_GroupsARun(t *testing.T) {
@@ -442,7 +482,8 @@ func TestRequireMandateIssuer_RefusesOtherRoles(t *testing.T) {
 
 	stranger, err := f.svc.ValidateSession(ctx, f.signInStranger(t, "stranger@example.com"))
 	require.NoError(t, err)
-	assert.ErrorIs(t, f.svc.RequireMandateIssuer(ctx, stranger, f.accountID), ErrNotPermitted)
+	assert.ErrorIs(t, f.svc.RequireMandateIssuer(ctx, stranger, f.accountID), ErrAgentNotFound,
+		"an outsider is answered as if the agent did not exist")
 }
 
 // TestRequireMandateIssuer_RequiresRecentStepUp: until passkey signing ships,

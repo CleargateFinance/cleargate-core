@@ -6,9 +6,11 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 
 	"github.com/CleargateFinance/cleargate-core/internal/shared/apperr"
 	"github.com/CleargateFinance/cleargate-core/internal/shared/caller"
+	"github.com/CleargateFinance/cleargate-core/internal/shared/id"
 )
 
 // The only file in this module that knows Gin exists.
@@ -102,15 +104,29 @@ func (m *Module) RegisterPublicRoutes(rg *gin.RouterGroup) {
 	auth.POST("/password/reset", m.resetPassword)
 }
 
-// RegisterConsoleRoutes adds the second-factor routes (Task 2.4). Pass the
-// console group: each acts on the signed-in person's own factor, and a
-// session is the only thing that names them.
+// RegisterConsoleRoutes adds the second-factor routes (Task 2.4), and the
+// routes that connect agents, issue their keys and freeze the account
+// (Task 6.2). Pass the console group: every one of them acts for a signed-in
+// person, and an agent's key must reach none of them.
 func (m *Module) RegisterConsoleRoutes(rg *gin.RouterGroup) {
 	mfa := rg.Group("/mfa")
 	mfa.GET("", m.mfaStatus)
 	mfa.POST("/totp", m.beginTOTP)
 	mfa.POST("/totp/confirm", m.confirmTOTP)
 	mfa.POST("/step-up", m.stepUp)
+
+	rg.GET("/accounts", m.listAccounts)
+	accounts := rg.Group("/accounts/:id")
+	accounts.GET("/agents", m.listAgents)
+	accounts.POST("/agents", m.connectAgent)
+	accounts.POST("/freeze", m.freeze)
+	accounts.POST("/unfreeze", m.unfreeze)
+
+	agents := rg.Group("/agents/:id")
+	agents.POST("/revoke", m.revokeAgent)
+	agents.GET("/credentials", m.listCredentials)
+	agents.POST("/credentials", m.issueCredential)
+	agents.POST("/credentials/:cid/revoke", m.revokeCredential)
 }
 
 var (
@@ -224,6 +240,242 @@ func (m *Module) stepUp(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, stepUpResponse{MFASatisfiedAt: session.MFASatisfiedAt})
+}
+
+type accountResponse struct {
+	ID       id.AccountID   `json:"id"`
+	Name     string         `json:"name"`
+	Role     PermissionRole `json:"role"`
+	FrozenAt *time.Time     `json:"frozen_at"`
+}
+
+type agentResponse struct {
+	ID        id.AgentID   `json:"id"`
+	AccountID id.AccountID `json:"account_id"`
+	Name      string       `json:"name"`
+	Status    AgentStatus  `json:"status"`
+	CreatedAt time.Time    `json:"created_at"`
+	RevokedAt *time.Time   `json:"revoked_at"`
+}
+
+type credentialResponse struct {
+	ID         string     `json:"id"`
+	Name       string     `json:"name"`
+	Prefix     string     `json:"prefix"`
+	CreatedAt  time.Time  `json:"created_at"`
+	RevokedAt  *time.Time `json:"revoked_at"`
+	LastUsedAt *time.Time `json:"last_used_at"`
+}
+
+type issuedCredentialResponse struct {
+	// Key is the whole credential, shown this once. Only its digest is kept.
+	Key        string             `json:"key"`
+	Credential credentialResponse `json:"credential"`
+}
+
+type nameBody struct {
+	Name string `json:"name"`
+}
+
+// listAccounts is where the console starts: the accounts this person belongs
+// to and their role in each.
+func (m *Module) listAccounts(c *gin.Context) {
+	session, ok := consoleSession(c)
+	if !ok {
+		return
+	}
+	memberships, err := m.svc.Accounts(c.Request.Context(), session)
+	if err != nil {
+		abort(c, err)
+		return
+	}
+	out := make([]accountResponse, 0, len(memberships))
+	for _, a := range memberships {
+		out = append(out, accountResponse{ID: a.AccountID, Name: a.Name, Role: a.Role, FrozenAt: a.FrozenAt})
+	}
+	c.JSON(http.StatusOK, gin.H{"accounts": out})
+}
+
+func (m *Module) listAgents(c *gin.Context) {
+	session, accountID, ok := accountRequest(c)
+	if !ok {
+		return
+	}
+	agents, err := m.svc.Agents(c.Request.Context(), session, accountID)
+	if err != nil {
+		abort(c, err)
+		return
+	}
+	out := make([]agentResponse, 0, len(agents))
+	for _, a := range agents {
+		out = append(out, wireAgent(a))
+	}
+	c.JSON(http.StatusOK, gin.H{"agents": out})
+}
+
+// connectAgent registers an agent. It grants nothing until a key is issued
+// and a mandate set, which is why it needs no step-up.
+func (m *Module) connectAgent(c *gin.Context) {
+	session, accountID, ok := accountRequest(c)
+	if !ok {
+		return
+	}
+	var body nameBody
+	if !bind(c, &body) {
+		return
+	}
+	agent, err := m.svc.ConnectAgent(c.Request.Context(), session, accountID, body.Name)
+	if err != nil {
+		abort(c, err)
+		return
+	}
+	c.JSON(http.StatusCreated, wireAgent(agent))
+}
+
+func (m *Module) freeze(c *gin.Context) {
+	session, accountID, ok := accountRequest(c)
+	if !ok {
+		return
+	}
+	if err := m.svc.FreezeAccount(c.Request.Context(), session, accountID); err != nil {
+		abort(c, err)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+func (m *Module) unfreeze(c *gin.Context) {
+	session, accountID, ok := accountRequest(c)
+	if !ok {
+		return
+	}
+	if err := m.svc.UnfreezeAccount(c.Request.Context(), session, accountID); err != nil {
+		abort(c, err)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+func (m *Module) revokeAgent(c *gin.Context) {
+	session, agentID, ok := agentRequest(c)
+	if !ok {
+		return
+	}
+	if err := m.svc.RevokeAgent(c.Request.Context(), session, agentID); err != nil {
+		abort(c, err)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+func (m *Module) listCredentials(c *gin.Context) {
+	session, agentID, ok := agentRequest(c)
+	if !ok {
+		return
+	}
+	credentials, err := m.svc.ListCredentials(c.Request.Context(), session, agentID)
+	if err != nil {
+		abort(c, err)
+		return
+	}
+	out := make([]credentialResponse, 0, len(credentials))
+	for _, cr := range credentials {
+		out = append(out, wireCredential(cr))
+	}
+	c.JSON(http.StatusOK, gin.H{"credentials": out})
+}
+
+// issueCredential returns the key once. Like the TOTP secret, it exists in
+// the clear nowhere else, so no cache may keep the response.
+func (m *Module) issueCredential(c *gin.Context) {
+	session, agentID, ok := agentRequest(c)
+	if !ok {
+		return
+	}
+	var body nameBody
+	if !bind(c, &body) {
+		return
+	}
+	key, credential, err := m.svc.IssueCredential(c.Request.Context(), session, agentID, body.Name)
+	if err != nil {
+		abort(c, err)
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	c.JSON(http.StatusCreated, issuedCredentialResponse{Key: key.Plaintext(), Credential: wireCredential(credential)})
+}
+
+func (m *Module) revokeCredential(c *gin.Context) {
+	session, agentID, ok := agentRequest(c)
+	if !ok {
+		return
+	}
+	credentialID, ok := pathUUID(c, "cid", ErrCredentialNotFound)
+	if !ok {
+		return
+	}
+	if err := m.svc.RevokeCredential(c.Request.Context(), session, agentID, credentialID); err != nil {
+		abort(c, err)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+func wireAgent(a Agent) agentResponse {
+	return agentResponse{
+		ID: a.ID, AccountID: a.AccountID, Name: a.Name, Status: a.Status,
+		CreatedAt: a.CreatedAt, RevokedAt: a.RevokedAt,
+	}
+}
+
+func wireCredential(cr AgentCredential) credentialResponse {
+	return credentialResponse{
+		ID: cr.ID, Name: cr.Name, Prefix: cr.Prefix,
+		CreatedAt: cr.CreatedAt, RevokedAt: cr.RevokedAt, LastUsedAt: cr.LastUsedAt,
+	}
+}
+
+// accountRequest is the person and the account a /accounts/:id route names.
+// An id that is not a UUID gets ErrNotPermitted, the answer an account the
+// person does not belong to gets (MembershipRole), so the two cannot be told
+// apart.
+func accountRequest(c *gin.Context) (Session, id.AccountID, bool) {
+	session, ok := consoleSession(c)
+	if !ok {
+		return Session{}, "", false
+	}
+	raw, ok := pathUUID(c, "id", ErrNotPermitted)
+	return session, id.AccountID(raw), ok
+}
+
+// agentRequest is the person and the agent an /agents/:id route names. An id
+// that is not a UUID is an agent that does not exist.
+func agentRequest(c *gin.Context) (Session, id.AgentID, bool) {
+	session, ok := consoleSession(c)
+	if !ok {
+		return Session{}, "", false
+	}
+	raw, ok := pathUUID(c, "id", ErrAgentNotFound)
+	return session, id.AgentID(raw), ok
+}
+
+// pathUUID reads a path parameter that must be a UUID, answering notFound
+// otherwise. Postgres would refuse the cast with an error that reads as a
+// fault, when it is only an identifier that names nothing.
+func pathUUID(c *gin.Context, name string, notFound error) (string, bool) {
+	parsed, err := uuid.Parse(c.Param(name))
+	if err != nil {
+		abort(c, notFound)
+		return "", false
+	}
+	return parsed.String(), true
+}
+
+// consoleSession is the signed-in person as the service's Session, carrying
+// what the service's checks read: who they are and when they last stepped up.
+func consoleSession(c *gin.Context) (Session, bool) {
+	user, ok := consoleUser(c)
+	return Session{UserID: user.UserID, MFASatisfiedAt: user.MFASatisfiedAt}, ok
 }
 
 // consoleUser is the person UserAuth signed in. Its absence means the route

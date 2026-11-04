@@ -718,6 +718,67 @@ func (r *postgresRepo) MembershipRole(ctx context.Context, accountID id.AccountI
 	return PermissionRole(role), nil
 }
 
+// AccountsOf lists a user's memberships with the account each belongs to.
+func (r *postgresRepo) AccountsOf(ctx context.Context, userID id.UserID) ([]Membership, error) {
+	const q = `
+		SELECT a.id, a.display_name, m.role, a.frozen_at
+		FROM account_membership m
+		JOIN account a ON a.id = m.account_id
+		WHERE m.user_id = $1
+		ORDER BY m.created_at, a.id`
+
+	rows, err := r.db.Query(ctx, q, string(userID))
+	if err != nil {
+		return nil, fmt.Errorf("account: list accounts: %w", err)
+	}
+	defer rows.Close()
+
+	accounts := []Membership{}
+	for rows.Next() {
+		var a Membership
+		var accountID, role string
+		if err := rows.Scan(&accountID, &a.Name, &role, &a.FrozenAt); err != nil {
+			return nil, fmt.Errorf("account: scan account: %w", err)
+		}
+		a.AccountID = id.AccountID(accountID)
+		a.Role = PermissionRole(role)
+		accounts = append(accounts, a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("account: list accounts: %w", err)
+	}
+	return accounts, nil
+}
+
+// FreezeAccount sets the freeze only where none is set, so the first freezer
+// is kept. It is an UPDATE of the account row, so it waits for payments
+// holding that row (HoldSpending) and every payment after it sees the freeze.
+func (r *postgresRepo) FreezeAccount(ctx context.Context, accountID id.AccountID, by id.UserID, at time.Time) (bool, error) {
+	const q = `
+		UPDATE account SET frozen_at = $3, frozen_by = $2
+		WHERE id = $1 AND frozen_at IS NULL`
+
+	tag, err := r.db.Exec(ctx, q, string(accountID), string(by), at)
+	if err != nil {
+		return false, fmt.Errorf("account: freeze account: %w", err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// UnfreezeAccount clears frozen_at and frozen_by together, which the
+// account_frozen_by_needs_frozen_at check requires. status is not touched.
+func (r *postgresRepo) UnfreezeAccount(ctx context.Context, accountID id.AccountID) (bool, error) {
+	const q = `
+		UPDATE account SET frozen_at = NULL, frozen_by = NULL
+		WHERE id = $1 AND frozen_at IS NOT NULL`
+
+	tag, err := r.db.Exec(ctx, q, string(accountID))
+	if err != nil {
+		return false, fmt.Errorf("account: unfreeze account: %w", err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
 // AccountHasGuardian reports whether a guardian is already appointed.
 func (r *postgresRepo) AccountHasGuardian(ctx context.Context, accountID id.AccountID) (bool, error) {
 	const q = `
@@ -1068,6 +1129,45 @@ func (r *postgresRepo) Agent(ctx context.Context, agentID id.AgentID) (Agent, er
 		FROM agent
 		WHERE id = $1`
 
+	agent, err := scanAgent(r.db.QueryRow(ctx, q, string(agentID)))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Agent{}, ErrAgentNotFound
+	}
+	if err != nil {
+		return Agent{}, fmt.Errorf("account: load agent: %w", err)
+	}
+	return agent, nil
+}
+
+// AgentsOf lists an account's agents.
+func (r *postgresRepo) AgentsOf(ctx context.Context, accountID id.AccountID) ([]Agent, error) {
+	const q = `
+		SELECT id, account_id, name, status, created_by, created_at, revoked_at
+		FROM agent
+		WHERE account_id = $1
+		ORDER BY created_at, id`
+
+	rows, err := r.db.Query(ctx, q, string(accountID))
+	if err != nil {
+		return nil, fmt.Errorf("account: list agents: %w", err)
+	}
+	defer rows.Close()
+
+	agents := []Agent{}
+	for rows.Next() {
+		agent, err := scanAgent(rows)
+		if err != nil {
+			return nil, fmt.Errorf("account: scan agent: %w", err)
+		}
+		agents = append(agents, agent)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("account: list agents: %w", err)
+	}
+	return agents, nil
+}
+
+func scanAgent(row pgx.Row) (Agent, error) {
 	var (
 		agent     Agent
 		rawID     string
@@ -1075,16 +1175,11 @@ func (r *postgresRepo) Agent(ctx context.Context, agentID id.AgentID) (Agent, er
 		status    string
 		createdBy *string
 	)
-
-	err := r.db.QueryRow(ctx, q, string(agentID)).Scan(
+	if err := row.Scan(
 		&rawID, &accountID, &agent.Name, &status, &createdBy,
 		&agent.CreatedAt, &agent.RevokedAt,
-	)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return Agent{}, ErrAgentNotFound
-	}
-	if err != nil {
-		return Agent{}, fmt.Errorf("account: load agent: %w", err)
+	); err != nil {
+		return Agent{}, err
 	}
 
 	agent.ID = id.AgentID(rawID)

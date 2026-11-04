@@ -2,6 +2,7 @@ package account
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -189,30 +190,56 @@ func (s *Service) HoldSpending(ctx context.Context, accountID id.AccountID, agen
 }
 
 // RequireMandateIssuer reports whether a session may grant an agent spending
-// authority in this account.
+// authority. accountID is the account the agent belongs to.
 //
 // The roles that manage agents manage their mandates, and the act is gated on
 // a recent second factor, like issuing a credential. This is the MVP's
 // stand-in for a passkey signature over the mandate itself (Task 3.1), and it
 // is weaker in the way RequireStepUp describes: it proves somebody with a
 // valid code was present recently, not what they approved.
+//
+// Somebody outside the account gets ErrAgentNotFound, as requireAgentManagerOf
+// explains.
 func (s *Service) RequireMandateIssuer(ctx context.Context, actor Session, accountID id.AccountID) error {
-	if err := s.requireAgentManager(ctx, actor, accountID); err != nil {
+	if err := s.requireAgentManagerOf(ctx, actor, accountID); err != nil {
 		return err
 	}
 	return s.RequireStepUp(ctx, actor)
 }
 
 // requireAgentManager checks that an actor may manage agents in this account.
-//
-// Owners and admins only. Managing agents is the substance of the admin role,
-// while a guardian's power is deliberately subtractive and a viewer changes
-// nothing.
+// A non-member gets ErrNotPermitted, the answer MembershipRole gives.
 func (s *Service) requireAgentManager(ctx context.Context, actor Session, accountID id.AccountID) error {
 	role, err := s.repo.MembershipRole(ctx, accountID, actor.UserID)
 	if err != nil {
 		return err
 	}
+	return requireManagerRole(role)
+}
+
+// requireAgentManagerOf is requireAgentManager for an action on one agent,
+// where accountID is the agent's own account.
+//
+// A non-member is told the agent does not exist, which is what an unknown
+// identifier gets (ErrAgentNotFound's "one answer"). Told "forbidden" instead,
+// they would learn that the identifier names a real agent in an account they
+// cannot see. A member whose role is too low can already see the agent, so
+// they are told why they may not act on it.
+func (s *Service) requireAgentManagerOf(ctx context.Context, actor Session, accountID id.AccountID) error {
+	role, err := s.repo.MembershipRole(ctx, accountID, actor.UserID)
+	if errors.Is(err, ErrNotPermitted) {
+		return ErrAgentNotFound
+	}
+	if err != nil {
+		return err
+	}
+	return requireManagerRole(role)
+}
+
+// requireManagerRole admits owners and admins only. Managing agents is the
+// substance of the admin role, while a guardian's power is deliberately
+// subtractive and a viewer changes nothing.
+func requireManagerRole(role PermissionRole) error {
 	if role != RoleOwner && role != RoleAdmin {
 		return ErrNotPermitted
 	}
