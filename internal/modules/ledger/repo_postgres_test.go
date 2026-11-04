@@ -502,9 +502,70 @@ func TestCheckBook_ReportsZeroForAConsistentBook(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	check, err := f.svc.CheckBook(ctx, currency.USD)
+	checks, err := f.svc.CheckBook(ctx)
 	require.NoError(t, err)
-	assert.True(t, check.Balanced(), "every posting in the book must cancel out, got %s", check.Total)
+	require.Len(t, checks, 1)
+	assert.Equal(t, currency.USD, checks[0].Asset)
+	assert.True(t, checks[0].Balanced(), "every posting in the book must cancel out, got %s", checks[0].Total)
+}
+
+// injectImbalance writes one posting with no counterpart, as only a defect
+// could. session_replication_role = replica skips triggers, the balance check
+// among them, for this one transaction; the test database's user may set it.
+func (f *ledgerFixture) injectImbalance(t *testing.T, bucket id.LedgerAccountID, amount string, asset currency.Asset) {
+	t.Helper()
+	ctx := context.Background()
+
+	tx, err := f.db.Pool.Begin(ctx)
+	require.NoError(t, err)
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	_, err = tx.Exec(ctx, `SET LOCAL session_replication_role = replica`)
+	require.NoError(t, err)
+	_, err = tx.Exec(ctx, `
+		WITH je AS (
+			INSERT INTO journal_entry (kind, description, created_at)
+			VALUES ('funding', 'injected by a test', now())
+			RETURNING id, created_at
+		)
+		INSERT INTO posting (journal_entry_id, ledger_account_id, amount, asset, created_at)
+		SELECT id, $1, $2::numeric, $3, created_at FROM je`,
+		string(bucket), amount, string(asset))
+	require.NoError(t, err)
+	require.NoError(t, tx.Commit(ctx))
+}
+
+// TestCheckBook_ReportsAnImbalanceInAnyAsset is the test Task 1.4 names: an
+// imbalance injected past the database's own check is found, in USD and in an
+// asset nothing expects.
+func TestCheckBook_ReportsAnImbalanceInAnyAsset(t *testing.T) {
+	ctx := context.Background()
+	f := newLedgerFixture(t)
+	f.fund(t, "10.00")
+
+	stray, err := f.svc.EnsureAccount(ctx, &f.account, TypeCustomerFunds, currency.Asset("EURC"))
+	require.NoError(t, err)
+	f.injectImbalance(t, f.payer, "0.01", currency.USD)
+	f.injectImbalance(t, stray, "-3", currency.Asset("EURC"))
+
+	checks, err := f.svc.CheckBook(ctx)
+	require.NoError(t, err)
+	require.Len(t, checks, 2, "one check per asset in the book")
+
+	totals := map[currency.Asset]string{}
+	for _, c := range checks {
+		assert.False(t, c.Balanced(), string(c.Asset))
+		totals[c.Asset] = c.Total.String()
+	}
+	assert.Equal(t, map[currency.Asset]string{currency.USD: "0.01", "EURC": "-3"}, totals)
+}
+
+func TestCheckBook_EmptyBookHasNothingToReport(t *testing.T) {
+	f := newLedgerFixture(t)
+
+	checks, err := f.svc.CheckBook(context.Background())
+	require.NoError(t, err)
+	assert.Empty(t, checks)
 }
 
 func TestCheckSpendCounters_ReportsNoDriftWhenCountersMatchPostings(t *testing.T) {
@@ -565,6 +626,56 @@ func TestCheckSpendCounters_DetectsDrift(t *testing.T) {
 	assert.Equal(t, "0.4", drifts[0].Recomputed.String())
 }
 
+// TestCheckSpendCounters_NoFalseDriftWhilePaymentsCommit: the check runs
+// against live traffic, so a payment committing while it reads must not look
+// like drift. Each payment writes its posting and its counter in one
+// transaction, and the check must see both or neither.
+func TestCheckSpendCounters_NoFalseDriftWhilePaymentsCommit(t *testing.T) {
+	ctx := context.Background()
+	f := newLedgerFixture(t)
+	f.fund(t, "1000.00")
+	agent := f.newAgent(t)
+	now := time.Now().UTC()
+	uow := f.db.UoW
+
+	done := make(chan error, 1)
+	go func() {
+		for range 200 {
+			err := uow.Do(ctx, func(ctx context.Context) error {
+				if _, err := f.svc.Post(ctx, Entry{
+					Kind:       KindPayment,
+					Asset:      currency.USD,
+					Lines:      Transfer(f.payer, f.payee, usd(t, "0.01")),
+					AgentID:    &agent,
+					OccurredAt: now,
+				}); err != nil {
+					return err
+				}
+				_, err := f.svc.RecordSpend(ctx, agent, usd(t, "0.01"), now)
+				return err
+			})
+			if err != nil {
+				done <- err
+				return
+			}
+		}
+		done <- nil
+	}()
+
+	for checks := 0; ; checks++ {
+		select {
+		case err := <-done:
+			require.NoError(t, err)
+			require.Positive(t, checks, "the check must have run while payments were committing")
+			return
+		default:
+		}
+		drifts, err := f.svc.CheckSpendCounters(ctx, DayPeriod(now))
+		require.NoError(t, err)
+		require.Empty(t, drifts, "after %d checks", checks)
+	}
+}
+
 func TestEnsurePartitions_IsIdempotent(t *testing.T) {
 	ctx := context.Background()
 	f := newLedgerFixture(t)
@@ -594,7 +705,8 @@ func TestPost_AcrossPartitionBoundary(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "9", balance.String(), "a posting in an older partition must still count")
 
-	check, err := f.svc.CheckBook(ctx, currency.USD)
+	checks, err := f.svc.CheckBook(ctx)
 	require.NoError(t, err)
-	assert.True(t, check.Balanced())
+	require.Len(t, checks, 1)
+	assert.True(t, checks[0].Balanced())
 }

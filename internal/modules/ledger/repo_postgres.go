@@ -235,15 +235,34 @@ func (r *postgresRepo) Balance(
 	return currency.Parse(total.String(), asset)
 }
 
-// BookTotal sums every posting for one asset, which must always be zero.
-func (r *postgresRepo) BookTotal(ctx context.Context, asset currency.Asset) (currency.Amount, error) {
-	const q = `SELECT COALESCE(SUM(amount), 0) FROM posting WHERE asset = $1`
+// BookTotals sums every posting, grouped by asset. No asset is assumed, so a
+// posting in an asset nothing expects is summed too rather than overlooked.
+func (r *postgresRepo) BookTotals(ctx context.Context) ([]currency.Amount, error) {
+	const q = `SELECT asset, SUM(amount) FROM posting GROUP BY asset ORDER BY asset`
 
-	var total decimal.Decimal
-	if err := r.db.QueryRow(ctx, q, string(asset)).Scan(&total); err != nil {
-		return currency.Amount{}, fmt.Errorf("ledger: book total: %w", err)
+	rows, err := r.db.Query(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("ledger: book totals: %w", err)
 	}
-	return currency.Parse(total.String(), asset)
+	defer rows.Close()
+
+	var totals []currency.Amount
+	for rows.Next() {
+		var asset string
+		var total decimal.Decimal
+		if err := rows.Scan(&asset, &total); err != nil {
+			return nil, fmt.Errorf("ledger: scan book total: %w", err)
+		}
+		amount, err := currency.Parse(total.String(), currency.Asset(asset))
+		if err != nil {
+			return nil, fmt.Errorf("ledger: parse book total: %w", err)
+		}
+		totals = append(totals, amount)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("ledger: book totals: %w", err)
+	}
+	return totals, nil
 }
 
 // IncrementSpend adds to a counter and returns the new total.
@@ -323,32 +342,22 @@ func (r *postgresRepo) SpentIn(
 	return currency.Parse(total.String(), asset)
 }
 
-// StoredSpend lists every counter recorded for one window.
-func (r *postgresRepo) StoredSpend(ctx context.Context, p Period) ([]Spend, error) {
-	const q = `
-		SELECT agent_id, asset, spent
-		FROM agent_spend_counter
-		WHERE period_type = $1 AND period_start = $2`
-
-	rows, err := r.db.Query(ctx, q, string(p.Type), p.Start)
-	if err != nil {
-		return nil, fmt.Errorf("ledger: stored spend: %w", err)
-	}
-	defer rows.Close()
-
-	return scanSpend(rows, p)
-}
-
-// RecomputeSpend derives what each agent's counter should be, from the
-// postings themselves.
+// SpendSnapshot reads the stored counters and the recomputed ones in a single
+// statement, tagged by side, so both come from the same snapshot.
 //
 // Spending is the value that left a customer funds bucket on a payment entry
 // attributed to that agent, less reversals of that payment. A reversal counts
 // in the payment's window, matching ReleaseSpend. The sum is negated to give a
 // positive figure comparable with the counter.
-func (r *postgresRepo) RecomputeSpend(ctx context.Context, p Period) ([]Spend, error) {
+func (r *postgresRepo) SpendSnapshot(ctx context.Context, p Period) ([]Spend, []Spend, error) {
 	const q = `
-		SELECT agent_id, asset, -SUM(amount)
+		SELECT 'stored', agent_id, asset, spent
+		FROM agent_spend_counter
+		WHERE period_type = $1 AND period_start = $2
+
+		UNION ALL
+
+		SELECT 'recomputed', agent_id, asset, -SUM(amount)
 		FROM (
 			SELECT je.agent_id, po.asset, po.amount
 			FROM posting po
@@ -359,8 +368,8 @@ func (r *postgresRepo) RecomputeSpend(ctx context.Context, p Period) ([]Spend, e
 			WHERE je.agent_id IS NOT NULL
 			  AND je.kind = 'payment'
 			  AND la.type = 'customer_funds'
-			  AND po.created_at >= $1
-			  AND po.created_at < $2
+			  AND po.created_at >= $2
+			  AND po.created_at < $3
 
 			UNION ALL
 
@@ -375,49 +384,41 @@ func (r *postgresRepo) RecomputeSpend(ctx context.Context, p Period) ([]Spend, e
 			WHERE pay.agent_id IS NOT NULL
 			  AND je.kind = 'reversal'
 			  AND la.type = 'customer_funds'
-			  AND pay.created_at >= $1
-			  AND pay.created_at < $2
+			  AND pay.created_at >= $2
+			  AND pay.created_at < $3
 		) AS spend
 		GROUP BY agent_id, asset`
 
-	rows, err := r.db.Query(ctx, q, p.Start, p.End())
+	rows, err := r.db.Query(ctx, q, string(p.Type), p.Start, p.End())
 	if err != nil {
-		return nil, fmt.Errorf("ledger: recompute spend: %w", err)
+		return nil, nil, fmt.Errorf("ledger: spend snapshot: %w", err)
 	}
 	defer rows.Close()
 
-	return scanSpend(rows, p)
-}
-
-// scanSpend reads rows of agent, asset and amount into Spend values.
-func scanSpend(rows pgx.Rows, p Period) ([]Spend, error) {
-	var out []Spend
-
+	var stored, recomputed []Spend
 	for rows.Next() {
-		var agentID, asset string
+		var side, agentID, asset string
 		var amount decimal.Decimal
 
-		if err := rows.Scan(&agentID, &asset, &amount); err != nil {
-			return nil, fmt.Errorf("ledger: scan spend: %w", err)
+		if err := rows.Scan(&side, &agentID, &asset, &amount); err != nil {
+			return nil, nil, fmt.Errorf("ledger: scan spend: %w", err)
 		}
-
 		parsed, err := currency.Parse(amount.String(), currency.Asset(asset))
 		if err != nil {
-			return nil, fmt.Errorf("ledger: parse spend amount: %w", err)
+			return nil, nil, fmt.Errorf("ledger: parse spend amount: %w", err)
 		}
 
-		out = append(out, Spend{
-			AgentID: id.AgentID(agentID),
-			Period:  p,
-			Asset:   currency.Asset(asset),
-			Amount:  parsed,
-		})
+		sp := Spend{AgentID: id.AgentID(agentID), Period: p, Asset: currency.Asset(asset), Amount: parsed}
+		if side == "stored" {
+			stored = append(stored, sp)
+		} else {
+			recomputed = append(recomputed, sp)
+		}
 	}
-
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("ledger: iterate spend: %w", err)
+		return nil, nil, fmt.Errorf("ledger: iterate spend: %w", err)
 	}
-	return out, nil
+	return stored, recomputed, nil
 }
 
 // EnsurePartitions creates any missing monthly partitions.

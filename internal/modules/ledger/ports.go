@@ -29,8 +29,9 @@ type Repository interface {
 	// Balance sums every posting against one bucket.
 	Balance(ctx context.Context, ledgerAccountID id.LedgerAccountID, asset currency.Asset) (currency.Amount, error)
 
-	// BookTotal sums every posting in the book, which must always be zero.
-	BookTotal(ctx context.Context, asset currency.Asset) (currency.Amount, error)
+	// BookTotals sums every posting in the book, one total per asset that has
+	// any postings. Each must always be zero.
+	BookTotals(ctx context.Context) ([]currency.Amount, error)
 
 	// IncrementSpend adds amount to an agent's counter for one window and
 	// returns the new total, in a single atomic statement.
@@ -44,13 +45,14 @@ type Repository interface {
 	// exists yet.
 	SpentIn(ctx context.Context, agentID id.AgentID, p Period, asset currency.Asset) (currency.Amount, error)
 
-	// StoredSpend lists every counter recorded for one window.
-	StoredSpend(ctx context.Context, p Period) ([]Spend, error)
-
-	// RecomputeSpend derives what every agent's counter should be for one
-	// window, by summing the payment postings attributed to each agent, net
-	// of reversals of those payments.
-	RecomputeSpend(ctx context.Context, p Period) ([]Spend, error)
+	// SpendSnapshot reads every counter recorded for one window, and what
+	// each should be, derived from the payment postings attributed to each
+	// agent net of reversals of those payments.
+	//
+	// Both come from one statement, so from one snapshot. Read separately, a
+	// payment committing between the two reads would be in one and not the
+	// other, and would be reported as drift that does not exist.
+	SpendSnapshot(ctx context.Context, p Period) (stored, recomputed []Spend, err error)
 
 	// EnsurePartitions creates any missing monthly partitions, covering
 	// monthsAhead months from now.
