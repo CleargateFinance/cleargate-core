@@ -69,10 +69,7 @@ func NewTestDB(t *testing.T) *TestDB {
 	t.Helper()
 	ctx := context.Background()
 
-	sharedPostgres.once.Do(func() { sharedPostgres.err = startSharedPostgres(ctx, t) })
-	if sharedPostgres.err != nil {
-		t.Fatalf("fixtures: shared postgres: %v", sharedPostgres.err)
-	}
+	requireSharedPostgres(t)
 
 	name := fmt.Sprintf("t%d", sharedPostgres.next.Add(1))
 	exec(ctx, t, sharedPostgres.dsn, fmt.Sprintf(`CREATE DATABASE %s TEMPLATE %s`, name, templateDB))
@@ -95,6 +92,16 @@ func NewTestDB(t *testing.T) *TestDB {
 	t.Cleanup(db.Close)
 
 	return &TestDB{DB: db, DSN: dsn}
+}
+
+// requireSharedPostgres starts the shared container on first use and fails the
+// test if it cannot be started.
+func requireSharedPostgres(t *testing.T) {
+	t.Helper()
+	sharedPostgres.once.Do(func() { sharedPostgres.err = startSharedPostgres(context.Background(), t) })
+	if sharedPostgres.err != nil {
+		t.Fatalf("fixtures: shared postgres: %v", sharedPostgres.err)
+	}
 }
 
 // startSharedPostgres starts the container and migrates the template.
