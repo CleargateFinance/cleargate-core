@@ -37,6 +37,10 @@ type Repository interface {
 	// AgentPayments returns the agent's payments among ids, in no particular
 	// order. An id that names another agent's payment, or none, is left out.
 	AgentPayments(ctx context.Context, agentID id.AgentID, ids []id.PaymentID) ([]Recorded, error)
+
+	// DeclinesSince totals the account's declined payments decided at or after
+	// since, one row per agent and asset.
+	DeclinesSince(ctx context.Context, accountID id.AccountID, since time.Time) ([]DeclineTotal, error)
 }
 
 // Payment is the row InsertPayment writes.

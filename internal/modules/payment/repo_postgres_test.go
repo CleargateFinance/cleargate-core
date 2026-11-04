@@ -5,6 +5,7 @@ package payment
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -58,4 +59,41 @@ func TestLookup_NoIdsReadsNothing(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Empty(t, got)
+}
+
+// TestLookup_DeclinesSinceCountsEveryDeclineAndSumsWhatCouldHaveMoved: the
+// console's blocked count. An approval is not a decline, another account's
+// declines are not ours, and an invalid amount is counted but adds nothing.
+func TestLookup_DeclinesSinceCountsEveryDeclineAndSumsWhatCouldHaveMoved(t *testing.T) {
+	ctx := context.Background()
+	f := newSchemaFixture(t)
+
+	_, err := f.record(f.approved())
+	require.NoError(t, err)
+	for _, amount := range []string{"0.40", "12.5", "-5"} {
+		p, d := f.declinedNoMandate()
+		p.amount = amount
+		if amount == "-5" {
+			d.reason = "invalid_amount"
+		}
+		_, err = f.record(p, d)
+		require.NoError(t, err)
+	}
+	p, d := f.declinedNoMandate()
+	p.accountID, p.agentID = f.otherAccountID, f.otherAgentID
+	_, err = f.record(p, d)
+	require.NoError(t, err)
+
+	lookup := NewLookup(f.db.DB)
+	got, err := lookup.DeclinesSince(ctx, id.AccountID(f.accountID), f.at)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, id.AgentID(f.agentID), got[0].AgentID)
+	assert.Equal(t, 3, got[0].Count)
+	assert.Equal(t, "12.9", got[0].Amount.String())
+	assert.Equal(t, "USD", string(got[0].Amount.Asset()))
+
+	later, err := lookup.DeclinesSince(ctx, id.AccountID(f.accountID), f.at.Add(time.Microsecond))
+	require.NoError(t, err)
+	assert.Empty(t, later, "a decline before the window is not in it")
 }
