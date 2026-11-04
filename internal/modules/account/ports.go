@@ -184,12 +184,28 @@ type Repository interface {
 	// whether they were a member.
 	UpdateMembershipRole(ctx context.Context, accountID id.AccountID, userID id.UserID, role PermissionRole) (bool, error)
 
+	// AccountsOf lists the accounts a user belongs to, with their role in each,
+	// oldest membership first.
+	AccountsOf(ctx context.Context, userID id.UserID) ([]Membership, error)
+
+	// FreezeAccount stops the account spending and records who did it,
+	// reporting whether it was unfrozen until now. An account already frozen
+	// keeps its original freezer.
+	FreezeAccount(ctx context.Context, accountID id.AccountID, by id.UserID, at time.Time) (bool, error)
+
+	// UnfreezeAccount clears a freeze, reporting whether there was one. It
+	// leaves a platform suspension alone.
+	UnfreezeAccount(ctx context.Context, accountID id.AccountID) (bool, error)
+
 	// CreateAgent registers an agent against an account.
 	CreateAgent(ctx context.Context, accountID id.AccountID, name string, createdBy id.UserID) (Agent, error)
 
 	// Agent loads one registration, reporting ErrAgentNotFound when there is
 	// none.
 	Agent(ctx context.Context, agentID id.AgentID) (Agent, error)
+
+	// AgentsOf lists an account's agents, revoked ones included, oldest first.
+	AgentsOf(ctx context.Context, accountID id.AccountID) ([]Agent, error)
 
 	// SpendingBlocked reports whether the account is suspended or frozen,
 	// reporting ErrAccountNotFound when there is no such account.
