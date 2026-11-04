@@ -11,7 +11,6 @@ import (
 	"github.com/CleargateFinance/cleargate-core/internal/modules/decisionlog"
 	"github.com/CleargateFinance/cleargate-core/internal/modules/ledger"
 	"github.com/CleargateFinance/cleargate-core/internal/modules/payment"
-	"github.com/CleargateFinance/cleargate-core/internal/shared/currency"
 )
 
 // Worker is the background application, holding the jobs it runs and the
@@ -158,14 +157,20 @@ func (w *Worker) runJob(ctx context.Context, j job) {
 	}
 }
 
-// checkBook verifies that every posting in the book cancels out.
+// checkBook verifies that every posting in the book cancels out, in every
+// asset the book holds.
 func checkBook(ctx context.Context, log *slog.Logger, svc *ledger.Service) error {
-	check, err := svc.CheckBook(ctx, currency.USD)
+	checks, err := svc.CheckBook(ctx)
 	if err != nil {
 		return err
 	}
 
-	if !check.Balanced() {
+	balanced := true
+	for _, check := range checks {
+		if check.Balanced() {
+			continue
+		}
+		balanced = false
 		// This should be unreachable, since the database rejects an unbalanced
 		// entry. Reaching it means an invariant that cannot normally be
 		// violated has been, so it is logged at error rather than warning and
@@ -174,10 +179,11 @@ func checkBook(ctx context.Context, log *slog.Logger, svc *ledger.Service) error
 			slog.String("asset", string(check.Asset)),
 			slog.String("total", check.Total.String()),
 		)
-		return nil
 	}
 
-	log.Info("ledger balances", slog.String("asset", string(check.Asset)))
+	if balanced {
+		log.Info("ledger balances", slog.Int("assets", len(checks)))
+	}
 	return nil
 }
 
