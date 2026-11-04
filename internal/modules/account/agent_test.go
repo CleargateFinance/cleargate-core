@@ -181,10 +181,19 @@ func TestVerify_ConstantTimeOnMismatch(t *testing.T) {
 	unknown, err := crypto.NewAPIKey()
 	require.NoError(t, err)
 
+	// other is a character that differs from c. A fixed replacement would be
+	// no change at all whenever the random secret already had it there.
+	other := func(c byte) string {
+		if c == 'x' {
+			return "y"
+		}
+		return "x"
+	}
+
 	tests := map[string]string{
 		"unknown handle":      unknown.Plaintext(),
-		"wrong secret":        crypto.KeyEnvironmentLive + "_" + key.Prefix() + "_" + "x" + secret[1:],
-		"secret wrong at end": crypto.KeyEnvironmentLive + "_" + key.Prefix() + "_" + secret[:len(secret)-1] + "x",
+		"wrong secret":        crypto.KeyEnvironmentLive + "_" + key.Prefix() + "_" + other(secret[0]) + secret[1:],
+		"secret wrong at end": crypto.KeyEnvironmentLive + "_" + key.Prefix() + "_" + secret[:len(secret)-1] + other(secret[len(secret)-1]),
 		"empty secret half":   crypto.KeyEnvironmentLive + "_" + key.Prefix() + "_",
 		"garbage":             "not-a-key",
 	}
