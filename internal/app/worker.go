@@ -68,8 +68,10 @@ func BuildWorker(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Wo
 				// from the postings. Anything cached can drift, so the
 				// derivation is re-run and the two compared.
 				name:  "spend_counter_reconcile",
-				every: 24 * time.Hour,
-				run:   func(ctx context.Context) error { return checkSpendCounters(ctx, log, ledgerSvc) },
+				every: counterCheckInterval,
+				run: func(ctx context.Context) error {
+					return checkSpendCounters(ctx, log, ledgerSvc, time.Now())
+				},
 			},
 			{
 				// Partitions are created ahead of time so a write never
@@ -157,6 +159,16 @@ func (w *Worker) runJob(ctx context.Context, j job) {
 	}
 }
 
+// alertKey marks a log line that must reach a person, with a stable value
+// naming what broke, so an alerting rule can match on it rather than on the
+// wording of a message (§8.10). Nothing pages on it yet; that is Phase 8.
+const alertKey = "alert"
+
+// counterCheckInterval is how often spend counters are reconciled. A day, as
+// Task 1.3 sets: the counters are cheap to trust between checks because the
+// payment path writes them in the same transaction as the postings.
+const counterCheckInterval = 24 * time.Hour
+
 // checkBook verifies that every posting in the book cancels out, in every
 // asset the book holds.
 func checkBook(ctx context.Context, log *slog.Logger, svc *ledger.Service) error {
@@ -171,11 +183,12 @@ func checkBook(ctx context.Context, log *slog.Logger, svc *ledger.Service) error
 			continue
 		}
 		balanced = false
-		// This should be unreachable, since the database rejects an unbalanced
-		// entry. Reaching it means an invariant that cannot normally be
-		// violated has been, so it is logged at error rather than warning and
-		// is worth waking someone for.
+		// This should be unreachable, since the database rejects an
+		// unbalanced entry. Reaching it means an invariant that cannot
+		// normally be violated has been, so it is worth waking someone for.
+		// The job itself succeeded: it found what it exists to find.
 		log.Error("ledger does not balance",
+			slog.String(alertKey, "ledger_imbalance"),
 			slog.String("asset", string(check.Asset)),
 			slog.String("total", check.Total.String()),
 		)
@@ -188,11 +201,14 @@ func checkBook(ctx context.Context, log *slog.Logger, svc *ledger.Service) error
 }
 
 // checkSpendCounters compares each agent's counter against the postings behind
-// it, for the windows currently open.
-func checkSpendCounters(ctx context.Context, log *slog.Logger, svc *ledger.Service) error {
-	now := time.Now().UTC()
-
-	for _, p := range ledger.PeriodsFor(now) {
+// it, for every window open now and every window open a check interval ago.
+//
+// The earlier windows are what make the check complete. A window is checked
+// whole only after it closes, and a daily job running at 15:00 would
+// otherwise never see the payments made between 15:00 and midnight in that
+// day's window, nor the last day of a month in the month's.
+func checkSpendCounters(ctx context.Context, log *slog.Logger, svc *ledger.Service, now time.Time) error {
+	for _, p := range reconcilePeriods(now.UTC(), counterCheckInterval) {
 		drifts, err := svc.CheckSpendCounters(ctx, p)
 		if err != nil {
 			return err
@@ -200,6 +216,7 @@ func checkSpendCounters(ctx context.Context, log *slog.Logger, svc *ledger.Servi
 
 		for _, d := range drifts {
 			log.Error("spend counter drift",
+				slog.String(alertKey, "spend_counter_drift"),
 				slog.String("agent_id", string(d.AgentID)),
 				slog.String("period_type", string(d.Period.Type)),
 				slog.String("period_start", d.Period.Start.Format(time.DateOnly)),
@@ -218,4 +235,26 @@ func checkSpendCounters(ctx context.Context, log *slog.Logger, svc *ledger.Servi
 	}
 
 	return nil
+}
+
+// reconcilePeriods is every window that holds now or now minus every, each
+// once. Run every interval, it checks each window at least once after it has
+// closed.
+func reconcilePeriods(now time.Time, every time.Duration) []ledger.Period {
+	type key struct {
+		typ   ledger.PeriodType
+		start int64
+	}
+	var out []ledger.Period
+	seen := map[key]bool{}
+	for _, at := range []time.Time{now.Add(-every), now} {
+		for _, p := range ledger.PeriodsFor(at) {
+			k := key{p.Type, p.Start.UnixNano()}
+			if !seen[k] {
+				seen[k] = true
+				out = append(out, p)
+			}
+		}
+	}
+	return out
 }
