@@ -178,6 +178,18 @@ type Recorded struct {
 	Status Status
 }
 
+// DeclineTotal is how many of one agent's payments in one asset were
+// declined, and how much they asked for.
+type DeclineTotal struct {
+	AgentID id.AgentID
+	Count   int
+
+	// Amount sums the declines that asked for a positive amount. An
+	// invalid_amount decline asked for nothing that could have moved, so it
+	// is counted but adds nothing here.
+	Amount currency.Amount
+}
+
 // Rail says how payments move. Recorded on every payment for reporting and
 // reconciliation; no rule reads it (Task 5.1).
 type Rail struct {

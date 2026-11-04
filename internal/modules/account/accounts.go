@@ -29,6 +29,26 @@ func (s *Service) Accounts(ctx context.Context, actor Session) ([]Membership, er
 	return s.repo.AccountsOf(ctx, actor.UserID)
 }
 
+// Membership is one of Accounts, by identifier. Somebody outside the account
+// gets ErrNotPermitted, the answer every /accounts/:id route gives a
+// non-member.
+//
+// It reads the person's whole list and picks from it. A person belongs to a
+// handful of accounts, and one query that cannot answer for somebody else's
+// account is simpler to trust than a second one written to.
+func (s *Service) Membership(ctx context.Context, actor Session, accountID id.AccountID) (Membership, error) {
+	accounts, err := s.repo.AccountsOf(ctx, actor.UserID)
+	if err != nil {
+		return Membership{}, err
+	}
+	for _, a := range accounts {
+		if a.AccountID == accountID {
+			return a, nil
+		}
+	}
+	return Membership{}, ErrNotPermitted
+}
+
 // Agents lists an account's agents, revoked ones included, so the console can
 // show whose decision history is whose.
 //

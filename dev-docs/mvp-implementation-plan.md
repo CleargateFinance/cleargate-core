@@ -751,7 +751,7 @@ Three surfaces: `public` (no credential), `agent` (a bearer API key) and `consol
 - [x] `GET /v1/agents/{id}/decisions` — the console's decision log, including declines. **Built** in `internal/modules/decisionlog` (`Log` in `service.go`, `AgentDecisions` in `repo_postgres.go`, `handler_http.go`), with `payment.Lookup` for what each decision was about and `account.Service.RequireAgentReader` for who may read it. Any member may, a viewer included. Paging is by cursor, filtered by `?outcome=`. The tests are `internal/app/decision_routes_test.go`, `internal/modules/decisionlog/domain_test.go`, `service_test.go` and `repo_postgres_test.go`, and `internal/modules/payment/repo_postgres_test.go` (Revision notes, 4 November 2026, "decision log route").
 - [x] `POST /v1/accounts/{id}/agents` — **connects** an existing external agent, returning a registration. `POST /v1/agents/{id}/revoke` disconnects it.
 - [x] `POST /v1/agents/{id}/credentials` · `POST /v1/agents/{id}/credentials/{cid}/revoke` — issue and revoke named keys, so rotation never requires destroying the agent.
-- [ ] `GET /v1/accounts/{id}/summary` — balance, spend against caps, blocked count.
+- [x] `GET /v1/accounts/{id}/summary` — balance, spend against caps, blocked count. **Built** as a new module, `internal/modules/summary`, that owns no tables and reads every figure through ports: `account.Service.Membership` and `Agents`, the ledger balance and counters, `mandate.Service.Current`, and `payment.Lookup.DeclinesSince`. The tests are `internal/app/summary_routes_test.go`, `internal/modules/summary/service_test.go` and `internal/modules/payment/repo_postgres_test.go` (Revision notes, 4 November 2026, "account summary").
 - [ ] `GET /v1/accounts/{id}/deposit-address` — the account wallet's address (Task 7.5).
 - [x] `POST /v1/accounts/{id}/freeze` · `/unfreeze` — owner or admin, instant (Task 2.8).
 - **Built** for the agent, key and freeze routes in `internal/modules/account/handler.go` (`RegisterConsoleRoutes`), with `GET /v1/accounts`, `GET /v1/accounts/{id}/agents` and `GET /v1/agents/{id}/credentials` beside them. The service is `internal/modules/account/accounts.go`; the tests are `internal/app/agent_routes_test.go` and `internal/modules/account/freeze_test.go`. A guardian may freeze, and unfreezing needs a step-up (Revision notes, 4 November 2026).
@@ -1084,6 +1084,14 @@ Tasks marked **Not in MVP** are outside this total. Phase 6 grows because no han
 ---
 
 ## Revision notes
+
+**4 November 2026, account summary (Task 6.2).** Differences from the plan:
+
+- **It is its own module, `summary`, with no tables.** It reads from four modules, and putting it in `account` would have given that module ports to the ledger, mandates and payments for one page.
+- **What it shows:** the account (with the reader's role and `frozen_at`); the balance in USD at par; the UTC day and month windows; and, for each agent, the mandate's caps (or null), spent today, spent this month and its declines this month. It also shows the account's declines this month, added up. Any member may read it, a viewer included, and a non-member gets the account routes' `403`.
+- **"Blocked count" is the declines since the start of the UTC month**, the window the monthly cap is enforced in. Each total is per asset, since a decline can name an asset the mandate does not permit. An `invalid_amount` decline is counted but adds nothing to the amount. Holds join the count when Task 1.5's states come into use.
+- **The figures are separate reads, not one snapshot.** A payment committing meanwhile can show in the balance before it shows in a counter, and a refresh corrects it. The page reads the mandate and the counters once per agent; batch the ports when an account has hundreds of agents.
+- **No market value beside the balance** until the peg monitor exists (Phase 8). The "Known gaps" page already lists it.
 
 **4 November 2026, decision log route (Task 6.2).** Differences from the plan:
 

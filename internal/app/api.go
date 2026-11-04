@@ -15,8 +15,10 @@ import (
 	"github.com/CleargateFinance/cleargate-core/internal/infrastructure/server"
 	"github.com/CleargateFinance/cleargate-core/internal/modules/account"
 	"github.com/CleargateFinance/cleargate-core/internal/modules/decisionlog"
+	"github.com/CleargateFinance/cleargate-core/internal/modules/ledger"
 	"github.com/CleargateFinance/cleargate-core/internal/modules/mandate"
 	"github.com/CleargateFinance/cleargate-core/internal/modules/payment"
+	"github.com/CleargateFinance/cleargate-core/internal/modules/summary"
 )
 
 // API is the fully wired HTTP application, plus the resources it owns.
@@ -32,6 +34,7 @@ type API struct {
 	accounts  *account.Module
 	mandates  *mandate.Module
 	decisions *decisionlog.Module
+	summaries *summary.Module
 
 	// surfaces are kept so a test can add a probe route to each and check the
 	// group's middleware, not only the routes registered today.
@@ -112,6 +115,15 @@ func BuildAPI(ctx context.Context, cfg *config.Config, log *slog.Logger) (*API, 
 	if err != nil {
 		return fail(fmt.Errorf("app: decision log module: %w", err))
 	}
+	summaries, err := summary.New(summary.Deps{
+		Accounts: SummaryAccounts{Accounts: accounts.Service()},
+		Ledger:   SummaryLedger{Ledger: ledger.New(db, nil).Service()},
+		Mandates: SummaryMandates{Mandates: mandates.Service()},
+		Payments: SummaryPayments{Payments: payment.NewLookup(db)},
+	})
+	if err != nil {
+		return fail(fmt.Errorf("app: summary module: %w", err))
+	}
 
 	limits, err := newLimiters(cfg.RateLimit, cacheClient, log)
 	if err != nil {
@@ -130,6 +142,7 @@ func BuildAPI(ctx context.Context, cfg *config.Config, log *slog.Logger) (*API, 
 		accounts:  accounts,
 		mandates:  mandates,
 		decisions: decisions,
+		summaries: summaries,
 	}
 
 	api.registerRoutes(limits)

@@ -149,6 +149,41 @@ func (r *postgresRepo) AgentPayments(ctx context.Context, agentID id.AgentID, id
 	return out, nil
 }
 
+// DeclinesSince groups by agent and asset in one statement. A decline can be
+// in any asset the agent asked for (asset_not_permitted is one), so the sums
+// stay apart rather than being added across assets.
+func (r *postgresRepo) DeclinesSince(ctx context.Context, accountID id.AccountID, since time.Time) ([]DeclineTotal, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT agent_id, asset, count(*), COALESCE(sum(amount) FILTER (WHERE amount > 0), 0)
+		FROM payment
+		WHERE account_id = $1 AND status = 'declined' AND decided_at >= $2
+		GROUP BY agent_id, asset
+		ORDER BY agent_id, asset`, string(accountID), since)
+	if err != nil {
+		return nil, fmt.Errorf("payment: total declines: %w", err)
+	}
+	defer rows.Close()
+
+	var out []DeclineTotal
+	for rows.Next() {
+		var t DeclineTotal
+		var agentID, asset string
+		var amount decimal.Decimal
+		if err := rows.Scan(&agentID, &asset, &t.Count, &amount); err != nil {
+			return nil, fmt.Errorf("payment: scan decline total: %w", err)
+		}
+		if t.Amount, err = currency.Parse(amount.String(), currency.Asset(asset)); err != nil {
+			return nil, fmt.Errorf("payment: parse decline total: %w", err)
+		}
+		t.AgentID = id.AgentID(agentID)
+		out = append(out, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("payment: total declines: %w", err)
+	}
+	return out, nil
+}
+
 // nullable stores an empty string as NULL: not sent is not the same as sent
 // empty, and the columns are nullable for exactly that.
 func nullable(s string) any {

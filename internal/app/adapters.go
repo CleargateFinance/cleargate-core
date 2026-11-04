@@ -12,6 +12,7 @@ import (
 	"github.com/CleargateFinance/cleargate-core/internal/modules/ledger"
 	"github.com/CleargateFinance/cleargate-core/internal/modules/mandate"
 	"github.com/CleargateFinance/cleargate-core/internal/modules/payment"
+	"github.com/CleargateFinance/cleargate-core/internal/modules/summary"
 	"github.com/CleargateFinance/cleargate-core/internal/shared/currency"
 	"github.com/CleargateFinance/cleargate-core/internal/shared/id"
 )
@@ -273,6 +274,107 @@ func (p DecisionPayments) AgentPayments(
 			Amount: r.Amount, Category: r.Category, PayTo: r.PayTo, ResourceURL: r.ResourceURL,
 			Status: string(r.Status),
 		}
+	}
+	return out, nil
+}
+
+// SummaryAccounts satisfies summary.Accounts with the account module.
+type SummaryAccounts struct {
+	Accounts *account.Service
+}
+
+var _ summary.Accounts = SummaryAccounts{}
+
+// Membership implements summary.Accounts.
+func (a SummaryAccounts) Membership(ctx context.Context, actor summary.Actor, accountID id.AccountID) (summary.Account, error) {
+	m, err := a.Accounts.Membership(ctx, account.Session{UserID: actor.UserID}, accountID)
+	if err != nil {
+		return summary.Account{}, err
+	}
+	return summary.Account{ID: m.AccountID, Name: m.Name, Role: string(m.Role), FrozenAt: m.FrozenAt}, nil
+}
+
+// Agents implements summary.Accounts.
+func (a SummaryAccounts) Agents(ctx context.Context, actor summary.Actor, accountID id.AccountID) ([]summary.Agent, error) {
+	agents, err := a.Accounts.Agents(ctx, account.Session{UserID: actor.UserID}, accountID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]summary.Agent, len(agents))
+	for i, g := range agents {
+		out[i] = summary.Agent{ID: g.ID, Name: g.Name, Status: string(g.Status)}
+	}
+	return out, nil
+}
+
+// SummaryLedger satisfies summary.Ledger with the ledger module.
+type SummaryLedger struct {
+	Ledger *ledger.Service
+}
+
+var _ summary.Ledger = SummaryLedger{}
+
+// Balance implements summary.Ledger, in the unit of account.
+func (l SummaryLedger) Balance(ctx context.Context, accountID id.AccountID) (currency.Amount, error) {
+	return l.Ledger.AccountBalance(ctx, accountID, currency.USD)
+}
+
+// Spent implements summary.Ledger.
+func (l SummaryLedger) Spent(ctx context.Context, agentID id.AgentID, at time.Time) (currency.Amount, currency.Amount, error) {
+	return PaymentLedger(l).Spent(ctx, agentID, currency.USD, at)
+}
+
+// Windows implements summary.Ledger.
+func (l SummaryLedger) Windows(at time.Time) (time.Time, time.Time) {
+	return ledger.DayPeriod(at).Start, ledger.MonthPeriod(at).Start
+}
+
+// SummaryMandates satisfies summary.Mandates with the mandate module.
+type SummaryMandates struct {
+	Mandates *mandate.Service
+}
+
+var _ summary.Mandates = SummaryMandates{}
+
+// Current implements summary.Mandates. Having none is a line on the page, not
+// a failure of it.
+func (m SummaryMandates) Current(ctx context.Context, agentID id.AgentID) (*summary.Caps, error) {
+	current, err := m.Mandates.Current(ctx, agentID)
+	if errors.Is(err, mandate.ErrNoMandate) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	r := current.Rules
+	return &summary.Caps{
+		ID: current.ID, Version: current.Version,
+		MaxPerTx: r.MaxPerTx, MaxPerDay: r.MaxPerDay, MaxPerMonth: r.MaxPerMonth, ExpiresAt: r.ExpiresAt,
+	}, nil
+}
+
+// SummaryPayments satisfies summary.Payments with the payment module.
+type SummaryPayments struct {
+	Payments *payment.Lookup
+}
+
+var _ summary.Payments = SummaryPayments{}
+
+// DeclinesSince implements summary.Payments, folding the per-asset rows into
+// one entry per agent.
+func (p SummaryPayments) DeclinesSince(ctx context.Context, accountID id.AccountID, since time.Time) (map[id.AgentID]summary.Declines, error) {
+	totals, err := p.Payments.DeclinesSince(ctx, accountID, since)
+	if err != nil {
+		return nil, err
+	}
+	out := map[id.AgentID]summary.Declines{}
+	for _, t := range totals {
+		d := out[t.AgentID]
+		d.Count += t.Count
+		if !t.Amount.IsZero() {
+			d.Amounts = append(d.Amounts, t.Amount)
+		}
+		out[t.AgentID] = d
 	}
 	return out, nil
 }

@@ -350,8 +350,8 @@ func (r *Retention) ExpireKeys(ctx context.Context) (int64, error) {
 	return r.repo.DeleteKeysBefore(ctx, r.clock.Now().Add(-KeyRetention))
 }
 
-// Lookup reads payments already recorded, for the decision log to show what
-// each decision was about. Separate from Service for the reason Retention is:
+// Lookup reads payments already recorded: for the decision log, what each
+// decision was about, and for the account summary, how many were declined. Separate from Service for the reason Retention is:
 // reading a payment needs none of the payment path's ports.
 //
 // It has no actor check. Its caller has already established that the person
@@ -367,4 +367,10 @@ func (l *Lookup) AgentPayments(ctx context.Context, agentID id.AgentID, ids []id
 		return nil, nil
 	}
 	return l.repo.AgentPayments(ctx, agentID, ids)
+}
+
+// DeclinesSince totals the account's declines decided at or after since, per
+// agent and asset: the console's "blocked 14 payments" (§12.1).
+func (l *Lookup) DeclinesSince(ctx context.Context, accountID id.AccountID, since time.Time) ([]DeclineTotal, error) {
+	return l.repo.DeclinesSince(ctx, accountID, since)
 }
