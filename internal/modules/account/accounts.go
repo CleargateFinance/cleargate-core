@@ -2,6 +2,7 @@ package account
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 
@@ -38,6 +39,24 @@ func (s *Service) Agents(ctx context.Context, actor Session, accountID id.Accoun
 		return nil, err
 	}
 	return s.repo.AgentsOf(ctx, accountID)
+}
+
+// RequireAgentReader reports whether a session may read an agent's records,
+// its decision log above all.
+//
+// Any member of the agent's account may, by the reasoning in Agents, and a
+// revoked agent stays readable. Somebody outside the account is told the
+// agent does not exist, as requireAgentManagerOf explains.
+func (s *Service) RequireAgentReader(ctx context.Context, actor Session, agentID id.AgentID) error {
+	agent, err := s.repo.Agent(ctx, agentID)
+	if err != nil {
+		return err
+	}
+	_, err = s.repo.MembershipRole(ctx, agent.AccountID, actor.UserID)
+	if errors.Is(err, ErrNotPermitted) {
+		return ErrAgentNotFound
+	}
+	return err
 }
 
 // FreezeAccount stops every agent on the account from spending, at once.
