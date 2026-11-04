@@ -230,6 +230,13 @@ func TestSurfaces_EachTakesOnlyItsOwnCredential(t *testing.T) {
 	f.api.surfaces.console.GET("/probe/console", probe)
 	session := f.session("admin@example.com", "admin", true)
 
+	// The walk sends a session to every console route, revoke and freeze
+	// included, so it uses a person from another account. They authenticate,
+	// which is all the walk asks, and change nothing here.
+	other := &apiFixture{t: t, db: f.db, api: f.api}
+	other.seedAgent()
+	stranger := other.session("stranger@example.com", "owner", true)
+
 	// Adding a route here is a decision that anyone may call it.
 	public := map[string]bool{
 		"GET /v1/health":                       true,
@@ -246,7 +253,7 @@ func TestSurfaces_EachTakesOnlyItsOwnCredential(t *testing.T) {
 	require.NotEmpty(t, routes)
 	for _, r := range routes {
 		name := r.Method + " " + r.Path
-		path := strings.ReplaceAll(r.Path, ":id", string(f.agentID))
+		path := strings.NewReplacer(":id", string(f.agentID), ":cid", "00000000-0000-0000-0000-000000000000").Replace(r.Path)
 		t.Run(name, func(t *testing.T) {
 			none := f.do(r.Method, path, "", credentials{})
 			if public[name] {
@@ -257,7 +264,7 @@ func TestSurfaces_EachTakesOnlyItsOwnCredential(t *testing.T) {
 			}
 
 			asAgent := f.do(r.Method, path, "", credentials{agentKey: f.agentKey})
-			asUser := f.do(r.Method, path, "", credentials{sessionToken: session, consoleHeader: true})
+			asUser := f.do(r.Method, path, "", credentials{sessionToken: stranger, consoleHeader: true})
 			assert.Equal(t, http.StatusUnauthorized, none.Code, "no credential, no answer")
 			assert.False(t, authenticated(asAgent.Code) && authenticated(asUser.Code),
 				"a route that accepts both an agent key and a session joins the two surfaces")
