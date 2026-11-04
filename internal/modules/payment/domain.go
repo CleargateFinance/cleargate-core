@@ -164,6 +164,20 @@ const (
 	StatusAuthorized Status = "authorized"
 )
 
+// Recorded is a payment as it was stored: what the agent asked for, and where
+// the payment stands now.
+type Recorded struct {
+	ID          id.PaymentID
+	Amount      currency.Amount
+	Category    string
+	PayTo       string
+	ResourceURL string
+
+	// Status is current, not as decided: an authorization later settles,
+	// expires or fails (Task 7.7).
+	Status Status
+}
+
 // Rail says how payments move. Recorded on every payment for reporting and
 // reconciliation; no rule reads it (Task 5.1).
 type Rail struct {

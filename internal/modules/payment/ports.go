@@ -33,6 +33,10 @@ type Repository interface {
 	// DeleteKeysBefore deletes keys stored before an instant, reporting how
 	// many.
 	DeleteKeysBefore(ctx context.Context, before time.Time) (int64, error)
+
+	// AgentPayments returns the agent's payments among ids, in no particular
+	// order. An id that names another agent's payment, or none, is left out.
+	AgentPayments(ctx context.Context, agentID id.AgentID, ids []id.PaymentID) ([]Recorded, error)
 }
 
 // Payment is the row InsertPayment writes.
