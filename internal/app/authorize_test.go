@@ -128,7 +128,7 @@ func newAuthorizeFixture(t *testing.T, balance string) *authorizeFixture {
 		Mandates:       PaymentMandates{Mandates: mandate.NewService(mandate.NewPostgresRepository(db.DB), nil, clock, nil)},
 		Counterparties: PaymentCounterparties{Counterparties: counterparty.New(db.DB, clock).Service()},
 		Ledger:         PaymentLedger{Ledger: f.ledger},
-		Decisions:      PaymentDecisions{Decisions: decisionlog.New(db.DB).Service()},
+		Decisions:      PaymentDecisions{Decisions: decisionlog.NewService(decisionlog.NewPostgresRepository(db.DB))},
 		Outbox:         outbox.NewWriter(db.DB),
 		Rail:           devnetRail,
 	}
