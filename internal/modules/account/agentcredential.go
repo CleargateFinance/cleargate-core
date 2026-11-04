@@ -56,12 +56,12 @@ func (s *Service) IssueCredential(ctx context.Context, actor Session, agentID id
 	if err != nil {
 		return crypto.APIKey{}, AgentCredential{}, err
 	}
+	// Membership first: an outsider must not learn that the agent was revoked.
+	if err := s.requireAgentManagerOf(ctx, actor, agent.AccountID); err != nil {
+		return crypto.APIKey{}, AgentCredential{}, err
+	}
 	if !agent.Active() {
 		return crypto.APIKey{}, AgentCredential{}, ErrAgentRevoked
-	}
-
-	if err := s.requireAgentManager(ctx, actor, agent.AccountID); err != nil {
-		return crypto.APIKey{}, AgentCredential{}, err
 	}
 	if err := s.RequireStepUp(ctx, actor); err != nil {
 		return crypto.APIKey{}, AgentCredential{}, err
@@ -98,7 +98,7 @@ func (s *Service) RevokeCredential(ctx context.Context, actor Session, agentID i
 	if err != nil {
 		return err
 	}
-	if err := s.requireAgentManager(ctx, actor, agent.AccountID); err != nil {
+	if err := s.requireAgentManagerOf(ctx, actor, agent.AccountID); err != nil {
 		return err
 	}
 
@@ -129,7 +129,7 @@ func (s *Service) RevokeAgent(ctx context.Context, actor Session, agentID id.Age
 	if err != nil {
 		return err
 	}
-	if err := s.requireAgentManager(ctx, actor, agent.AccountID); err != nil {
+	if err := s.requireAgentManagerOf(ctx, actor, agent.AccountID); err != nil {
 		return err
 	}
 	if !agent.Active() {
@@ -203,7 +203,7 @@ func (s *Service) ListCredentials(ctx context.Context, actor Session, agentID id
 	if err != nil {
 		return nil, err
 	}
-	if err := s.requireAgentManager(ctx, actor, agent.AccountID); err != nil {
+	if err := s.requireAgentManagerOf(ctx, actor, agent.AccountID); err != nil {
 		return nil, err
 	}
 

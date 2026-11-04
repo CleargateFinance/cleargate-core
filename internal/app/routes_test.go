@@ -330,7 +330,7 @@ func TestMandateRoute_Refusals(t *testing.T) {
 	}{
 		"no recent step-up":    {path, rulesJSON, noStepUp, http.StatusForbidden},
 		"viewer":               {path, rulesJSON, viewer, http.StatusForbidden},
-		"another account":      {path, rulesJSON, stranger, http.StatusForbidden},
+		"another account":      {path, rulesJSON, stranger, http.StatusNotFound},
 		"not a uuid":           {"/v1/agents/not-a-uuid/mandate", rulesJSON, admin, http.StatusNotFound},
 		"unknown agent":        {"/v1/agents/00000000-0000-0000-0000-000000000000/mandate", rulesJSON, admin, http.StatusNotFound},
 		"not json":             {path, "{", admin, http.StatusBadRequest},
