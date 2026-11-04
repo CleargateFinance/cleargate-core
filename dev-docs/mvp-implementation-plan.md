@@ -151,10 +151,12 @@ git commit -m "feat: walking skeleton — migrations, gin bootstrap, health endp
 
 ### Task 1.4: Reconciliation job
 
-- [ ] Worker job, hourly: `SELECT SUM(amount) FROM posting` must be `0`; non-zero pages immediately (§8.3).
+**Built** in `internal/modules/ledger/reconcile.go` (`CheckBook`, `CheckSpendCounters`) and `internal/app/worker.go` (the `ledger_book_check` and `spend_counter_reconcile` jobs). The tests are `TestCheckBook_*` and `TestCheckSpendCounters_*` in `internal/modules/ledger/repo_postgres_test.go`, and `internal/app/worker_jobs_test.go` and `worker_test.go`. The differences are in the Revision notes for 4 November 2026.
+
+- [x] Worker job, hourly: `SELECT SUM(amount) FROM posting` must be `0`; non-zero pages immediately (§8.3).
 - [x] Nightly: recompute counters from postings, alarm on drift.
-- [ ] Test: inject an imbalance in a test DB, assert the job reports it.
-- [ ] Commit `feat(worker): ledger zero-sum and counter reconciliation`
+- [x] Test: inject an imbalance in a test DB, assert the job reports it.
+- [x] Commit `feat(worker): ledger zero-sum and counter reconciliation`
 
 ### Task 1.5: Hold states — the mechanism, dormant
 
@@ -1082,6 +1084,15 @@ Tasks marked **Not in MVP** are outside this total. Phase 6 grows because no han
 ---
 
 ## Revision notes
+
+**4 November 2026, Task 1.4.** The hourly book check and the daily counter check already ran in the worker. Finishing the task changed four things:
+
+- **The book check sums every asset.** It summed `USD` postings only, so a posting in any other asset, which only a defect would write, was never checked. It now groups the book by asset and reports each non-zero total.
+- **The counter check reads both sides in one statement.** The stored counters and the recomputed spend were two statements, and under READ COMMITTED each sees its own snapshot. A payment committing between them was reported as drift. `TestCheckSpendCounters_NoFalseDriftWhilePaymentsCommit` commits payments while the check runs.
+- **The counter check also covers the windows open one interval ago.** A daily run checked only the windows open when it ran, so a day's payments after that hour were never checked in the day's window, nor a month's last day in the month's. Each window is now checked whole after it closes.
+- **"Pages" means an error log line with a stable `alert` field**, `ledger_imbalance` or `spend_counter_drift`. Nothing reads it yet. Phase 8's alerting must route on that field, or an imbalance reaches only the log.
+
+The test injects its imbalance with `session_replication_role = replica`, which skips the balance trigger for one transaction. Only a superuser may set it, which the test database's user is. The application's database user should not be one, or it could do the same.
 
 **4 November 2026, passkeys after the first version (owner decision).** The first version ships with TOTP only: mandates stay approved by a TOTP step-up (Task 3.2's stand-in), and Tasks 2.9 and 3.1 come after it. When they are built, the Relying Party ID is `cleargatefinance.xyz`, the domain in use now. Passkeys are bound to it for good, so moving to another domain later means every customer enrols again.
 
