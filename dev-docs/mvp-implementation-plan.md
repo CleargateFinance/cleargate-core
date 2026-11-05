@@ -952,7 +952,7 @@ Three background workers, none in the payment hot path, each solving a distinct 
 
 - [x] `WalletProvider` with one wallet per account, never per agent: `Address(ctx, accountID)` and `SignTransaction(ctx, accountID, tx)`. **Built** in `internal/modules/settlement`: the two calls are on `Service` (`service.go`), over a `WalletProvider` port (`ports.go`) and the `account_wallet` table (migration 000009, `repo_postgres.go`), which holds one address per account per chain. The tests are `service_test.go` and `repo_postgres_test.go` there (Revision notes, 5 November 2026, "account wallet").
 - [x] Implemented with Coinbase CDP server wallets (§8.8 — no private keys in-house), on Solana devnet for testnet. The adapter uses CDP's Go SDK (`github.com/coinbase/cdp-sdk/go`), a client generated from CDP's OpenAPI spec that also signs the request auth. **The SDK is sealed inside the adapter** and must not leak into any module that authorizes payments. **Built** as `internal/infrastructure/cdp` (`cdp_test.go` runs it against a fake CDP), adapted to the port by `SettlementWallets` in `internal/app/adapters.go` (`settlement_wallets_test.go`).
-- [ ] **Tests:** `TestWallet_OnePerAccount`, `TestWallet_SignsVerifiableTransaction`. Written in `internal/infrastructure/cdp/cdp_devnet_test.go`; they skip without CDP credentials, and this stays open until they have passed against devnet.
+- [x] **Tests:** `TestWallet_OnePerAccount`, `TestWallet_SignsVerifiableTransaction`. **Built** in `internal/infrastructure/cdp/cdp_devnet_test.go`; they skip without CDP credentials, and passed against real CDP on 5 November 2026 (`set -a; source .env; set +a; go test -tags integration -run TestWallet ./internal/infrastructure/cdp/`).
 
 ### Task 7.6: Signing `exact` payments on Solana
 
