@@ -757,13 +757,13 @@ Three surfaces: `public` (no credential), `agent` (a bearer API key) and `consol
 - **Built** for the agent, key and freeze routes in `internal/modules/account/handler.go` (`RegisterConsoleRoutes`), with `GET /v1/accounts`, `GET /v1/accounts/{id}/agents` and `GET /v1/agents/{id}/credentials` beside them. The service is `internal/modules/account/accounts.go`; the tests are `internal/app/agent_routes_test.go` and `internal/modules/account/freeze_test.go`. A guardian may freeze, and unfreezing needs a step-up (Revision notes, 4 November 2026).
 - [x] `GET /v1/mfa` · `POST /v1/mfa/totp` · `/totp/confirm` · `/step-up`. **Built** in `internal/modules/account/handler.go` (`RegisterConsoleRoutes`); the tests are `internal/app/mfa_routes_test.go`. A recovery code is spent through `/step-up`, and there is no `/recovery-codes` route (Revision notes, 3 November 2026, "second-factor routes").
 - [x] `PUT /v1/agents/{id}/mandate` — sets the rules behind a recent TOTP step-up (Task 3.2). With Task 3.1, `POST /v1/agents/{id}/mandate/draft` canonicalises the rules and returns the WebAuthn challenge, and the `PUT` carries the assertion instead.
-- [ ] Update `api/openapi.yaml`; the SDK and MCP repos generate from it.
+- [x] Update `api/openapi.yaml`; the SDK and MCP repos generate from it. **Built** for every route that exists (Revision notes, 5 November 2026, "OpenAPI contract"). `internal/app/openapi_test.go` validates the document, and `openapi_routes_test.go` checks it against every route and every response the integration tests receive.
 - [ ] `POST /v1/payments/authorize` accepts the optional signals of Task 4.2 (`resource_url`, `url_source`, `purpose`, `task`, `session_id`, `session_novel_counterparties`) and bounds their length, refusing with `400` rather than truncating. They are stored on every decision, so the bound is what keeps a decision record a few hundred bytes, and truncating would alter evidence. The SDK docs say not to put personal data or credentials in `purpose`, `task` or a URL's query string, since they are kept as evidence (Task 5.4).
-- [ ] Publish the reason codes and their order (Task 4.1) as an enum in `api/openapi.yaml`, each with a one-line meaning and what an agent should do about it.
-- [ ] State the spend windows in the API docs: the daily cap resets at 00:00 UTC and the monthly cap on the 1st at 00:00 UTC (Task 1.3). They are calendar windows, not rolling ones, so a customer can predict exactly when an agent may spend again.
-- [ ] State the denomination: amounts are USD, each backed by one USDC, and caps count USDC at face value whatever its market price (the 2 November note).
-- [ ] Recommend failing closed in the SDK: a timeout, a network error or a 5xx means the payment did not happen, and the agent must not pay by another route.
-- [ ] A **"Known gaps"** page in the API docs, listing plainly what the MVP does not yet do: mandates are approved with a TOTP step-up, not a passkey signature (Task 3.1); there is no guardian or timelock (Task 2.8); balances are shown at par with no market price beside them (the peg monitor in Phase 8); `exact` payments to off-platform payees are final, with no hold (§5.5). Overclaiming creates exposure (§6.7), and an integrator who finds a gap we didn't mention stops trusting the rest of the docs.
+- [x] Publish the reason codes and their order (Task 4.1) as an enum in `api/openapi.yaml`, each with a one-line meaning and what an agent should do about it.
+- [x] State the spend windows in the API docs: the daily cap resets at 00:00 UTC and the monthly cap on the 1st at 00:00 UTC (Task 1.3). They are calendar windows, not rolling ones, so a customer can predict exactly when an agent may spend again.
+- [x] State the denomination: amounts are USD, each backed by one USDC, and caps count USDC at face value whatever its market price (the 2 November note).
+- [x] Recommend failing closed in the SDK: a timeout, a network error or a 5xx means the payment did not happen, and the agent must not pay by another route.
+- [x] A **"Known gaps"** page in the API docs, listing plainly what the MVP does not yet do: mandates are approved with a TOTP step-up, not a passkey signature (Task 3.1); there is no guardian or timelock (Task 2.8); balances are shown at par with no market price beside them (the peg monitor in Phase 8); `exact` payments to off-platform payees are final, with no hold (§5.5). Overclaiming creates exposure (§6.7), and an integrator who finds a gap we didn't mention stops trusting the rest of the docs.
 - [ ] An **`llms.txt`** index at the docs root, linking each page with a one-line summary, so an agent or a coding assistant can find the integration guide without crawling the site.
 
 Not in MVP:
@@ -1084,6 +1084,12 @@ Tasks marked **Not in MVP** are outside this total. Phase 6 grows because no han
 ---
 
 ## Revision notes
+
+**5 November 2026, OpenAPI contract (Task 6.2).** Differences from the plan:
+
+- **The spec describes only the routes that exist.** `POST /v1/payments/authorize`, its optional signals and the deposit address join it when they are built. The authorize request carries the merchant's x402 payment requirements, whose Solana shape is not settled (Task 7.6).
+- **The API docs live in the spec's `description` fields for now.** That covers the spend windows, the denomination, failing closed, and a "Known gaps" section, which now also says agents cannot pay through the API yet. A docs site renders them from the spec. The SDK's own retry behaviour is the SDK repo's to build. `llms.txt` stays open until there is a docs site to index.
+- **The spec is held to the server by tests, with `kin-openapi` as a test-only dependency.** The document must be valid OpenAPI 3.1. The reason-code enum must equal `authz.ReasonCodes()` in order. Every registered route must be in the spec, and every path in it must be a route. Every response an integration test receives through `serve` or `do` is validated against its schema, so a renamed field, a new status, or a `null` where the spec promises a value fails the test that exercised it.
 
 **4 November 2026, account summary (Task 6.2).** Differences from the plan:
 
