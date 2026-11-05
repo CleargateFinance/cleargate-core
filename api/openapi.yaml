@@ -4,8 +4,835 @@
 # their clients from this file. Keeping the contract here means a breaking
 # change is visible as a diff in this repo rather than discovered by a
 # customer's agent failing mid-run.
+#
+# internal/app/openapi_test.go holds it to the server: every route is here and
+# every path here is a route, the reason codes match the engine's in order, and
+# every response the integration tests receive validates against its schema.
 openapi: 3.1.0
 info:
   title: Cleargate Finance API
   version: 0.1.0
-paths: {}
+  description: |
+    The buyer-side authorization layer for autonomous-agent payments. A person
+    funds an account and sets a mandate for each agent; the agent then pays
+    within it. Agents hold spending authority, never money.
+
+    **Two surfaces, no shared credential.** Agent routes take an API key as a
+    bearer token. Console routes take the `cg_session` cookie that login sets,
+    and every console request that changes something also sends the
+    `X-Cleargate-Console` header. A key reaches no console route and a session
+    reaches no agent route, so an agent can never change its own mandate.
+
+    **Money.** Every amount is a decimal string, never a JSON number. Amounts
+    are in USD, the unit of account, and each USD is backed by one USDC; caps
+    count USDC at face value whatever its market price. Balances are shown at
+    par.
+
+    **Spend windows.** The daily cap resets at 00:00 UTC and the monthly cap on
+    the 1st at 00:00 UTC. They are calendar windows, not rolling ones, so you
+    can predict exactly when an agent may spend again.
+
+    **Errors.** Every error has the same body (`Error`). Branch on `kind`, and
+    on `code` where present; never on `error`, which is reworded freely. A
+    `429` carries `Retry-After` in seconds.
+
+    **Fail closed.** A timeout, a network error or a `5xx` from a payment call
+    means the payment did not happen. An agent must not pay by another route.
+
+    ## Known gaps
+
+    What this version does not do yet, stated plainly:
+
+    - **Agents cannot pay through the API yet.** The authorize route arrives
+      with the settlement rail; until then this contract covers the console.
+    - **Mandates are approved with a TOTP step-up, not a passkey signature.**
+      The server records who approved the rules and when, but the approval is
+      not a signature over the rules themselves.
+    - **No guardian veto or timelock.** Any owner or admin can change a mandate
+      or unfreeze the account at once, behind a step-up.
+    - **Balances are shown at par**, with no market price beside them.
+    - **`exact` payments to payees outside Cleargate are final.** There is no
+      hold on them.
+servers:
+  - url: https://api.cleargatefinance.xyz
+tags:
+  - name: health
+  - name: auth
+    description: Sign-up, login and password reset. No credential, but each needs `X-Cleargate-Console`.
+  - name: mfa
+    description: The second factor, and the step-up that gates actions granting authority.
+  - name: accounts
+  - name: agents
+  - name: mandates
+  - name: decisions
+
+components:
+  securitySchemes:
+    consoleSession:
+      type: apiKey
+      in: cookie
+      name: cg_session
+      description: Set by login. HttpOnly, Secure, SameSite=Strict; script cannot read it.
+    consoleHeader:
+      type: apiKey
+      in: header
+      name: X-Cleargate-Console
+      description: Any non-empty value. Required on every console request that changes something, and on every auth route (CSRF defence).
+    agentKey:
+      type: http
+      scheme: bearer
+      description: An agent API key, `cg_live_<prefix>_<secret>`. Authenticates only; spending authority comes from the mandate.
+
+  parameters:
+    accountId:
+      name: id
+      in: path
+      required: true
+      description: An account the caller belongs to. Any other id, or one that is not a UUID, gets `403`.
+      schema: {type: string, format: uuid}
+    agentId:
+      name: id
+      in: path
+      required: true
+      description: An agent in an account the caller belongs to. Any other id, or one that is not a UUID, gets `404`.
+      schema: {type: string, format: uuid}
+
+  responses:
+    Error:
+      description: Any failure. The status follows `kind`.
+      headers:
+        Retry-After:
+          description: Seconds to wait, on `429`.
+          schema: {type: integer}
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+    NoContent:
+      description: Done.
+
+  schemas:
+    Error:
+      type: object
+      required: [error, kind]
+      properties:
+        error:
+          type: string
+          description: For people. Reworded freely; never branch on it.
+        kind:
+          type: string
+          enum: [invalid, unauthorized, forbidden, not_found, conflict, rate_limited, internal]
+        code:
+          type: string
+          description: |
+            A stable reason more specific than `kind`, present when a client must branch on it:
+
+            - `mfa_enrolment_required` (403): enrol a second factor first.
+            - `mfa_required` (403): step up (`POST /v1/mfa/step-up`), then retry within 15 minutes.
+            - `rate_limited` (429): too many requests from this caller; wait `Retry-After`.
+          enum: [mfa_enrolment_required, mfa_required, rate_limited]
+        request_id:
+          type: string
+          description: Quote it in a support request.
+
+    Amount:
+      type: string
+      description: A decimal string, never a JSON number, so no client's float parsing can change it.
+      pattern: '^-?[0-9]+(\.[0-9]+)?$'
+      examples: ['12.5']
+    Asset:
+      type: string
+      description: The asset an amount is in. `USD` is the unit of account.
+      examples: [USD]
+    AssetAmount:
+      type: object
+      required: [amount, asset]
+      properties:
+        amount: {$ref: '#/components/schemas/Amount'}
+        asset: {$ref: '#/components/schemas/Asset'}
+
+    ReasonCode:
+      type: string
+      description: |
+        Why a payment was approved or declined. A public contract: renaming a
+        code or reordering the checks is a breaking change. The checks run in
+        the order below and the first failure wins.
+
+        | # | Code | Meaning | What an agent should do |
+        |---|---|---|---|
+        | | `ok` | Approved. | Nothing. |
+        | 1 | `invalid_amount` | The amount is zero or negative. | Fix the request; retrying will not help. |
+        | 2 | `account_blocked` | The account is frozen or suspended. | Stop and tell a person. |
+        | 3 | `no_mandate` | The agent has no mandate in force. | Stop; a person must set one. |
+        | 4 | `mandate_expired` | The mandate's expiry has passed. | Stop; a person must renew it. |
+        | 5 | `asset_not_permitted` | The payment is in an asset the mandate does not name. | Pay in the mandate's asset. |
+        | 6 | `category_not_permitted` | The category is not on the mandate. | Do not retry this purchase. |
+        | 7 | `payee_not_permitted` | The payee is not on the mandate's allowlist. | Do not retry this payee. |
+        | 8 | `over_per_tx_cap` | The amount is above the per-payment cap. | Retry smaller, if the purchase allows. |
+        | 9 | `over_daily_cap` | Today's spend plus this payment exceeds the daily cap. | Wait until 00:00 UTC. |
+        | 10 | `over_monthly_cap` | This month's spend plus this payment exceeds the monthly cap. | Wait until the 1st, 00:00 UTC. |
+        | 11 | `insufficient_funds` | The account's balance does not cover it. | Stop; a person must fund the account. |
+        | | `processing_error` | The inputs disagreed with each other, a Cleargate defect. Nothing was charged. | Retry later; report it if it persists. |
+      enum:
+        - ok
+        - invalid_amount
+        - account_blocked
+        - no_mandate
+        - mandate_expired
+        - asset_not_permitted
+        - category_not_permitted
+        - payee_not_permitted
+        - over_per_tx_cap
+        - over_daily_cap
+        - over_monthly_cap
+        - insufficient_funds
+        - processing_error
+
+    Role:
+      type: string
+      enum: [owner, admin, guardian, viewer]
+
+    Account:
+      type: object
+      required: [id, name, role, frozen_at]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string}
+        role: {$ref: '#/components/schemas/Role'}
+        frozen_at:
+          type: [string, 'null']
+          format: date-time
+          description: Set while the account's owners have stopped all spending.
+
+    Agent:
+      type: object
+      required: [id, account_id, name, status, created_at, revoked_at]
+      properties:
+        id: {type: string, format: uuid}
+        account_id: {type: string, format: uuid}
+        name: {type: string}
+        status: {type: string, enum: [active, revoked]}
+        created_at: {type: string, format: date-time}
+        revoked_at: {type: [string, 'null'], format: date-time}
+
+    Credential:
+      type: object
+      required: [id, name, prefix, created_at, revoked_at, last_used_at]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string, description: 'Where the key is deployed, so you know which to revoke.'}
+        prefix: {type: string, description: The non-secret part of the key. Safe to log.}
+        created_at: {type: string, format: date-time}
+        revoked_at: {type: [string, 'null'], format: date-time}
+        last_used_at:
+          type: [string, 'null']
+          format: date-time
+          description: Confirm a key is idle before revoking it in a rotation.
+
+    Name:
+      type: object
+      required: [name]
+      properties:
+        name: {type: string, minLength: 1, maxLength: 128}
+
+    MandateRules:
+      type: object
+      required: [asset, max_per_tx, max_per_day, max_per_month, categories, pay_to, expires_at]
+      properties:
+        asset:
+          type: string
+          const: USD
+        max_per_tx: {$ref: '#/components/schemas/Amount'}
+        max_per_day: {$ref: '#/components/schemas/Amount'}
+        max_per_month: {$ref: '#/components/schemas/Amount'}
+        categories:
+          type: array
+          minItems: 1
+          maxItems: 32
+          items: {type: string, pattern: '^[a-z][a-z0-9_]{0,63}$'}
+        pay_to:
+          type: array
+          description: Payee addresses. Empty means any payee.
+          maxItems: 64
+          items: {type: string, minLength: 1, maxLength: 128}
+        expires_at:
+          type: string
+          format: date-time
+          description: Must be in the future.
+
+    Mandate:
+      type: object
+      required: [id, agent_id, version, rules, effective_from]
+      properties:
+        id: {type: string, format: uuid}
+        agent_id: {type: string, format: uuid}
+        version: {type: integer, minimum: 1}
+        rules: {$ref: '#/components/schemas/MandateRules'}
+        effective_from: {type: string, format: date-time}
+
+    Decision:
+      type: object
+      required: [id, outcome, reason_code, reason, mandate, checks, payment, evaluated_at, latency_ms]
+      properties:
+        id: {type: string, format: uuid}
+        outcome: {type: string, enum: [approved, declined]}
+        reason_code: {$ref: '#/components/schemas/ReasonCode'}
+        reason: {type: string, description: For people; reworded freely.}
+        mandate:
+          description: The exact mandate checked, or null for a decline made before there was one.
+          oneOf:
+            - type: 'null'
+            - type: object
+              required: [id, version, digest]
+              properties:
+                id: {type: string, format: uuid}
+                version: {type: integer, minimum: 1}
+                digest:
+                  type: string
+                  pattern: '^[0-9a-f]{64}$'
+                  description: SHA-256 of the approved mandate bytes, in hex.
+        checks:
+          type: array
+          description: The pipeline stages, in the order they ran. The last check of a decline is the one that failed.
+          items:
+            type: object
+            required: [stage, result]
+            properties:
+              stage: {type: string, enum: [request, account, mandate, counterparty, intent, behaviour, funds]}
+              result: {type: string, enum: [pass, fail, skipped]}
+        payment:
+          type: object
+          required: [id, amount, asset, category, pay_to, resource_url, status]
+          properties:
+            id: {type: string, format: uuid}
+            amount: {$ref: '#/components/schemas/Amount'}
+            asset: {$ref: '#/components/schemas/Asset'}
+            category: {type: [string, 'null']}
+            pay_to: {type: [string, 'null']}
+            resource_url: {type: [string, 'null']}
+            status:
+              type: string
+              enum: [declined, authorized, settled, expired, failed]
+              description: Where the payment stands now, which for an approval can move on after the decision.
+        evaluated_at: {type: string, format: date-time}
+        latency_ms: {type: integer, minimum: 0}
+
+    Declines:
+      type: object
+      required: [count, amounts]
+      properties:
+        count: {type: integer, minimum: 0}
+        amounts:
+          type: array
+          description: One total per asset the declined payments asked for. An invalid amount is counted and adds nothing.
+          items: {$ref: '#/components/schemas/AssetAmount'}
+
+    Summary:
+      type: object
+      required: [account, balance, day_start, month_start, agents, declined_this_month]
+      properties:
+        account: {$ref: '#/components/schemas/Account'}
+        balance:
+          $ref: '#/components/schemas/AssetAmount'
+          description: Customer funds in USD, at par.
+        day_start: {type: string, format: date-time}
+        month_start: {type: string, format: date-time}
+        agents:
+          type: array
+          items:
+            type: object
+            required: [id, name, status, mandate, spent_today, spent_this_month, declined_this_month]
+            properties:
+              id: {type: string, format: uuid}
+              name: {type: string}
+              status: {type: string, enum: [active, revoked]}
+              mandate:
+                description: The caps in force, or null when the agent has none and cannot spend.
+                oneOf:
+                  - type: 'null'
+                  - type: object
+                    required: [id, version, asset, max_per_tx, max_per_day, max_per_month, expires_at]
+                    properties:
+                      id: {type: string, format: uuid}
+                      version: {type: integer, minimum: 1}
+                      asset: {$ref: '#/components/schemas/Asset'}
+                      max_per_tx: {$ref: '#/components/schemas/Amount'}
+                      max_per_day: {$ref: '#/components/schemas/Amount'}
+                      max_per_month: {$ref: '#/components/schemas/Amount'}
+                      expires_at: {type: string, format: date-time}
+              spent_today: {$ref: '#/components/schemas/Amount'}
+              spent_this_month: {$ref: '#/components/schemas/Amount'}
+              declined_this_month: {$ref: '#/components/schemas/Declines'}
+        declined_this_month: {$ref: '#/components/schemas/Declines'}
+
+    Health:
+      type: object
+      required: [status]
+      properties:
+        status: {type: string, enum: [ok, degraded]}
+        checks:
+          type: object
+          additionalProperties: {type: string, enum: [ok, unreachable]}
+
+paths:
+  /v1/health:
+    get:
+      tags: [health]
+      summary: Whether the API can reach its database and cache.
+      security: []
+      responses:
+        '200':
+          description: Every dependency is reachable.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Health'}
+        '503':
+          description: At least one is not; `checks` names each.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Health'}
+
+  /v1/auth/signup:
+    post:
+      tags: [auth]
+      summary: Create a person and their account, and mail a verification link.
+      description: Always `202` with no body, whether or not the address is already registered, so the answer cannot be used to test a list of addresses.
+      security: [{consoleHeader: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password, display_name]
+              properties:
+                email: {type: string, format: email, maxLength: 254}
+                password: {type: string, minLength: 12, maxLength: 1024}
+                display_name: {type: string, minLength: 1, maxLength: 100, description: The account's name.}
+      responses:
+        '202': {description: Accepted.}
+        default: {$ref: '#/components/responses/Error'}
+
+  /v1/auth/verify-email:
+    post:
+      tags: [auth]
+      summary: Confirm an address with the token from the mailed link.
+      security: [{consoleHeader: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: {type: string}
+      responses:
+        '204': {$ref: '#/components/responses/NoContent'}
+        default: {$ref: '#/components/responses/Error'}
+
+  /v1/auth/login:
+    post:
+      tags: [auth]
+      summary: Start a session.
+      description: Sets the `cg_session` cookie. The token is never in the body, so no script on the console's pages can read it. Sessions last 12 hours.
+      security: [{consoleHeader: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: {type: string}
+                password: {type: string}
+      responses:
+        '200':
+          description: Signed in.
+          headers:
+            Set-Cookie:
+              description: The `cg_session` cookie.
+              schema: {type: string}
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [expires_at]
+                properties:
+                  expires_at: {type: string, format: date-time}
+        default: {$ref: '#/components/responses/Error'}
+
+  /v1/auth/logout:
+    post:
+      tags: [auth]
+      summary: End the session in the cookie, if any, and clear the cookie.
+      security: [{consoleHeader: []}]
+      responses:
+        '204': {$ref: '#/components/responses/NoContent'}
+        default: {$ref: '#/components/responses/Error'}
+
+  /v1/auth/password/reset-request:
+    post:
+      tags: [auth]
+      summary: Mail a password reset link.
+      description: Always `202`, whether or not the address exists.
+      security: [{consoleHeader: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: {type: string}
+      responses:
+        '202': {description: Accepted.}
+        default: {$ref: '#/components/responses/Error'}
+
+  /v1/auth/password/reset:
+    post:
+      tags: [auth]
+      summary: Set a new password with the token from the mailed link.
+      description: Ends every session the person had.
+      security: [{consoleHeader: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, password]
+              properties:
+                token: {type: string}
+                password: {type: string, minLength: 12, maxLength: 1024}
+      responses:
+        '204': {$ref: '#/components/responses/NoContent'}
+        default: {$ref: '#/components/responses/Error'}
+
+  /v1/mfa:
+    get:
+      tags: [mfa]
+      summary: Whether the person has a confirmed second factor.
+      security: [{consoleSession: []}]
+      responses:
+        '200':
+          description: The factors enrolled.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [totp]
+                properties:
+                  totp: {type: boolean}
+        default: {$ref: '#/components/responses/Error'}
+
+  /v1/mfa/totp:
+    post:
+      tags: [mfa]
+      summary: Begin TOTP enrolment.
+      description: Returns the shared secret once, for an authenticator app. Not cacheable.
+      security: [{consoleSession: [], consoleHeader: []}]
+      responses:
+        '200':
+          description: The secret, and an `otpauth://` URI to render as a QR code.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [secret, uri]
+                properties:
+                  secret: {type: string}
+                  uri: {type: string}
+        default: {$ref: '#/components/responses/Error'}
+
+  /v1/mfa/totp/confirm:
+    post:
+      tags: [mfa]
+      summary: Finish enrolment with a code from the app.
+      description: Returns the recovery codes, the only time they exist in the clear. Not cacheable.
+      security: [{consoleSession: [], consoleHeader: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: {type: string}
+      responses:
+        '200':
+          description: Enrolled.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [recovery_codes]
+                properties:
+                  recovery_codes:
+                    type: array
+                    items: {type: string}
+        default: {$ref: '#/components/responses/Error'}
+
+  /v1/mfa/step-up:
+    post:
+      tags: [mfa]
+      summary: Open the session's 15-minute step-up window.
+      description: |
+        Send exactly one of `code` (from the authenticator app) or
+        `recovery_code` (for someone whose phone is gone; each works once).
+        Actions that grant authority, such as setting a mandate or issuing a
+        key, answer `403` with code `mfa_required` outside the window.
+      security: [{consoleSession: [], consoleHeader: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                code: {type: string}
+                recovery_code: {type: string}
+      responses:
+        '200':
+          description: Stepped up.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [mfa_satisfied_at]
+                properties:
+                  mfa_satisfied_at: {type: [string, 'null'], format: date-time}
+        default: {$ref: '#/components/responses/Error'}
+
+  /v1/accounts:
+    get:
+      tags: [accounts]
+      summary: The accounts the person belongs to, and their role in each.
+      security: [{consoleSession: []}]
+      responses:
+        '200':
+          description: The memberships.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [accounts]
+                properties:
+                  accounts:
+                    type: array
+                    items: {$ref: '#/components/schemas/Account'}
+        default: {$ref: '#/components/responses/Error'}
+
+  /v1/accounts/{id}/summary:
+    get:
+      tags: [accounts]
+      summary: The balance, each agent against its caps, and this month's declines.
+      description: |
+        Any member may read it. Spending is shown in the windows the caps are
+        enforced in (UTC day and month). The figures are separate reads, so a
+        payment committing meanwhile can appear in one before another; a
+        refresh corrects it.
+      security: [{consoleSession: []}]
+      parameters: [{$ref: '#/components/parameters/accountId'}]
+      responses:
+        '200':
+          description: The summary.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Summary'}
+        default: {$ref: '#/components/responses/Error'}
+
+  /v1/accounts/{id}/agents:
+    parameters: [{$ref: '#/components/parameters/accountId'}]
+    get:
+      tags: [agents]
+      summary: The account's agents, revoked ones included.
+      description: Any member may read it.
+      security: [{consoleSession: []}]
+      responses:
+        '200':
+          description: The agents.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [agents]
+                properties:
+                  agents:
+                    type: array
+                    items: {$ref: '#/components/schemas/Agent'}
+        default: {$ref: '#/components/responses/Error'}
+    post:
+      tags: [agents]
+      summary: Connect an agent.
+      description: Owner or admin. Grants nothing on its own; the agent needs a key to authenticate and a mandate to spend.
+      security: [{consoleSession: [], consoleHeader: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/Name'}
+      responses:
+        '201':
+          description: Connected.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Agent'}
+        default: {$ref: '#/components/responses/Error'}
+
+  /v1/accounts/{id}/freeze:
+    post:
+      tags: [accounts]
+      summary: Stop every agent on the account from spending, at once.
+      description: Owner, admin or guardian, with no step-up. A payment already committing finishes; every later one is declined `account_blocked`. Freezing a frozen account changes nothing.
+      security: [{consoleSession: [], consoleHeader: []}]
+      parameters: [{$ref: '#/components/parameters/accountId'}]
+      responses:
+        '204': {$ref: '#/components/responses/NoContent'}
+        default: {$ref: '#/components/responses/Error'}
+
+  /v1/accounts/{id}/unfreeze:
+    post:
+      tags: [accounts]
+      summary: Let the account's agents spend again, each within its mandate.
+      description: Owner or admin, behind a step-up (`mfa_required`). Does not lift a platform suspension.
+      security: [{consoleSession: [], consoleHeader: []}]
+      parameters: [{$ref: '#/components/parameters/accountId'}]
+      responses:
+        '204': {$ref: '#/components/responses/NoContent'}
+        default: {$ref: '#/components/responses/Error'}
+
+  /v1/agents/{id}/revoke:
+    post:
+      tags: [agents]
+      summary: Retire an agent and every key it holds.
+      description: Owner or admin, with no step-up. Final; the agent's history stays readable. Revoking twice is not an error.
+      security: [{consoleSession: [], consoleHeader: []}]
+      parameters: [{$ref: '#/components/parameters/agentId'}]
+      responses:
+        '204': {$ref: '#/components/responses/NoContent'}
+        default: {$ref: '#/components/responses/Error'}
+
+  /v1/agents/{id}/credentials:
+    parameters: [{$ref: '#/components/parameters/agentId'}]
+    get:
+      tags: [agents]
+      summary: The agent's keys, without any secret.
+      description: Owner or admin.
+      security: [{consoleSession: []}]
+      responses:
+        '200':
+          description: The keys.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [credentials]
+                properties:
+                  credentials:
+                    type: array
+                    items: {$ref: '#/components/schemas/Credential'}
+        default: {$ref: '#/components/responses/Error'}
+    post:
+      tags: [agents]
+      summary: Issue a key, returned this once.
+      description: |
+        Owner or admin, behind a step-up (`mfa_required`). Only a digest is
+        kept, so a lost key is replaced, not recovered. Not cacheable. To
+        rotate, issue a new key, deploy it, check the old one's
+        `last_used_at`, then revoke it.
+      security: [{consoleSession: [], consoleHeader: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/Name'}
+      responses:
+        '201':
+          description: Issued.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [key, credential]
+                properties:
+                  key: {type: string, description: 'The whole key, `cg_live_<prefix>_<secret>`.'}
+                  credential: {$ref: '#/components/schemas/Credential'}
+        default: {$ref: '#/components/responses/Error'}
+
+  /v1/agents/{id}/credentials/{cid}/revoke:
+    post:
+      tags: [agents]
+      summary: Retire one key.
+      description: Owner or admin, with no step-up.
+      security: [{consoleSession: [], consoleHeader: []}]
+      parameters:
+        - {$ref: '#/components/parameters/agentId'}
+        - name: cid
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        '204': {$ref: '#/components/responses/NoContent'}
+        default: {$ref: '#/components/responses/Error'}
+
+  /v1/agents/{id}/mandate:
+    put:
+      tags: [mandates]
+      summary: Set the agent's spending rules, as a new mandate version.
+      description: |
+        Owner or admin, behind a step-up (`mfa_required`). Takes effect on the
+        agent's next payment; the previous version is kept, never edited.
+        Approval is by TOTP step-up for now, not a passkey signature over the
+        rules.
+      security: [{consoleSession: [], consoleHeader: []}]
+      parameters: [{$ref: '#/components/parameters/agentId'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/MandateRules'}
+      responses:
+        '200':
+          description: The mandate now in force.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Mandate'}
+        default: {$ref: '#/components/responses/Error'}
+
+  /v1/agents/{id}/decisions:
+    get:
+      tags: [decisions]
+      summary: The agent's decision log, newest first, declines included.
+      description: Any member may read it, and a revoked agent's log stays readable.
+      security: [{consoleSession: []}]
+      parameters:
+        - {$ref: '#/components/parameters/agentId'}
+        - name: outcome
+          in: query
+          schema: {type: string, enum: [approved, declined]}
+        - name: limit
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 100, default: 50}
+        - name: cursor
+          in: query
+          description: '`next_cursor` from the previous page. Opaque.'
+          schema: {type: string}
+      responses:
+        '200':
+          description: One page.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [decisions, next_cursor]
+                properties:
+                  decisions:
+                    type: array
+                    items: {$ref: '#/components/schemas/Decision'}
+                  next_cursor:
+                    type: [string, 'null']
+                    description: Null on the last page.
+        default: {$ref: '#/components/responses/Error'}
