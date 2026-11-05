@@ -12,6 +12,7 @@ import (
 	"github.com/CleargateFinance/cleargate-core/internal/modules/ledger"
 	"github.com/CleargateFinance/cleargate-core/internal/modules/mandate"
 	"github.com/CleargateFinance/cleargate-core/internal/modules/payment"
+	"github.com/CleargateFinance/cleargate-core/internal/modules/settlement"
 	"github.com/CleargateFinance/cleargate-core/internal/modules/summary"
 	"github.com/CleargateFinance/cleargate-core/internal/shared/currency"
 	"github.com/CleargateFinance/cleargate-core/internal/shared/id"
@@ -377,4 +378,38 @@ func (p SummaryPayments) DeclinesSince(ctx context.Context, accountID id.Account
 		out[t.AgentID] = d
 	}
 	return out, nil
+}
+
+// SolanaWallets is what SettlementWallets needs from a custodian: in
+// production *cdp.Client, CDP's Server Wallets (Task 7.5).
+type SolanaWallets interface {
+	SolanaAccount(ctx context.Context, name string) (string, error)
+	SignSolanaTransaction(ctx context.Context, address string, tx []byte) ([]byte, error)
+}
+
+// SettlementWallets satisfies settlement.WalletProvider with CDP Server
+// Wallets, the MVP's custody model (the owner's decision of 5 November 2026).
+type SettlementWallets struct {
+	CDP SolanaWallets
+}
+
+var _ settlement.WalletProvider = SettlementWallets{}
+
+// Chain implements settlement.WalletProvider.
+func (SettlementWallets) Chain() settlement.Chain { return settlement.ChainSolana }
+
+// Name implements settlement.WalletProvider.
+func (SettlementWallets) Name() string { return "cdp" }
+
+// Create implements settlement.WalletProvider. The CDP account is named by
+// the account's id, which is what makes creating it idempotent: CDP keeps
+// names unique in a project, and a UUID's 36 hex digits and hyphens are
+// exactly the longest name it allows.
+func (w SettlementWallets) Create(ctx context.Context, accountID id.AccountID) (string, error) {
+	return w.CDP.SolanaAccount(ctx, string(accountID))
+}
+
+// Sign implements settlement.WalletProvider.
+func (w SettlementWallets) Sign(ctx context.Context, address string, tx []byte) ([]byte, error) {
+	return w.CDP.SignSolanaTransaction(ctx, address, tx)
 }
