@@ -53,6 +53,7 @@ func (f *apiFixture) serve(r request) *httptest.ResponseRecorder {
 	}
 	rec := httptest.NewRecorder()
 	f.api.Engine.ServeHTTP(rec, req)
+	f.conform(req, rec)
 	return rec
 }
 
