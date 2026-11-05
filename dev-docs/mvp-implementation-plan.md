@@ -951,7 +951,7 @@ Three background workers, none in the payment hot path, each solving a distinct 
 ### Task 7.5: Account wallet
 
 - [ ] `WalletProvider` with one wallet per account, never per agent: `Address(ctx, accountID)` and `SignTransaction(ctx, accountID, tx)`.
-- [ ] Implemented with Coinbase CDP server wallets (§8.8 — no private keys in-house), on Solana devnet for testnet; CDP's faucet funds demo wallets. CDP has no Go SDK, so the adapter is either direct REST from Go for the handful of endpoints used, or a thin TypeScript sidecar behind the same interface. **That choice is sealed inside the adapter** and must not leak into any module that authorizes payments.
+- [ ] Implemented with Coinbase CDP server wallets (§8.8 — no private keys in-house), on Solana devnet for testnet; CDP's faucet funds demo wallets. The adapter uses CDP's Go SDK (`github.com/coinbase/cdp-sdk/go`), a client generated from CDP's OpenAPI spec that also signs the request auth. **The SDK is sealed inside the adapter** and must not leak into any module that authorizes payments.
 - [ ] **Tests:** `TestWallet_OnePerAccount`, `TestWallet_SignsVerifiableTransaction`
 
 ### Task 7.6: Signing `exact` payments on Solana
@@ -1084,6 +1084,8 @@ Tasks marked **Not in MVP** are outside this total. Phase 6 grows because no han
 ---
 
 ## Revision notes
+
+**5 November 2026, Solana support and the MVP's wallets (owner decision).** CDP and x402 both support Solana, on mainnet and devnet. The x402 Go SDK has an SVM `exact` client (`mechanisms/svm/exact/client`), which Task 7.6 builds on. Its signer helpers take a private key, so the CDP adapter supplies its own signer instead. CDP also has a Go SDK (`github.com/coinbase/cdp-sdk/go`), contrary to the 29 September note. It is generated from CDP's OpenAPI spec and covers creating Solana accounts, signing and sending transactions, and the devnet faucet. The adapter uses it rather than hand-written REST or a TypeScript sidecar. It has no tagged release yet, so `go.mod` pins a pseudo-version. The MVP's account wallets are **CDP Server Wallets**: Cleargate's backend controls one per account, as Task 7.5 describes. Which control model is primary on mainnet is still open (§20), and `WalletProvider` keeps it swappable. Whether CDP implements `batch-settlement` and whether voucher signing is billable stay open too, but they gate only Tasks 7.1–7.4, none of which is in the MVP.
 
 **5 November 2026, OpenAPI contract (Task 6.2).** Differences from the plan:
 

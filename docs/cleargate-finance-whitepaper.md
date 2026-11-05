@@ -606,7 +606,7 @@ The reasoning is fit rather than preference. CDP is Base-native, authored by the
 
 Wallets are created from email, SMS or social login with no seed phrase, in under half a second, and can be **pre-generated and pre-funded before the user first logs in**. A web2-style signup that provisions a wallet invisibly behind it is a confirmed capability, not an aspiration — which is what makes "no wallet, no chain, no gas" true rather than marketing.
 
-**The provider sits behind a `WalletProvider` interface.** CDP is the implementation, not the architecture. CDP has no Go SDK, so the adapter is either direct REST calls from Go for the handful of endpoints used, or a thin TypeScript sidecar behind the same interface. That choice is an implementation detail sealed inside the adapter and must not leak into any module that authorizes payments.
+**The provider sits behind a `WalletProvider` interface.** CDP is the implementation, not the architecture. The adapter uses CDP's Go SDK, which is an implementation detail sealed inside the adapter and must not leak into any module that authorizes payments.
 
 **Mandates map onto CDP primitives where they can.** Agents remain spend *scopes* against one pooled account wallet — never per-agent wallets (§9.3). Per-agent limits are expressed as CDP **Spend Permissions** (an allowance per spender per period) and **Policies** (value caps, address allow and blocklists, USD limits, network and function restrictions). This puts part of the mandate *below the model and below our own backend*: where a CDP policy covers a rule, a compromise of Cleargate's servers still cannot exceed it. Our engine enforces everything CDP cannot express — intent, behaviour, category, provenance.
 
