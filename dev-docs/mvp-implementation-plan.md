@@ -950,9 +950,9 @@ Three background workers, none in the payment hot path, each solving a distinct 
 
 ### Task 7.5: Account wallet
 
-- [ ] `WalletProvider` with one wallet per account, never per agent: `Address(ctx, accountID)` and `SignTransaction(ctx, accountID, tx)`.
-- [ ] Implemented with Coinbase CDP server wallets (§8.8 — no private keys in-house), on Solana devnet for testnet; CDP's faucet funds demo wallets. The adapter uses CDP's Go SDK (`github.com/coinbase/cdp-sdk/go`), a client generated from CDP's OpenAPI spec that also signs the request auth. **The SDK is sealed inside the adapter** and must not leak into any module that authorizes payments.
-- [ ] **Tests:** `TestWallet_OnePerAccount`, `TestWallet_SignsVerifiableTransaction`
+- [x] `WalletProvider` with one wallet per account, never per agent: `Address(ctx, accountID)` and `SignTransaction(ctx, accountID, tx)`. **Built** in `internal/modules/settlement`: the two calls are on `Service` (`service.go`), over a `WalletProvider` port (`ports.go`) and the `account_wallet` table (migration 000009, `repo_postgres.go`), which holds one address per account per chain. The tests are `service_test.go` and `repo_postgres_test.go` there (Revision notes, 5 November 2026, "account wallet").
+- [x] Implemented with Coinbase CDP server wallets (§8.8 — no private keys in-house), on Solana devnet for testnet. The adapter uses CDP's Go SDK (`github.com/coinbase/cdp-sdk/go`), a client generated from CDP's OpenAPI spec that also signs the request auth. **The SDK is sealed inside the adapter** and must not leak into any module that authorizes payments. **Built** as `internal/infrastructure/cdp` (`cdp_test.go` runs it against a fake CDP), adapted to the port by `SettlementWallets` in `internal/app/adapters.go` (`settlement_wallets_test.go`).
+- [ ] **Tests:** `TestWallet_OnePerAccount`, `TestWallet_SignsVerifiableTransaction`. Written in `internal/infrastructure/cdp/cdp_devnet_test.go`; they skip without CDP credentials, and this stays open until they have passed against devnet.
 
 ### Task 7.6: Signing `exact` payments on Solana
 
@@ -1084,6 +1084,14 @@ Tasks marked **Not in MVP** are outside this total. Phase 6 grows because no han
 ---
 
 ## Revision notes
+
+**5 November 2026, account wallet (Task 7.5).** Differences from the plan:
+
+- **`Address` and `SignTransaction` are on `settlement.Service`, not on `WalletProvider`.** The port below them is narrower: `Create` returns an account's address at the provider, creating the wallet if there is none, and `Sign` signs with a given address. The service decides when to create and refuses to sign for an account with no recorded wallet, so the custodian never decides either.
+- **The address is recorded in a new table, `account_wallet` (migration 000009).** The plan named none. One wallet per account per chain is the primary key, so Base adds a second row without a new key; an address belongs to one account; a wallet is never changed or deleted. It is what Phase 8 matches deposits to, and what the deposit-address route reads without calling CDP.
+- **A wallet is created on first use, and CDP names it by the account's id.** CDP keeps names unique in a project, so creating is idempotent: a retry or a concurrent first call gets 409 and reads the existing account back. A UUID's 36 characters are exactly the longest name CDP accepts.
+- **Not wired into `BuildAPI` yet.** Nothing calls it until Task 7.6 signs payments and Task 6.2 adds the deposit-address route; wiring it then means the API needs no CDP credentials before it uses them. The credentials' names are in `.env.example`.
+- **The faucet is not used.** Signing needs no funds and sends nothing, so the devnet test signs a memo transaction with any blockhash and verifies the signature locally. `solana-go` (v1.23.0, the version the x402 Go SDK uses) builds and checks it, as a test-only dependency for now.
 
 **5 November 2026, Solana support and the MVP's wallets (owner decision).** CDP and x402 both support Solana, on mainnet and devnet. The x402 Go SDK has an SVM `exact` client (`mechanisms/svm/exact/client`), which Task 7.6 builds on. Its signer helpers take a private key, so the CDP adapter supplies its own signer instead. CDP also has a Go SDK (`github.com/coinbase/cdp-sdk/go`), contrary to the 29 September note. It is generated from CDP's OpenAPI spec and covers creating Solana accounts, signing and sending transactions, and the devnet faucet. The adapter uses it rather than hand-written REST or a TypeScript sidecar. It has no tagged release yet, so `go.mod` pins a pseudo-version. The MVP's account wallets are **CDP Server Wallets**: Cleargate's backend controls one per account, as Task 7.5 describes. Which control model is primary on mainnet is still open (§20), and `WalletProvider` keeps it swappable. Whether CDP implements `batch-settlement` and whether voucher signing is billable stay open too, but they gate only Tasks 7.1–7.4, none of which is in the MVP.
 
