@@ -186,6 +186,7 @@ func (f *apiFixture) do(method, path, body string, creds credentials) *httptest.
 	}
 	rec := httptest.NewRecorder()
 	f.api.Engine.ServeHTTP(rec, req)
+	f.conform(req, rec)
 	return rec
 }
 

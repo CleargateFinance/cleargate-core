@@ -8,7 +8,7 @@ Go modular monolith for Cleargate Finance: the buyer-side authorization layer fo
 - [docs/cleargate-finance-whitepaper.md](docs/cleargate-finance-whitepaper.md): the spec. Code comments cite it as `§8.3`; look the section up before changing that code.
 - [docs/data-architecture.md](docs/data-architecture.md): read before any migration or schema change.
 - [docs/cleargate-roles-and-connection-models.md](docs/cleargate-roles-and-connection-models.md): read before touching entity or role vocabulary.
-- [api/openapi.yaml](api/openapi.yaml): the public API contract (currently empty). The SDK, MCP server and console are separate repos that generate from it.
+- [api/openapi.yaml](api/openapi.yaml): the public API contract. The SDK, MCP server and console are separate repos that generate from it. A new route or a changed response must change it too: `internal/app/openapi_routes_test.go` fails on any route missing from it and on any response that does not match it.
 - `docs/research/` holds dated evaluations, not decisions. The Turnkey/Privy note is superseded: the wallet provider is Coinbase CDP behind a `WalletProvider` interface.
 
 ## Status and chain
