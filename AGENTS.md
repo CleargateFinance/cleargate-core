@@ -15,7 +15,7 @@ Go modular monolith for Cleargate Finance: the buyer-side authorization layer fo
 
 - Build status lives in the plan: a ticked `- [x]` step is built and tested, an open `- [ ]` is not. A package of tiny files marked `TODO(scaffold)` is unbuilt. Check the ticks and `git log` before assuming a feature exists.
 - The plan and whitepaper still describe Base (EIP-3009 transfers, CDP wallets, `batch-settlement`). The launch order is now **Solana first, then Base**. Keep everything chain-specific behind the settlement `Rail` and the `WalletProvider` interfaces, and do not assume Base in a module outside them.
-- Whether CDP and the x402 Go SDK support Solana is unverified. Open decisions in the plan's Revision notes (wallet provider and control model, `batch-settlement` support) are the owner's to settle; stop and ask rather than choose.
+- CDP and the x402 Go SDK support Solana. MVP account wallets are CDP Server Wallets. Open decisions in the plan's Revision notes (the primary control model on mainnet, `batch-settlement` support) are the owner's to settle; stop and ask rather than choose.
 
 ## Architecture
 

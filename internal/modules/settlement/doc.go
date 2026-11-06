@@ -8,4 +8,11 @@
 //
 // Rail implementations sit behind a single adapter interface — the engine
 // never learns what a chain is.
+//
+// Account wallets (Task 7.5): each account has one wallet per chain, never
+// one per agent, because the money is pooled per account and agents hold only
+// spend counters (§9.3). The provider holds the keys (§8.8: no private keys
+// in-house) behind WalletProvider; this module records only the address, and
+// the database refuses a second wallet for an account, an address shared by
+// two accounts, and any change to a wallet once recorded.
 package settlement
