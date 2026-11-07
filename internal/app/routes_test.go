@@ -152,10 +152,14 @@ func (f *apiFixture) seedAgent() {
 // whether the session entered that factor at login.
 func (f *apiFixture) session(email, role string, stepUp bool) string {
 	ctx := context.Background()
+	// A session older than the password is refused. The session's time comes
+	// from this process's clock and now() from the database's, which can run
+	// ahead of it, so the password is dated well before either.
 	var userID string
 	require.NoError(f.t, f.db.QueryRow(ctx, `
 		WITH p AS (INSERT INTO principal (kind) VALUES ('person') RETURNING id)
-		INSERT INTO app_user (principal_id, email, password_hash) SELECT id, $1, 'x' FROM p
+		INSERT INTO app_user (principal_id, email, password_hash, password_changed_at)
+		SELECT id, $1, 'x', now() - interval '1 hour' FROM p
 		RETURNING id`, email).Scan(&userID))
 	_, err := f.db.Exec(ctx,
 		`INSERT INTO account_membership (account_id, user_id, role) VALUES ($1, $2, $3)`,
