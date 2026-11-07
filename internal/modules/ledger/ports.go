@@ -15,6 +15,9 @@ import (
 // be swapped for a fake in tests, or for a remote one later, without service
 // code changing.
 type Repository interface {
+	// FundedTotal sums what funding entries credited these accounts, in asset.
+	FundedTotal(ctx context.Context, accounts []id.AccountID, asset currency.Asset) (currency.Amount, error)
+
 	// EnsureAccount returns the bucket for this owner, type and asset,
 	// creating it if it does not exist yet. accountID is nil for platform
 	// owned buckets.

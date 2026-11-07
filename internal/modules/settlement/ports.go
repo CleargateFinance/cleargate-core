@@ -2,7 +2,10 @@ package settlement
 
 import (
 	"context"
+	"math/big"
+	"time"
 
+	"github.com/CleargateFinance/cleargate-core/internal/shared/currency"
 	"github.com/CleargateFinance/cleargate-core/internal/shared/id"
 )
 
@@ -30,6 +33,62 @@ type WalletProvider interface {
 	Sign(ctx context.Context, address string, tx []byte) ([]byte, error)
 }
 
+// ChainReader reads the chain the wallets live on, for the configured token,
+// at finality: nothing here can be rolled back after the ledger has moved.
+type ChainReader interface {
+	// TokenAccount is the address that holds the token for owner, which is
+	// where a transfer to owner lands.
+	TokenAccount(owner string) (string, error)
+
+	// Signatures returns one page of the transactions touching address, newest
+	// first.
+	Signatures(ctx context.Context, address string, p ChainPage) ([]ChainSignature, error)
+
+	// Transaction reads one transaction, with what it did to owner's holding of
+	// the token.
+	Transaction(ctx context.Context, signature, owner string) (ChainTransaction, error)
+}
+
+// ChainPage selects a range of an address's history.
+type ChainPage struct {
+	Before, Until string
+	Limit         int
+}
+
+// ChainSignature is one transaction in an address's history.
+type ChainSignature struct {
+	Signature string
+	Failed    bool
+}
+
+// ChainTransaction is what one transaction did.
+type ChainTransaction struct {
+	Failed bool
+
+	// TokenChange is how much of the token the owner gained, in atomic units,
+	// negative for a loss.
+	TokenChange *big.Int
+}
+
+// FundingLedger is what the deposit watcher needs from the ledger.
+type FundingLedger interface {
+	// CreditFunding moves amount from the on-chain float to the account's
+	// funds, joining the transaction open on ctx, and returns the entry.
+	CreditFunding(ctx context.Context, accountID id.AccountID, amount currency.Amount, at time.Time) (id.JournalEntryID, error)
+}
+
+// FundingGate decides whether money may be accepted.
+type FundingGate interface {
+	// FundingAllowed reports false when amount would take the account past its
+	// funding cap. Any other failure is an error, and nothing is decided.
+	FundingAllowed(ctx context.Context, accountID id.AccountID, amount currency.Amount) (bool, error)
+}
+
+// Clock supplies the current time, so tests control "now" without sleeping.
+type Clock interface {
+	Now() time.Time
+}
+
 // Accounts is what this module needs from the account module.
 type Accounts interface {
 	// RequireMember refuses a person outside the account, with the answer
@@ -46,4 +105,21 @@ type Repository interface {
 	// and returns whichever wallet is recorded afterwards, so the loser of
 	// two concurrent first calls reads back the winner's.
 	Save(ctx context.Context, w Wallet) (Wallet, error)
+
+	// Wallets returns every wallet on chain.
+	Wallets(ctx context.Context, chain Chain) ([]Wallet, error)
+
+	// DepositCursor is the newest signature already handled for address, empty
+	// when none is.
+	DepositCursor(ctx context.Context, address string) (string, error)
+
+	// SaveDepositCursor records the newest signature handled for address.
+	SaveDepositCursor(ctx context.Context, address, signature string) error
+
+	// DepositSeen reports whether this deposit is already recorded.
+	DepositSeen(ctx context.Context, network, signature, address string) (bool, error)
+
+	// InsertDeposit records a deposit, joining the transaction open on ctx, or
+	// reports errDepositSeen.
+	InsertDeposit(ctx context.Context, d Deposit, at time.Time) error
 }

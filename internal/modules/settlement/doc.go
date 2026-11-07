@@ -15,4 +15,9 @@
 // in-house) behind WalletProvider; this module records only the address, and
 // the database refuses a second wallet for an account, an address shared by
 // two accounts, and any change to a wallet once recorded.
+//
+// Deposits (Phase 8): DepositWatcher reads each wallet's history at finality
+// and credits what arrived. A deposit is keyed by transaction and wallet, so
+// reading the same history twice credits nothing twice. Address screening is
+// not wired yet; see the Revision notes before this reaches real money.
 package settlement

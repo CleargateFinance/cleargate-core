@@ -980,7 +980,7 @@ Three background workers, none in the payment hot path, each solving a distinct 
 
 # Phase 8 — Funding and hardening
 
-- [ ] **Deposit detection.** Watch USDC transfers into account wallets' token accounts (Task 7.5). Record each deposit once, keyed by transaction signature and instruction index, run Task 2.7's funding gate, then post a `funding` entry or quarantine the deposit for return to sender. A `FundingHistory` adapter sums a principal's funding from the ledger.
+- [x] **Deposit detection.** **Built** in `internal/modules/settlement/deposits.go` (`DepositWatcher`), migration 000010 and the worker's `deposit_detection` job; the tests are `internal/app/deposit_test.go` (Revision notes, 7 November 2026, "deposit detection"). Watch USDC transfers into account wallets' token accounts (Task 7.5). Record each deposit once, keyed by transaction signature and instruction index, run Task 2.7's funding gate, then post a `funding` entry or quarantine the deposit for return to sender. A `FundingHistory` adapter sums a principal's funding from the ledger.
 
 Everything below is not in the MVP.
 
@@ -1084,6 +1084,14 @@ Tasks marked **Not in MVP** are outside this total. Phase 6 grows because no han
 ---
 
 ## Revision notes
+
+**7 November 2026, deposit detection (Phase 8).** Differences from the plan:
+
+- **Address screening is skipped (owner decision, for the devnet MVP).** `SettlementFundingGate` calls the funding gate with no chain or address, which applies the tier cap and skips screening, because nothing writes a verdict yet and the gate refuses an address without one. **This must change before mainnet**: Task 2.7 makes a deposit with no KYC safe only behind screening. It is a `TODO(mvp)` in `internal/app/adapters.go`.
+- **A deposit is keyed by transaction and wallet, not by instruction.** Its amount is the wallet's net change in USDC across the transaction, read from the token balances, so a transfer through another program counts and there is one figure to key.
+- **Quarantine means "recorded and not credited".** A deposit past the funding cap stays in the wallet, is left out of the balance, and logs `alert=deposit_quarantined`. **Nothing returns it**: that needs a person, and return-to-sender is not built. The basic tier's cap is 100 USD, so a demo with more needs the principal's tier raised.
+- **Not built:** Task 2.7's `retention_hold_until` on first funding, and `RecordFunding`'s stamp on the source address, which only withdrawals read.
+- **`FundedTotal` spans every account the principal holds**, so opening a second account does not reset the cap.
 
 **7 November 2026, deposit address (Task 6.2).** The API now builds a CDP client and **refuses to start without `CDP_*`**, in debug mode too. The worker does not read them. Any member may read the address, a viewer included, and a non-member gets the account routes' `403` before the custodian is reached. The response also names the network, token and mint. Task 2.4's gate is **not** applied here: reading an address needs no second factor, so "TOTP before funding" is not enforced anywhere yet. `cdptest` is a fake CDP that speaks its REST API and signs with real keys, so the real client runs in tests.
 

@@ -54,6 +54,8 @@ func (p *fakeProvider) Sign(_ context.Context, address string, tx []byte) ([]byt
 // fakeRepo keeps wallets in memory. saveAs, when set, is what Save reports
 // as already recorded, standing in for a row another caller wrote first.
 type fakeRepo struct {
+	Repository // Anything a test does not fake panics rather than passes.
+
 	wallets map[id.AccountID]Wallet
 	saveAs  *Wallet
 	err     error

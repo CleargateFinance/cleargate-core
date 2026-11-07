@@ -37,6 +37,7 @@ type Fake struct {
 	transactions map[string]transactionEntry
 	calls        map[string]int
 	commitments  map[string]bool
+	forgotten    map[string]transactionEntry
 }
 
 type signatureEntry struct {
@@ -76,6 +77,7 @@ func New(t *testing.T) *Fake {
 		transactions: map[string]transactionEntry{},
 		calls:        map[string]int{},
 		commitments:  map[string]bool{},
+		forgotten:    map[string]transactionEntry{},
 	}
 	f.server = httptest.NewServer(http.HandlerFunc(f.handle))
 	t.Cleanup(f.server.Close)
@@ -117,6 +119,25 @@ func (f *Fake) OnlyFinalized() bool {
 		}
 	}
 	return true
+}
+
+// Forget makes the node stop returning a transaction it still lists, as a
+// lagging node behind a load balancer does, until Restore.
+func (f *Fake) Forget(signature string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.forgotten[signature] = f.transactions[signature]
+	delete(f.transactions, signature)
+}
+
+// Restore brings back everything Forget hid.
+func (f *Fake) Restore() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for signature, e := range f.forgotten {
+		f.transactions[signature] = e
+		delete(f.forgotten, signature)
+	}
 }
 
 // RandomAddress is a fresh address nobody holds a key to.

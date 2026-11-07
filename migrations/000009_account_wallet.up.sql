@@ -27,7 +27,11 @@ CREATE TABLE account_wallet (
 
     created_at timestamptz NOT NULL DEFAULT now(),
 
-    PRIMARY KEY (account_id, chain)
+    PRIMARY KEY (account_id, chain),
+
+    -- Lets a deposit name its wallet and account together, so the two cannot
+    -- disagree about whose money arrived.
+    CONSTRAINT account_wallet_account_address_unique UNIQUE (account_id, address)
 );
 
 -- A wallet is never changed or removed. Deposits were matched to this

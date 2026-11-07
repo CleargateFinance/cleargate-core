@@ -8,9 +8,12 @@ import (
 
 	"github.com/CleargateFinance/cleargate-core/internal/infrastructure/config"
 	"github.com/CleargateFinance/cleargate-core/internal/infrastructure/database"
+	"github.com/CleargateFinance/cleargate-core/internal/infrastructure/solana"
+	"github.com/CleargateFinance/cleargate-core/internal/modules/account"
 	"github.com/CleargateFinance/cleargate-core/internal/modules/decisionlog"
 	"github.com/CleargateFinance/cleargate-core/internal/modules/ledger"
 	"github.com/CleargateFinance/cleargate-core/internal/modules/payment"
+	"github.com/CleargateFinance/cleargate-core/internal/modules/settlement"
 )
 
 // Worker is the background application, holding the jobs it runs and the
@@ -50,6 +53,17 @@ func BuildWorker(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Wo
 	ledgerSvc := ledger.New(db, nil).Service()
 	decisionSvc := decisionlog.NewService(decisionlog.NewPostgresRepository(db))
 	keyRetention := payment.NewRetention(db, nil)
+
+	chain, err := solana.New(solana.Options{RPCURL: cfg.Solana.RPCURL})
+	if err != nil {
+		db.Close()
+		return nil, nil, fmt.Errorf("app: %w", err)
+	}
+	deposits, err := newDepositWatcher(db, chain, cfg.Solana, nil, log)
+	if err != nil {
+		db.Close()
+		return nil, nil, fmt.Errorf("app: deposit watcher: %w", err)
+	}
 
 	w := &Worker{
 		log: log,
@@ -106,6 +120,14 @@ func BuildWorker(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Wo
 					return err
 				},
 			},
+			{
+				// Reads each wallet's finalized history and credits what
+				// arrived. Often enough that a deposit shows within a minute,
+				// rarely enough for a rate-limited node.
+				name:  "deposit_detection",
+				every: chainPollInterval,
+				run:   deposits.Poll,
+			},
 		},
 	}
 
@@ -157,6 +179,30 @@ func (w *Worker) runJob(ctx context.Context, j job) {
 		case <-ticker.C:
 		}
 	}
+}
+
+// chainPollInterval is how often the worker reads the chain. A finalized block
+// takes about 13 seconds to get there, so polling faster finds nothing new.
+const chainPollInterval = 30 * time.Second
+
+// newDepositWatcher wires the deposit path. It builds its own account service
+// with only the funding gate's parts: the worker sends no mail and opens no
+// secrets, so it holds neither a mailer nor a sealer.
+func newDepositWatcher(
+	db *database.DB, chain *solana.Client, c config.Solana, clock settlement.Clock, log *slog.Logger,
+) (*settlement.DepositWatcher, error) {
+	ledgerSvc := ledger.New(db, nil).Service()
+	principals := account.NewPrincipals(db)
+	gate := account.NewFundingGate(db, LedgerFundingHistory{Principals: principals, Ledger: ledgerSvc}, log)
+	return settlement.NewDepositWatcher(settlement.DepositWatcherDeps{
+		DB:     db,
+		Chain:  SettlementChain{Solana: chain, Mint: c.USDCMint},
+		Ledger: SettlementFundingLedger{Ledger: ledgerSvc},
+		Gate:   SettlementFundingGate{Principals: principals, Accounts: gate},
+		Token:  token(c),
+		Clock:  clock,
+		Log:    log,
+	})
 }
 
 // alertKey marks a log line that must reach a person, with a stable value

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -36,6 +37,94 @@ func (r *postgresRepo) Wallet(ctx context.Context, accountID id.AccountID, chain
 		return Wallet{}, fmt.Errorf("settlement: load wallet: %w", err)
 	}
 	return w, nil
+}
+
+// Wallets implements Repository.
+func (r *postgresRepo) Wallets(ctx context.Context, chain Chain) ([]Wallet, error) {
+	rows, err := r.db.Query(ctx,
+		`SELECT account_id, provider, address FROM account_wallet WHERE chain = $1 ORDER BY created_at`,
+		string(chain))
+	if err != nil {
+		return nil, fmt.Errorf("settlement: list wallets: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Wallet
+	for rows.Next() {
+		w := Wallet{Chain: chain}
+		var accountID string
+		if err := rows.Scan(&accountID, &w.Provider, &w.Address); err != nil {
+			return nil, fmt.Errorf("settlement: scan wallet: %w", err)
+		}
+		w.AccountID = id.AccountID(accountID)
+		out = append(out, w)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("settlement: list wallets: %w", err)
+	}
+	return out, nil
+}
+
+// DepositCursor implements Repository.
+func (r *postgresRepo) DepositCursor(ctx context.Context, address string) (string, error) {
+	var signature string
+	err := r.db.QueryRow(ctx, `SELECT signature FROM deposit_cursor WHERE address = $1`, address).Scan(&signature)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("settlement: read deposit cursor: %w", err)
+	}
+	return signature, nil
+}
+
+// SaveDepositCursor implements Repository.
+func (r *postgresRepo) SaveDepositCursor(ctx context.Context, address, signature string) error {
+	if _, err := r.db.Exec(ctx, `
+		INSERT INTO deposit_cursor (address, signature) VALUES ($1, $2)
+		ON CONFLICT (address) DO UPDATE SET signature = EXCLUDED.signature, updated_at = now()`,
+		address, signature,
+	); err != nil {
+		return fmt.Errorf("settlement: save deposit cursor: %w", err)
+	}
+	return nil
+}
+
+// DepositSeen implements Repository.
+func (r *postgresRepo) DepositSeen(ctx context.Context, network, signature, address string) (bool, error) {
+	var seen bool
+	err := r.db.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM deposit WHERE network = $1 AND signature = $2 AND address = $3)`,
+		network, signature, address).Scan(&seen)
+	if err != nil {
+		return false, fmt.Errorf("settlement: read deposit: %w", err)
+	}
+	return seen, nil
+}
+
+// InsertDeposit implements Repository. The primary key is what stops a second
+// credit: a concurrent worker's insert waits here, then fails, and its whole
+// transaction rolls back, credit included.
+func (r *postgresRepo) InsertDeposit(ctx context.Context, d Deposit, at time.Time) error {
+	var entry *string
+	if d.JournalEntryID != nil {
+		s := string(*d.JournalEntryID)
+		entry = &s
+	}
+	_, err := r.db.Exec(ctx, `
+		INSERT INTO deposit (network, signature, account_id, address, amount, asset, status, journal_entry_id, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+		d.Network, d.Signature, string(d.AccountID), d.Address, d.Amount.Decimal(), string(d.Amount.Asset()),
+		string(d.Status), entry, at,
+	)
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "deposit_pkey" {
+		return errDepositSeen
+	}
+	if err != nil {
+		return fmt.Errorf("settlement: insert deposit: %w", err)
+	}
+	return nil
 }
 
 // Save implements Repository. It is an insert that ignores the account's

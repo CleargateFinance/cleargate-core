@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/CleargateFinance/cleargate-core/internal/infrastructure/solana"
 	"github.com/CleargateFinance/cleargate-core/internal/modules/account"
 	"github.com/CleargateFinance/cleargate-core/internal/modules/authz"
 	"github.com/CleargateFinance/cleargate-core/internal/modules/counterparty"
@@ -392,6 +393,113 @@ var _ settlement.Accounts = SettlementAccounts{}
 func (a SettlementAccounts) RequireMember(ctx context.Context, userID id.UserID, accountID id.AccountID) error {
 	_, err := a.Accounts.Membership(ctx, account.Session{UserID: userID}, accountID)
 	return err
+}
+
+// LedgerFundingHistory satisfies account.FundingHistory with the ledger.
+type LedgerFundingHistory struct {
+	Principals *account.Principals
+	Ledger     *ledger.Service
+}
+
+var _ account.FundingHistory = LedgerFundingHistory{}
+
+// FundedToDate implements account.FundingHistory, across every account the
+// principal holds, so opening a second account does not reset the cap.
+func (h LedgerFundingHistory) FundedToDate(ctx context.Context, principalID id.PrincipalID) (currency.Amount, error) {
+	accounts, err := h.Principals.Accounts(ctx, principalID)
+	if err != nil {
+		return currency.Amount{}, err
+	}
+	return h.Ledger.FundedTotal(ctx, accounts, currency.USD)
+}
+
+// SettlementFundingGate satisfies settlement.FundingGate with the account
+// module.
+type SettlementFundingGate struct {
+	Principals *account.Principals
+	Accounts   *account.Service
+}
+
+var _ settlement.FundingGate = SettlementFundingGate{}
+
+// FundingAllowed implements settlement.FundingGate.
+//
+// TODO(mvp): name the deposit's source address and chain here. Without them the
+// gate applies the tier cap and skips address screening, the owner's decision
+// for the devnet MVP (7 November 2026). This must change before mainnet: a
+// direct deposit with no KYC is safe only behind screening (Task 2.7).
+func (g SettlementFundingGate) FundingAllowed(ctx context.Context, accountID id.AccountID, amount currency.Amount) (bool, error) {
+	principalID, err := g.Principals.Of(ctx, accountID)
+	if err != nil {
+		return false, err
+	}
+	err = g.Accounts.RequireFundingAllowed(ctx, account.FundingRequest{PrincipalID: principalID, Amount: amount})
+	if errors.Is(err, account.ErrFundingCapExceeded) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+// SettlementFundingLedger satisfies settlement.FundingLedger with the ledger.
+type SettlementFundingLedger struct {
+	Ledger *ledger.Service
+}
+
+var _ settlement.FundingLedger = SettlementFundingLedger{}
+
+// CreditFunding implements settlement.FundingLedger: the on-chain float, which
+// is negative by design, to the account's funds.
+func (l SettlementFundingLedger) CreditFunding(
+	ctx context.Context, accountID id.AccountID, amount currency.Amount, at time.Time,
+) (id.JournalEntryID, error) {
+	asset := amount.Asset()
+	float, err := l.Ledger.EnsureAccount(ctx, nil, ledger.TypeOnchainFloat, asset)
+	if err != nil {
+		return "", err
+	}
+	funds, err := l.Ledger.EnsureAccount(ctx, &accountID, ledger.TypeCustomerFunds, asset)
+	if err != nil {
+		return "", err
+	}
+	return l.Ledger.Post(ctx, ledger.Entry{
+		Kind: ledger.KindFunding, Asset: asset, Lines: ledger.Transfer(float, funds, amount), OccurredAt: at,
+	})
+}
+
+// SettlementChain satisfies settlement.ChainReader with a Solana node, for one
+// token.
+type SettlementChain struct {
+	Solana *solana.Client
+	Mint   string
+}
+
+var _ settlement.ChainReader = SettlementChain{}
+
+// TokenAccount implements settlement.ChainReader.
+func (c SettlementChain) TokenAccount(owner string) (string, error) {
+	return solana.TokenAccount(owner, c.Mint)
+}
+
+// Signatures implements settlement.ChainReader.
+func (c SettlementChain) Signatures(ctx context.Context, address string, p settlement.ChainPage) ([]settlement.ChainSignature, error) {
+	found, err := c.Solana.Signatures(ctx, address, solana.Page{Before: p.Before, Until: p.Until, Limit: p.Limit})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]settlement.ChainSignature, len(found))
+	for i, s := range found {
+		out[i] = settlement.ChainSignature{Signature: s.Signature, Failed: s.Failed}
+	}
+	return out, nil
+}
+
+// Transaction implements settlement.ChainReader.
+func (c SettlementChain) Transaction(ctx context.Context, signature, owner string) (settlement.ChainTransaction, error) {
+	tx, err := c.Solana.Transaction(ctx, signature)
+	if err != nil {
+		return settlement.ChainTransaction{}, err
+	}
+	return settlement.ChainTransaction{Failed: tx.Failed, TokenChange: tx.TokenChange(owner, c.Mint)}, nil
 }
 
 // SolanaWallets is what SettlementWallets needs from a custodian: in

@@ -100,6 +100,15 @@ func (s *Service) AccountBalance(
 	return s.repo.Balance(ctx, bucket, asset)
 }
 
+// FundedTotal is how much these accounts have ever been funded, which is what a
+// verification tier's cap is measured against (Task 2.7).
+func (s *Service) FundedTotal(ctx context.Context, accounts []id.AccountID, asset currency.Asset) (currency.Amount, error) {
+	if len(accounts) == 0 {
+		return currency.Zero(asset), nil
+	}
+	return s.repo.FundedTotal(ctx, accounts, asset)
+}
+
 // RecordSpend adds an amount to every counter window a payment falls into, and
 // returns the new totals.
 //

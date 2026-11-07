@@ -1,6 +1,7 @@
 package account
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -8,6 +9,7 @@ import (
 	"github.com/CleargateFinance/cleargate-core/internal/infrastructure/cache"
 	"github.com/CleargateFinance/cleargate-core/internal/infrastructure/crypto"
 	"github.com/CleargateFinance/cleargate-core/internal/infrastructure/database"
+	"github.com/CleargateFinance/cleargate-core/internal/shared/id"
 )
 
 // Module composes this feature's service and exposes it to the rest of the
@@ -69,6 +71,37 @@ func New(d Deps) (*Module, error) {
 		svc: NewService(repo, hasher, d.Cache, d.Mailer, d.Sealer,
 			throttle, d.Clock, d.Log, d.Options),
 	}, nil
+}
+
+// Principals reads who owns an account, without the service's login machinery.
+// A cap is per principal while a deposit names an account, so the funding path
+// needs this in both directions.
+type Principals struct {
+	repo *postgresRepo
+}
+
+// NewPrincipals builds a Principals against Postgres.
+func NewPrincipals(db *database.DB) *Principals {
+	return &Principals{repo: &postgresRepo{db: db}}
+}
+
+// Of returns the principal an account belongs to.
+func (p *Principals) Of(ctx context.Context, accountID id.AccountID) (id.PrincipalID, error) {
+	return p.repo.principalOf(ctx, accountID)
+}
+
+// Accounts returns every account a principal holds.
+func (p *Principals) Accounts(ctx context.Context, principalID id.PrincipalID) ([]id.AccountID, error) {
+	return p.repo.accountsOfPrincipal(ctx, principalID)
+}
+
+// NewFundingGate builds a service for the worker's funding path. It holds no
+// mailer, sealer or hasher, so calling anything but RequireFundingAllowed and
+// RecordFunding on it panics rather than signing somebody in. history is
+// required: RequireFundingAllowed refuses without one.
+func NewFundingGate(db *database.DB, history FundingHistory, log *slog.Logger) *Service {
+	return NewService(NewPostgresRepository(db), nil, nil, nil, nil, nil, nil, log,
+		Options{FundingHistory: history})
 }
 
 // Service returns the module's service, for other modules to consume through
