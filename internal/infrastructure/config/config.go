@@ -23,7 +23,37 @@ type Config struct {
 	Cache     Cache
 	Crypto    Crypto
 	Mail      Mail
+	Solana    Solana
+	CDP       CDP
 	Log       Log
+}
+
+// CDP holds the Coinbase Developer Platform credentials that reach account
+// wallets. They have no defaults. Only the API signs, so they are checked where
+// the API is built rather than here: the worker and the migrate tool must not
+// need a secret that can move money.
+type CDP struct {
+	APIKeyID     string
+	APIKeySecret string
+	WalletSecret string
+	// BaseURL overrides CDP's API root. Empty selects production, which serves
+	// devnet and mainnet alike.
+	BaseURL string
+}
+
+// Solana says which chain money moves on and which token is money there. The
+// defaults are devnet: pointing at mainnet must be a decision somebody writes
+// down, never what happens when a variable goes missing.
+type Solana struct {
+	// RPCURL is the JSON-RPC endpoint, which must serve Network.
+	RPCURL string
+	// Network is the CAIP-2 chain id, the form x402 names networks in.
+	Network string
+	// USDCMint is the only token accepted, on Network.
+	USDCMint string
+	// USDCDecimals turns the mint's atomic units into USD. It lives here with
+	// the mint and is never read from anything a merchant sends (Task 7.6).
+	USDCDecimals int
 }
 
 // Server holds HTTP listener settings.
@@ -149,6 +179,18 @@ func Load() (*Config, error) {
 			Transport:  os.Getenv("MAIL_TRANSPORT"),
 			ConsoleURL: env("CONSOLE_URL", "http://localhost:3000"),
 		},
+		Solana: Solana{
+			RPCURL:       env("SOLANA_RPC_URL", "https://api.devnet.solana.com"),
+			Network:      env("SOLANA_NETWORK", "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1"),
+			USDCMint:     env("SOLANA_USDC_MINT", "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"),
+			USDCDecimals: envInt("SOLANA_USDC_DECIMALS", 6),
+		},
+		CDP: CDP{
+			APIKeyID:     os.Getenv("CDP_API_KEY_ID"),
+			APIKeySecret: os.Getenv("CDP_API_KEY_SECRET"),
+			WalletSecret: os.Getenv("CDP_WALLET_SECRET"),
+			BaseURL:      os.Getenv("CDP_BASE_URL"),
+		},
 		Log: Log{
 			Level:  env("LOG_LEVEL", "info"),
 			Format: env("LOG_FORMAT", "text"),
@@ -236,6 +278,11 @@ func (c *Config) validate() error {
 	if c.Server.Mode != "debug" && c.Server.Mode != "release" {
 		problems = append(problems, fmt.Errorf(
 			"SERVER_MODE must be debug or release, got %q", c.Server.Mode))
+	}
+	// Bounded by what the payment table can hold exactly, numeric(38, 18).
+	if c.Solana.USDCDecimals < 1 || c.Solana.USDCDecimals > 18 {
+		problems = append(problems, fmt.Errorf(
+			"SOLANA_USDC_DECIMALS must be between 1 and 18, got %d", c.Solana.USDCDecimals))
 	}
 	for _, p := range c.Server.TrustedProxies {
 		if _, err := netip.ParsePrefix(p); err != nil {

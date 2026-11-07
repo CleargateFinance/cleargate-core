@@ -75,10 +75,12 @@ func (a *API) registerRoutes(l limiters) {
 	}
 
 	a.accounts.RegisterPublicRoutes(a.surfaces.public)
+	a.payments.RegisterAgentRoutes(a.surfaces.agent)
 	a.accounts.RegisterConsoleRoutes(a.surfaces.console)
 	a.mandates.RegisterConsoleRoutes(a.surfaces.console)
 	a.decisions.RegisterConsoleRoutes(a.surfaces.console)
 	a.summaries.RegisterConsoleRoutes(a.surfaces.console)
+	a.wallets.RegisterConsoleRoutes(a.surfaces.console)
 }
 
 // byClientIP counts against the address server.New's trusted proxies let

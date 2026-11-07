@@ -3,6 +3,7 @@ package payment
 import (
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -63,6 +64,11 @@ type Request struct {
 	// Signals are the agent's report about the payment, recorded with the
 	// decision (Task 4.2). Signals.ResourceURL is also kept on the payment.
 	Signals authz.Signals
+
+	// Terms is the rest of a merchant's requirement that makes it this payment,
+	// such as its order reference. Nothing decides on it; it is in the hash, so
+	// a key reused for another order is a conflict, not that order's replay.
+	Terms string
 }
 
 // Validate refuses a request that cannot be recorded faithfully. Everything
@@ -130,6 +136,7 @@ func (r Request) hash() []byte {
 		Task                       string          `json:"task,omitempty"`
 		SessionID                  string          `json:"session_id,omitempty"`
 		SessionNovelCounterparties *int            `json:"session_novel_counterparties,omitempty"`
+		Terms                      string          `json:"terms,omitempty"`
 	}{
 		AgentID:                    r.AgentID,
 		Amount:                     r.Amount.String(),
@@ -142,6 +149,7 @@ func (r Request) hash() []byte {
 		Task:                       r.Signals.Task,
 		SessionID:                  r.Signals.SessionID,
 		SessionNovelCounterparties: r.Signals.SessionNovelCounterparties,
+		Terms:                      r.Terms,
 	}
 	// Marshalling a struct of strings and an *int cannot fail.
 	raw, _ := json.Marshal(canonical)
@@ -162,7 +170,36 @@ const (
 	StatusDeclined Status = "declined"
 	// StatusAuthorized is a payment approved and debited, not yet settled.
 	StatusAuthorized Status = "authorized"
+	// StatusSettled is a payment whose transfer landed on-chain (Task 7.7).
+	StatusSettled Status = "settled"
+	// StatusExpired is a payment whose transfer can never land. Its funds and
+	// budget were given back.
+	StatusExpired Status = "expired"
+	// StatusFailed is a payment whose transfer landed and failed. Its funds and
+	// budget were given back.
+	StatusFailed Status = "failed"
 )
+
+// PayRequest is one payment an agent asks for, as the merchant priced it.
+type PayRequest struct {
+	AccountID      id.AccountID
+	AgentID        id.AgentID
+	IdempotencyKey string
+
+	// Requirement is the merchant's PAYMENT-REQUIRED, as the agent received it.
+	Requirement []byte
+	Category    string
+	Signals     authz.Signals
+}
+
+// Paid is what Pay answers: the decision, and what to pay with if it was yes.
+type Paid struct {
+	Result
+
+	// PaymentSignature is the PAYMENT-SIGNATURE header value. Empty on a
+	// decline, and once the payment has expired or failed, when it is worthless.
+	PaymentSignature string
+}
 
 // Recorded is a payment as it was stored: what the agent asked for, and where
 // the payment stands now.
@@ -250,6 +287,10 @@ func decodeResult(raw []byte) (Result, error) {
 	}, nil
 }
 
+// errNoLongerAuthorized is a payment released by the settlement sweep while its
+// transaction was being signed. The transaction is thrown away unseen.
+var errNoLongerAuthorized = errors.New("payment: no longer authorized")
+
 var (
 	// ErrKeyReused is a key sent again with a different request. That is a
 	// client bug, and answering with the first result would hide it (Task 5.2).
@@ -265,3 +306,12 @@ var (
 	ErrBusy = apperr.RateLimited("too many payments are competing for this account, retry shortly").
 		WithRetryAfter(time.Second)
 )
+
+// ErrTransactionInFlight is a payment whose transaction came out identical to
+// another payment's: the same order, merchant memo included, signed on the
+// same blockhash. The chain would take it once and both would settle from it,
+// so this one is not handed out. It stays approved and unsigned; the same key
+// retried once the blockhash moves on signs a transaction of its own, and
+// without a retry the sweep releases it.
+var ErrTransactionInFlight = apperr.Conflict("another payment holds an identical transaction, retry shortly").
+	WithCode("transaction_in_flight").WithRetryAfter(time.Second)

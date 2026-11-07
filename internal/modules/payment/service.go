@@ -43,6 +43,96 @@ type Service struct {
 	events    Outbox
 	clock     Clock
 	rail      Rail
+	transfers Transfers
+}
+
+// Pay decides a merchant's requirement and, if it is approved, signs it.
+//
+// The decision commits first and the signature follows, because the custodian
+// is a network call and must not sit inside the transaction or the 100ms budget
+// (§6.6). If signing fails the payment stays authorized with nothing handed out:
+// a retry with the same key signs again, and it is safe to, since nobody holds
+// the first. An agent that never retries gets its funds back from the settlement
+// sweep (Task 7.7).
+func (s *Service) Pay(ctx context.Context, req PayRequest) (Paid, error) {
+	quote, err := s.transfers.Quote(req.Requirement)
+	if err != nil {
+		return Paid{}, err
+	}
+
+	signals := req.Signals
+	if signals.ResourceURL == "" {
+		signals.ResourceURL = quote.ResourceURL
+	}
+	res, err := s.Authorize(ctx, Request{
+		AccountID:      req.AccountID,
+		AgentID:        req.AgentID,
+		IdempotencyKey: req.IdempotencyKey,
+		Amount:         quote.Amount,
+		Category:       req.Category,
+		PayTo:          quote.PayTo,
+		Signals:        signals,
+		Terms:          quote.Terms,
+	})
+	if err != nil {
+		return Paid{}, err
+	}
+	if res.Status != StatusAuthorized {
+		return Paid{Result: res}, nil
+	}
+	return s.handOver(ctx, req, res)
+}
+
+// handOver returns the payment's signed transaction, signing it if nobody has.
+//
+// It reads the payment back rather than trusting the result it was given: on a
+// replay the key remembers "authorized" for a day, while the payment itself may
+// have settled or expired since, and an expired transaction must not be handed
+// out as if it could still pay.
+func (s *Service) handOver(ctx context.Context, req PayRequest, res Result) (Paid, error) {
+	recorded, err := s.repo.AgentPayments(ctx, req.AgentID, []id.PaymentID{res.PaymentID})
+	if err != nil {
+		return Paid{}, err
+	}
+	if len(recorded) != 1 {
+		return Paid{}, apperr.Internal("payment: an approved payment is not readable", nil)
+	}
+	payment := recorded[0]
+	res.Status = payment.Status
+	if res.Status == StatusExpired || res.Status == StatusFailed {
+		return Paid{Result: res}, nil
+	}
+
+	stored, found, err := s.repo.StoredTransfer(ctx, res.PaymentID)
+	if err != nil {
+		return Paid{}, err
+	}
+	if found {
+		return Paid{Result: res, PaymentSignature: stored.PaymentSignature}, nil
+	}
+
+	signed, err := s.transfers.Transfer(ctx, TransferRequest{
+		AccountID:   req.AccountID,
+		PaymentID:   res.PaymentID,
+		Amount:      payment.Amount,
+		PayTo:       payment.PayTo,
+		Requirement: req.Requirement,
+	})
+	if err != nil {
+		return Paid{}, err
+	}
+
+	saved, err := s.repo.SaveTransfer(ctx, res.PaymentID, signed, s.clock.Now().UTC())
+	if errors.Is(err, errNoLongerAuthorized) {
+		// The sweep released it while this was signing, so the money is back
+		// and this transaction must never leave. Nobody has seen it.
+		res.Status = StatusExpired
+		return Paid{Result: res}, nil
+	}
+	if err != nil {
+		return Paid{}, err
+	}
+	return Paid{Result: res, PaymentSignature: saved.PaymentSignature}, nil
 }
 
 // Authorize decides one payment and records the decision.

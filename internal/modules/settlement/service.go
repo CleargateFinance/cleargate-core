@@ -11,8 +11,11 @@ import (
 // Service implements this module's use cases. Depends on the interfaces
 // declared in ports.go, never on repo_postgres.go or handler_http.go.
 type Service struct {
-	repo    Repository
-	wallets WalletProvider
+	repo     Repository
+	wallets  WalletProvider
+	accounts Accounts
+	rail     Rail
+	token    Token
 }
 
 // NewService builds a Service.
@@ -51,6 +54,20 @@ func (s *Service) Address(ctx context.Context, accountID id.AccountID) (string, 
 		return "", errWalletMismatch
 	}
 	return saved.Address, nil
+}
+
+// DepositAddress is where a member of the account sends money. Any member may
+// ask, a viewer included: it is the account's public address, and asking is
+// what creates the wallet on an account's first deposit.
+func (s *Service) DepositAddress(ctx context.Context, userID id.UserID, accountID id.AccountID) (DepositAddress, error) {
+	if err := s.accounts.RequireMember(ctx, userID, accountID); err != nil {
+		return DepositAddress{}, err
+	}
+	address, err := s.Address(ctx, accountID)
+	if err != nil {
+		return DepositAddress{}, err
+	}
+	return DepositAddress{Address: address, Token: s.token}, nil
 }
 
 // SignTransaction signs tx with the account's wallet. It never creates one:

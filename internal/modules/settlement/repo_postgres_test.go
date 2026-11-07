@@ -4,6 +4,7 @@ package settlement
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 
@@ -54,7 +55,7 @@ func TestAddress_IsRecordedOnceAndReadBack(t *testing.T) {
 	db := fixtures.NewTestDB(t)
 	accountID := newAccount(t, db, "acme")
 	provider := &countingProvider{address: addrA}
-	m, err := New(Deps{DB: db.DB, Wallets: provider})
+	m, err := New(Deps{DB: db.DB, Wallets: provider, Accounts: everyoneIsAMember{}, Rail: &fakeRail{}, Token: testToken})
 	require.NoError(t, err)
 
 	first, err := m.Service().Address(ctx, accountID)
@@ -79,7 +80,7 @@ func TestAddress_IsRecordedOnceAndReadBack(t *testing.T) {
 func TestAddress_ConcurrentFirstCallsLeaveOneWallet(t *testing.T) {
 	db := fixtures.NewTestDB(t)
 	accountID := newAccount(t, db, "acme")
-	m, err := New(Deps{DB: db.DB, Wallets: &countingProvider{address: addrA}})
+	m, err := New(Deps{DB: db.DB, Wallets: &countingProvider{address: addrA}, Accounts: everyoneIsAMember{}, Rail: &fakeRail{}, Token: testToken})
 	require.NoError(t, err)
 
 	const n = 10
@@ -180,4 +181,68 @@ func TestAccountWallet_BelongsToARealAccount(t *testing.T) {
 		addrA)
 
 	assert.Error(t, err)
+}
+
+// depositRow is a valid row for the schema tests to break one field of.
+func insertDepositRow(ctx context.Context, db *fixtures.TestDB, accountID id.AccountID, address, signature, status string, entry any, amount string) error {
+	_, err := db.Exec(ctx, `
+		INSERT INTO deposit (network, signature, account_id, address, amount, asset, status, journal_entry_id)
+		VALUES ('solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1', $1, $2, $3, $4, 'USD', $5, $6)`,
+		signature, string(accountID), address, amount, status, entry)
+	return err
+}
+
+// TestDeposit_SchemaRefuses shows what the database refuses on its own, the way
+// a buggy script or an operator would meet it.
+func TestDeposit_SchemaRefuses(t *testing.T) {
+	ctx := context.Background()
+	db := fixtures.NewTestDB(t)
+	repo := NewPostgresRepository(db.DB)
+	acme, globex := newAccount(t, db, "acme"), newAccount(t, db, "globex")
+	_, err := repo.Save(ctx, Wallet{AccountID: acme, Chain: ChainSolana, Provider: "cdp", Address: addrA})
+	require.NoError(t, err)
+	_, err = repo.Save(ctx, Wallet{AccountID: globex, Chain: ChainSolana, Provider: "cdp", Address: addrB})
+	require.NoError(t, err)
+
+	sig := func(c string) string { return strings.Repeat(c, 80) }
+	entry := "00000000-0000-0000-0000-000000000001"
+	require.NoError(t, insertDepositRow(ctx, db, acme, addrA, sig("A"), "credited", entry, "1"))
+
+	assert.ErrorContains(t, insertDepositRow(ctx, db, acme, addrA, sig("A"), "credited", entry, "1"),
+		"deposit_pkey", "the same deposit twice")
+	assert.ErrorContains(t, insertDepositRow(ctx, db, acme, addrB, sig("B"), "credited", entry, "1"),
+		"foreign key", "another account's wallet")
+	assert.ErrorContains(t, insertDepositRow(ctx, db, acme, addrA, sig("C"), "credited", nil, "1"),
+		"check", "credited with no entry")
+	assert.ErrorContains(t, insertDepositRow(ctx, db, acme, addrA, sig("D"), "quarantined", entry, "1"),
+		"check", "quarantined with an entry")
+	assert.ErrorContains(t, insertDepositRow(ctx, db, acme, addrA, sig("E"), "credited", entry, "0"),
+		"check", "nothing arrived")
+	assert.ErrorContains(t, insertDepositRow(ctx, db, acme, addrA, "not base58!", "credited", entry, "1"),
+		"check", "not a signature")
+
+	_, err = db.Exec(ctx, `UPDATE deposit SET amount = 2`)
+	assert.ErrorContains(t, err, "append-only")
+	_, err = db.Exec(ctx, `DELETE FROM deposit`)
+	assert.ErrorContains(t, err, "append-only")
+}
+
+func TestDepositCursor_MovesAndStartsEmpty(t *testing.T) {
+	ctx := context.Background()
+	db := fixtures.NewTestDB(t)
+	repo := NewPostgresRepository(db.DB)
+	acme := newAccount(t, db, "acme")
+	_, err := repo.Save(ctx, Wallet{AccountID: acme, Chain: ChainSolana, Provider: "cdp", Address: addrA})
+	require.NoError(t, err)
+
+	got, err := repo.DepositCursor(ctx, addrA)
+	require.NoError(t, err)
+	assert.Empty(t, got)
+
+	for _, want := range []string{strings.Repeat("A", 80), strings.Repeat("B", 80)} {
+		require.NoError(t, repo.SaveDepositCursor(ctx, addrA, want))
+		got, err = repo.DepositCursor(ctx, addrA)
+		require.NoError(t, err)
+		assert.Equal(t, want, got)
+	}
 }

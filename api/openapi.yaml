@@ -43,8 +43,13 @@ info:
 
     What this version does not do yet, stated plainly:
 
-    - **Agents cannot pay through the API yet.** The authorize route arrives
-      with the settlement rail; until then this contract covers the console.
+    - **Devnet only, with no address screening.** Deposits are capped per
+      verification tier but the sending address is not screened, so this version
+      must not hold real money.
+    - **A deposit past the funding cap is not credited or returned.** It stays
+      in the wallet until a person acts.
+    - **A requirement the rail cannot pay is a `400`, not a recorded decline.**
+      It appears nowhere in the decision log.
     - **Mandates are approved with a TOTP step-up, not a passkey signature.**
       The server records who approved the rules and when, but the approval is
       not a signature over the rules themselves.
@@ -61,6 +66,8 @@ tags:
     description: Sign-up, login and password reset. No credential, but each needs `X-Cleargate-Console`.
   - name: mfa
     description: The second factor, and the step-up that gates actions granting authority.
+  - name: payments
+    description: How an agent pays. Takes an agent API key.
   - name: accounts
   - name: agents
   - name: mandates
@@ -129,7 +136,8 @@ components:
             - `mfa_enrolment_required` (403): enrol a second factor first.
             - `mfa_required` (403): step up (`POST /v1/mfa/step-up`), then retry within 15 minutes.
             - `rate_limited` (429): too many requests from this caller; wait `Retry-After`.
-          enum: [mfa_enrolment_required, mfa_required, rate_limited]
+            - `transaction_in_flight` (409): another payment of the same order holds an identical transaction; wait `Retry-After`, then retry with the same key.
+          enum: [mfa_enrolment_required, mfa_required, rate_limited, transaction_in_flight]
         request_id:
           type: string
           description: Quote it in a support request.
@@ -363,6 +371,58 @@ components:
               spent_this_month: {$ref: '#/components/schemas/Amount'}
               declined_this_month: {$ref: '#/components/schemas/Declines'}
         declined_this_month: {$ref: '#/components/schemas/Declines'}
+
+    AuthorizeRequest:
+      type: object
+      required: [requirement, category]
+      properties:
+        requirement:
+          type: object
+          description: |
+            The merchant's x402 v2 `PAYMENT-REQUIRED`, unchanged. Cleargate pays
+            the `exact` option for USDC on its configured network and reads the
+            amount from it, so there is no amount field to get wrong.
+        category: {type: string, maxLength: 256, description: 'The class of thing being bought, which the mandate must permit.'}
+        resource_url: {type: string, maxLength: 2048, description: "The endpoint being paid for. Defaults to the requirement's `resource.url`."}
+        url_source: {type: string, enum: [task, fetched, unknown], description: 'Where the agent got the URL.'}
+        purpose: {type: string, maxLength: 512, description: "The agent's stated reason for this payment."}
+        task: {type: string, maxLength: 1024, description: 'The task the agent was given.'}
+        session_id: {type: string, maxLength: 128, description: 'Groups the payments of one agent run.'}
+        session_novel_counterparties: {type: [integer, 'null'], description: 'How many payees this session had not paid before this one.'}
+
+    AuthorizeResult:
+      type: object
+      required: [payment_id, status, outcome, reason_code, reason, decided_at, replayed, payment_signature]
+      properties:
+        payment_id: {type: string, format: uuid}
+        status:
+          type: string
+          enum: [declined, authorized, settled, expired, failed]
+          description: |
+            `declined` moved nothing. `authorized` is debited and waiting for the
+            chain. `settled` landed. `expired` and `failed` gave back the funds
+            and the budget, and on either the signature is gone: start again with
+            a new idempotency key.
+        outcome: {type: string, enum: [approved, declined]}
+        reason_code: {$ref: '#/components/schemas/ReasonCode'}
+        reason: {type: string, description: 'For people. Reworded freely; branch on `reason_code`.'}
+        decided_at: {type: string, format: date-time}
+        replayed: {type: boolean, description: 'True when this is the remembered answer to an earlier request with this key.'}
+        payment_signature:
+          type: [string, 'null']
+          description: |
+            Send this to the merchant as the `PAYMENT-SIGNATURE` header when
+            retrying the request. Null unless the agent may pay. Treat it as
+            money until it lands or expires, about a minute later.
+
+    DepositAddress:
+      type: object
+      required: [address, network, token, mint]
+      properties:
+        address: {type: string, description: "The account's wallet. Send the token here, and only the token."}
+        network: {type: string, description: 'CAIP-2 chain id, for example Solana devnet.'}
+        token: {type: string, enum: [USDC]}
+        mint: {type: string, description: "The token's address on that network. Any other token sent here is not credited."}
 
     Health:
       type: object
@@ -642,6 +702,69 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Summary'}
+        default: {$ref: '#/components/responses/Error'}
+
+  /v1/payments/authorize:
+    post:
+      tags: [payments]
+      summary: Decide a merchant's payment requirement and, if approved, sign it.
+      description: |
+        On a merchant's `402`, send its requirement here. An approval returns the
+        `PAYMENT-SIGNATURE` value to retry the merchant with. A decline is also a
+        `200`, with the reason, and the agent must not pay by another route.
+
+        **Idempotency.** Every request needs an `Idempotency-Key`, one per
+        logical payment, reused only to retry it. Keys are remembered for 24
+        hours. A retry returns the same transaction and charges nothing new; the
+        same key with a different request is a `409`. A `5xx` is not remembered:
+        retry it with the same key.
+
+        A `409` with code `transaction_in_flight` is the one `409` to retry with
+        the same key, after `Retry-After`. The payment is approved and held, but
+        its transaction came out identical to another payment's, which happens
+        when a merchant's memo repeats within the same block. The chain would
+        accept only one of the two transactions, so this one is not handed out.
+        Without a retry, the hold is released after 10 minutes.
+
+        The merchant's facilitator pays the fee and submits the transaction.
+        `settled`, `expired` and `failed` arrive afterwards, in the console.
+      security: [{agentKey: []}]
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: {type: string, maxLength: 255}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AuthorizeRequest'}
+      responses:
+        '200':
+          description: The decision, and on approval what to pay with.
+          headers:
+            Cache-Control:
+              schema: {type: string, enum: [no-store]}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AuthorizeResult'}
+        default: {$ref: '#/components/responses/Error'}
+
+  /v1/accounts/{id}/deposit-address:
+    get:
+      tags: [accounts]
+      summary: Where to send USDC to fund the account.
+      description: |
+        Any member may read it. The account has one wallet per network, created
+        the first time anyone asks, and its address never changes.
+      security: [{consoleSession: []}]
+      parameters: [{$ref: '#/components/parameters/accountId'}]
+      responses:
+        '200':
+          description: The deposit address.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DepositAddress'}
         default: {$ref: '#/components/responses/Error'}
 
   /v1/accounts/{id}/agents:

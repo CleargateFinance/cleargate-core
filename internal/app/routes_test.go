@@ -19,8 +19,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/CleargateFinance/cleargate-core/internal/infrastructure/cdp/cdptest"
 	"github.com/CleargateFinance/cleargate-core/internal/infrastructure/config"
 	"github.com/CleargateFinance/cleargate-core/internal/infrastructure/crypto"
+	"github.com/CleargateFinance/cleargate-core/internal/infrastructure/solana/solanatest"
 	"github.com/CleargateFinance/cleargate-core/internal/modules/account"
 	"github.com/CleargateFinance/cleargate-core/internal/shared/id"
 	"github.com/CleargateFinance/cleargate-core/test/fixtures"
@@ -36,6 +38,9 @@ type apiFixture struct {
 	db   *fixtures.TestDB
 	api  *API
 	mail *mailLog
+	cdp  *cdptest.Fake
+	node *solanatest.Fake
+	cfg  *config.Config
 
 	accountID id.AccountID
 	agentID   id.AgentID
@@ -53,7 +58,10 @@ func newAPIFixture(t *testing.T, configure ...func(*config.Config)) *apiFixture 
 	_, err := rand.Read(key)
 	require.NoError(t, err)
 
+	custodian, node := cdptest.New(t), solanatest.New(t)
 	cfg := &config.Config{
+		CDP:       custodian.Config(),
+		Solana:    config.Solana{RPCURL: node.URL(), Network: devnetRail.Network, USDCMint: solanatest.DevnetUSDC, USDCDecimals: 6},
 		Server:    config.Server{Mode: "debug"},
 		RateLimit: config.RateLimit{Public: 1000, Agent: 1000, Console: 1000},
 		Database:  config.Database{DSN: db.DSN, MaxConns: 4, MinConns: 1, ConnectTimeout: 10 * time.Second},
@@ -71,7 +79,7 @@ func newAPIFixture(t *testing.T, configure ...func(*config.Config)) *apiFixture 
 	require.NoError(t, err)
 	t.Cleanup(cleanup)
 
-	f := &apiFixture{t: t, db: db, api: api, mail: mail}
+	f := &apiFixture{t: t, db: db, api: api, mail: mail, cdp: custodian, node: node, cfg: cfg}
 	f.seedAgent()
 	return f
 }
@@ -145,10 +153,14 @@ func (f *apiFixture) seedAgent() {
 // whether the session entered that factor at login.
 func (f *apiFixture) session(email, role string, stepUp bool) string {
 	ctx := context.Background()
+	// A session older than the password is refused. The session's time comes
+	// from this process's clock and now() from the database's, which can run
+	// ahead of it, so the password is dated well before either.
 	var userID string
 	require.NoError(f.t, f.db.QueryRow(ctx, `
 		WITH p AS (INSERT INTO principal (kind) VALUES ('person') RETURNING id)
-		INSERT INTO app_user (principal_id, email, password_hash) SELECT id, $1, 'x' FROM p
+		INSERT INTO app_user (principal_id, email, password_hash, password_changed_at)
+		SELECT id, $1, 'x', now() - interval '1 hour' FROM p
 		RETURNING id`, email).Scan(&userID))
 	_, err := f.db.Exec(ctx,
 		`INSERT INTO account_membership (account_id, user_id, role) VALUES ($1, $2, $3)`,

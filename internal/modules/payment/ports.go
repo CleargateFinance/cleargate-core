@@ -38,6 +38,26 @@ type Repository interface {
 	// order. An id that names another agent's payment, or none, is left out.
 	AgentPayments(ctx context.Context, agentID id.AgentID, ids []id.PaymentID) ([]Recorded, error)
 
+	// StoredTransfer returns the payment's signed transaction, if it has one.
+	StoredTransfer(ctx context.Context, paymentID id.PaymentID) (Transfer, bool, error)
+
+	// SaveTransfer stores the payment's signed transaction unless it already
+	// has one, and returns whichever is stored afterwards, so the loser of two
+	// concurrent signings hands out the winner's. It reports
+	// errNoLongerAuthorized for a payment already released, and
+	// ErrTransactionInFlight for a message another payment already holds.
+	SaveTransfer(ctx context.Context, paymentID id.PaymentID, t Transfer, at time.Time) (Transfer, error)
+
+	// AwaitingSettlement returns up to limit authorized payments, oldest first.
+	AwaitingSettlement(ctx context.Context, limit int) ([]Pending, error)
+
+	// LockAuthorized reports whether the payment is still authorized, and holds
+	// its row until the transaction on ctx ends.
+	LockAuthorized(ctx context.Context, paymentID id.PaymentID) (bool, error)
+
+	// Resolve moves an authorized payment to its final status.
+	Resolve(ctx context.Context, paymentID id.PaymentID, status Status, at time.Time) error
+
 	// DeclinesSince totals the account's declined payments decided at or after
 	// since, one row per agent and asset.
 	DeclinesSince(ctx context.Context, accountID id.AccountID, since time.Time) ([]DeclineTotal, error)
@@ -182,6 +202,86 @@ type DecisionRecord struct {
 // Outbox appends events in the caller's transaction.
 type Outbox interface {
 	Append(ctx context.Context, e outbox.Event) error
+}
+
+// Transfers is what this module needs from the settlement rail. Nothing here
+// knows what a chain is: a requirement is opaque bytes that come back as an
+// amount and a payee, and a transfer is an opaque signed thing to hand over.
+type Transfers interface {
+	// Quote reads a merchant's requirement into what the engine judges,
+	// converted to the unit of account. A requirement the rail cannot pay is an
+	// invalid request, refused before anything is recorded.
+	Quote(requirement []byte) (Quote, error)
+
+	// Transfer builds and signs an approved payment. It is a network call, so
+	// it runs after the decision commits.
+	Transfer(ctx context.Context, t TransferRequest) (Transfer, error)
+}
+
+// Quote is what a requirement asks for.
+type Quote struct {
+	Amount      currency.Amount
+	PayTo       string
+	ResourceURL string
+
+	// Terms is the rest of what makes the requirement this payment, opaque
+	// here: it only joins the idempotency hash.
+	Terms string
+}
+
+// TransferRequest is an approved payment to sign.
+type TransferRequest struct {
+	AccountID   id.AccountID
+	PaymentID   id.PaymentID
+	Amount      currency.Amount
+	PayTo       string
+	Requirement []byte
+}
+
+// Transfer is a signed payment, kept so a retry returns the same one.
+type Transfer struct {
+	Memo                 string
+	WalletAddress        string
+	Transaction          string
+	PaymentSignature     string
+	LastValidBlockHeight uint64
+
+	// MessageDigest is SHA-256 of the signed message, unique across payments.
+	// Saving and handing out only; a transfer read back leaves it empty.
+	MessageDigest []byte
+}
+
+// TransferOutcomes says what the chain did with signed transfers.
+type TransferOutcomes interface {
+	// Outcomes returns each payment's status now: StatusAuthorized while the
+	// transfer could still land, otherwise settled, failed or expired. A
+	// payment it could not read about is left out. A returned error may come
+	// with some outcomes, which still stand.
+	Outcomes(ctx context.Context, pending []Pending) (map[id.PaymentID]Status, error)
+}
+
+// Pending is an authorized payment waiting on its outcome.
+type Pending struct {
+	ID        id.PaymentID
+	AccountID id.AccountID
+	AgentID   id.AgentID
+	Amount    currency.Amount
+	DecidedAt time.Time
+
+	// Transfer is nil when signing never succeeded.
+	Transfer *Transfer
+}
+
+// SettlementLedger is what the settler needs from the ledger. Both join the
+// transaction open on ctx.
+type SettlementLedger interface {
+	// Settle moves the payment's amount from payee payable to the on-chain
+	// float: the money has left.
+	Settle(ctx context.Context, p Pending, at time.Time) error
+
+	// Release reverses the payment's debit and gives back its budget in the
+	// windows it was charged to: the money never left.
+	Release(ctx context.Context, p Pending, at time.Time) error
 }
 
 // Clock supplies the current time, so the decision instant and key expiry

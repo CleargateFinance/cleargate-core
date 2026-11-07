@@ -80,6 +80,7 @@ func TestRequest_HashChangesWithEveryField(t *testing.T) {
 		"task":     func(r *Request) { r.Signals.Task = "other" },
 		"session":  func(r *Request) { r.Signals.SessionID = "s2" },
 		"novel":    func(r *Request) { r.Signals.SessionNovelCounterparties = &novel },
+		"terms":    func(r *Request) { r.Terms = `{"memo":"order-b"}` },
 	}
 	for name, mutate := range mutations {
 		r := validRequest(t)

@@ -23,6 +23,48 @@ type postgresRepo struct {
 	db *database.DB
 }
 
+// principalOf returns the principal an account belongs to.
+func (r *postgresRepo) principalOf(ctx context.Context, accountID id.AccountID) (id.PrincipalID, error) {
+	var principalID string
+	err := r.db.QueryRow(ctx, `SELECT principal_id FROM account WHERE id = $1`, string(accountID)).Scan(&principalID)
+	if err != nil {
+		return "", fmt.Errorf("account: read account's principal: %w", err)
+	}
+	return id.PrincipalID(principalID), nil
+}
+
+// lockPrincipal takes the principal's row lock for the transaction on ctx.
+func (r *postgresRepo) lockPrincipal(ctx context.Context, principalID id.PrincipalID) error {
+	var locked string
+	err := r.db.QueryRow(ctx, `SELECT id FROM principal WHERE id = $1 FOR UPDATE`, string(principalID)).Scan(&locked)
+	if err != nil {
+		return fmt.Errorf("account: lock principal: %w", err)
+	}
+	return nil
+}
+
+// accountsOfPrincipal returns every account a principal holds.
+func (r *postgresRepo) accountsOfPrincipal(ctx context.Context, principalID id.PrincipalID) ([]id.AccountID, error) {
+	rows, err := r.db.Query(ctx, `SELECT id FROM account WHERE principal_id = $1`, string(principalID))
+	if err != nil {
+		return nil, fmt.Errorf("account: list principal's accounts: %w", err)
+	}
+	defer rows.Close()
+
+	var out []id.AccountID
+	for rows.Next() {
+		var accountID string
+		if err := rows.Scan(&accountID); err != nil {
+			return nil, fmt.Errorf("account: scan account: %w", err)
+		}
+		out = append(out, id.AccountID(accountID))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("account: list principal's accounts: %w", err)
+	}
+	return out, nil
+}
+
 // NewPostgresRepository builds the Postgres-backed store.
 func NewPostgresRepository(db *database.DB) Repository {
 	return &postgresRepo{db: db}

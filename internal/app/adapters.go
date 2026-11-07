@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/CleargateFinance/cleargate-core/internal/infrastructure/solana"
 	"github.com/CleargateFinance/cleargate-core/internal/modules/account"
 	"github.com/CleargateFinance/cleargate-core/internal/modules/authz"
 	"github.com/CleargateFinance/cleargate-core/internal/modules/counterparty"
@@ -208,6 +209,134 @@ func (l PaymentLedger) RecordSpend(
 	return day, month, nil
 }
 
+// PaymentTransfers satisfies payment.Transfers with the settlement module.
+type PaymentTransfers struct {
+	Settlement *settlement.Service
+}
+
+var _ payment.Transfers = PaymentTransfers{}
+
+// Quote implements payment.Transfers.
+func (t PaymentTransfers) Quote(requirement []byte) (payment.Quote, error) {
+	req, err := t.Settlement.Quote(requirement)
+	if err != nil {
+		return payment.Quote{}, err
+	}
+	return payment.Quote{Amount: req.Amount, PayTo: req.PayTo, ResourceURL: req.ResourceURL, Terms: req.Terms()}, nil
+}
+
+// Transfer implements payment.Transfers.
+func (t PaymentTransfers) Transfer(ctx context.Context, r payment.TransferRequest) (payment.Transfer, error) {
+	signed, err := t.Settlement.Transfer(ctx, settlement.TransferRequest{
+		AccountID: r.AccountID, PaymentID: r.PaymentID, Amount: r.Amount, PayTo: r.PayTo, Requirement: r.Requirement,
+	})
+	if err != nil {
+		return payment.Transfer{}, err
+	}
+	return payment.Transfer{
+		Memo: signed.Memo, WalletAddress: signed.WalletAddress, Transaction: signed.Transaction,
+		PaymentSignature: signed.PaymentSignature, LastValidBlockHeight: signed.LastValidBlockHeight,
+		MessageDigest: signed.MessageDigest,
+	}, nil
+}
+
+// Settle implements payment.SettlementLedger: payee payable to the on-chain
+// float, which is the money having left.
+func (l PaymentLedger) Settle(ctx context.Context, p payment.Pending, at time.Time) error {
+	asset := p.Amount.Asset()
+	payable, err := l.Ledger.EnsureAccount(ctx, nil, ledger.TypePayeePayable, asset)
+	if err != nil {
+		return err
+	}
+	float, err := l.Ledger.EnsureAccount(ctx, nil, ledger.TypeOnchainFloat, asset)
+	if err != nil {
+		return err
+	}
+	paymentID := p.ID
+	_, err = l.Ledger.Post(ctx, ledger.Entry{
+		Kind:          ledger.KindPayout,
+		Asset:         asset,
+		Lines:         ledger.Transfer(payable, float, p.Amount),
+		ReferenceType: "payment",
+		ReferenceID:   &paymentID,
+		OccurredAt:    at,
+	})
+	return err
+}
+
+// Release implements payment.SettlementLedger: a reversing entry back to the
+// account's funds (the ledger is append-only, §8.3), and the budget given back
+// in the windows the payment was charged to, even if they have since closed.
+func (l PaymentLedger) Release(ctx context.Context, p payment.Pending, at time.Time) error {
+	asset := p.Amount.Asset()
+	original, err := l.Ledger.PaymentEntry(ctx, p.ID, p.DecidedAt)
+	if err != nil {
+		return err
+	}
+	payable, err := l.Ledger.EnsureAccount(ctx, nil, ledger.TypePayeePayable, asset)
+	if err != nil {
+		return err
+	}
+	funds, err := l.Ledger.EnsureAccount(ctx, &p.AccountID, ledger.TypeCustomerFunds, asset)
+	if err != nil {
+		return err
+	}
+	paymentID := p.ID
+	if _, err := l.Ledger.Post(ctx, ledger.Entry{
+		Kind:          ledger.KindReversal,
+		Asset:         asset,
+		Lines:         ledger.Transfer(payable, funds, p.Amount),
+		ReferenceType: "payment",
+		ReferenceID:   &paymentID,
+		Reverses:      &original,
+		OccurredAt:    at,
+	}); err != nil {
+		return err
+	}
+	return l.Ledger.ReleaseSpend(ctx, p.AgentID, p.Amount, p.DecidedAt)
+}
+
+// PaymentOutcomes satisfies payment.TransferOutcomes with the settlement module.
+type PaymentOutcomes struct {
+	Observer *settlement.TransferObserver
+}
+
+var _ payment.TransferOutcomes = PaymentOutcomes{}
+
+// Outcomes implements payment.TransferOutcomes. A payment still pending on the
+// chain comes back authorized, which is what it remains.
+func (o PaymentOutcomes) Outcomes(ctx context.Context, pending []payment.Pending) (map[id.PaymentID]payment.Status, error) {
+	transfers := make([]settlement.PendingTransfer, 0, len(pending))
+	for _, p := range pending {
+		if p.Transfer == nil {
+			continue
+		}
+		transfers = append(transfers, settlement.PendingTransfer{
+			PaymentID:            p.ID,
+			WalletAddress:        p.Transfer.WalletAddress,
+			Memo:                 p.Transfer.Memo,
+			Transaction:          p.Transfer.Transaction,
+			LastValidBlockHeight: p.Transfer.LastValidBlockHeight,
+			DecidedAt:            p.DecidedAt,
+		})
+	}
+	found, err := o.Observer.Outcomes(ctx, transfers)
+	out := make(map[id.PaymentID]payment.Status, len(found))
+	for paymentID, outcome := range found {
+		switch outcome {
+		case settlement.TransferLanded:
+			out[paymentID] = payment.StatusSettled
+		case settlement.TransferFailed:
+			out[paymentID] = payment.StatusFailed
+		case settlement.TransferExpired:
+			out[paymentID] = payment.StatusExpired
+		case settlement.TransferPending:
+			out[paymentID] = payment.StatusAuthorized
+		}
+	}
+	return out, err
+}
+
 // PaymentDecisions satisfies payment.DecisionLog with the decisionlog module.
 type PaymentDecisions struct {
 	Decisions *decisionlog.Service
@@ -378,6 +507,162 @@ func (p SummaryPayments) DeclinesSince(ctx context.Context, accountID id.Account
 		out[t.AgentID] = d
 	}
 	return out, nil
+}
+
+// SettlementAccounts satisfies settlement.Accounts with the account module.
+type SettlementAccounts struct {
+	Accounts *account.Service
+}
+
+var _ settlement.Accounts = SettlementAccounts{}
+
+// RequireMember implements settlement.Accounts. Membership is the only thing
+// it checks, so the session needs only who the person is.
+func (a SettlementAccounts) RequireMember(ctx context.Context, userID id.UserID, accountID id.AccountID) error {
+	_, err := a.Accounts.Membership(ctx, account.Session{UserID: userID}, accountID)
+	return err
+}
+
+// LedgerFundingHistory satisfies account.FundingHistory with the ledger.
+type LedgerFundingHistory struct {
+	Principals *account.Principals
+	Ledger     *ledger.Service
+}
+
+var _ account.FundingHistory = LedgerFundingHistory{}
+
+// FundedToDate implements account.FundingHistory, across every account the
+// principal holds, so opening a second account does not reset the cap.
+func (h LedgerFundingHistory) FundedToDate(ctx context.Context, principalID id.PrincipalID) (currency.Amount, error) {
+	accounts, err := h.Principals.Accounts(ctx, principalID)
+	if err != nil {
+		return currency.Amount{}, err
+	}
+	return h.Ledger.FundedTotal(ctx, accounts, currency.USD)
+}
+
+// SettlementFundingGate satisfies settlement.FundingGate with the account
+// module.
+type SettlementFundingGate struct {
+	Principals *account.Principals
+	Accounts   *account.Service
+}
+
+var _ settlement.FundingGate = SettlementFundingGate{}
+
+// FundingAllowed implements settlement.FundingGate.
+//
+// TODO(mvp): name the deposit's source address and chain here. Without them the
+// gate applies the tier cap and skips address screening, the owner's decision
+// for the devnet MVP (7 November 2026). This must change before mainnet: a
+// direct deposit with no KYC is safe only behind screening (Task 2.7).
+func (g SettlementFundingGate) FundingAllowed(ctx context.Context, accountID id.AccountID, amount currency.Amount) (bool, error) {
+	principalID, err := g.Principals.Of(ctx, accountID)
+	if err != nil {
+		return false, err
+	}
+	if err := g.Principals.Lock(ctx, principalID); err != nil {
+		return false, err
+	}
+	err = g.Accounts.RequireFundingAllowed(ctx, account.FundingRequest{PrincipalID: principalID, Amount: amount})
+	if errors.Is(err, account.ErrFundingCapExceeded) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+// SettlementFundingLedger satisfies settlement.FundingLedger with the ledger.
+type SettlementFundingLedger struct {
+	Ledger *ledger.Service
+}
+
+var _ settlement.FundingLedger = SettlementFundingLedger{}
+
+// CreditFunding implements settlement.FundingLedger: the on-chain float, which
+// is negative by design, to the account's funds.
+func (l SettlementFundingLedger) CreditFunding(
+	ctx context.Context, accountID id.AccountID, amount currency.Amount, at time.Time,
+) (id.JournalEntryID, error) {
+	asset := amount.Asset()
+	float, err := l.Ledger.EnsureAccount(ctx, nil, ledger.TypeOnchainFloat, asset)
+	if err != nil {
+		return "", err
+	}
+	funds, err := l.Ledger.EnsureAccount(ctx, &accountID, ledger.TypeCustomerFunds, asset)
+	if err != nil {
+		return "", err
+	}
+	return l.Ledger.Post(ctx, ledger.Entry{
+		Kind: ledger.KindFunding, Asset: asset, Lines: ledger.Transfer(float, funds, amount), OccurredAt: at,
+	})
+}
+
+// SettlementChain satisfies settlement.ChainReader with a Solana node, for one
+// token.
+type SettlementChain struct {
+	Solana *solana.Client
+	Mint   string
+}
+
+var _ settlement.ChainReader = SettlementChain{}
+
+// TokenAccount implements settlement.ChainReader.
+func (c SettlementChain) TokenAccount(owner string) (string, error) {
+	return solana.TokenAccount(owner, c.Mint)
+}
+
+// Signatures implements settlement.ChainReader.
+func (c SettlementChain) Signatures(ctx context.Context, address string, p settlement.ChainPage) ([]settlement.ChainSignature, error) {
+	found, err := c.Solana.Signatures(ctx, address, solana.Page{Before: p.Before, Until: p.Until, Limit: p.Limit})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]settlement.ChainSignature, len(found))
+	for i, s := range found {
+		out[i] = settlement.ChainSignature{Signature: s.Signature, Failed: s.Failed, Memo: s.Memo, BlockTime: s.BlockTime}
+	}
+	return out, nil
+}
+
+// Transaction implements settlement.ChainReader.
+func (c SettlementChain) Transaction(ctx context.Context, signature, owner string) (settlement.ChainTransaction, error) {
+	tx, err := c.Solana.Transaction(ctx, signature)
+	if err != nil {
+		return settlement.ChainTransaction{}, err
+	}
+	return settlement.ChainTransaction{Message: tx.Message, Failed: tx.Failed, TokenChange: tx.TokenChange(owner, c.Mint)}, nil
+}
+
+// FinalizedHeight implements settlement.ChainReader.
+func (c SettlementChain) FinalizedHeight(ctx context.Context) (uint64, error) {
+	return c.Solana.FinalizedHeight(ctx)
+}
+
+// MessageOf implements settlement.ChainReader.
+func (c SettlementChain) MessageOf(signedTransaction string) ([]byte, error) {
+	return solana.MessageOf(signedTransaction)
+}
+
+// SettlementRail satisfies settlement.Rail with x402 `exact` on Solana, through
+// the x402 SDK (Task 7.6).
+type SettlementRail struct {
+	Solana *solana.Client
+}
+
+var _ settlement.Rail = SettlementRail{}
+
+// Transfer implements settlement.Rail.
+func (r SettlementRail) Transfer(ctx context.Context, t settlement.RailTransfer) (settlement.RailSigned, error) {
+	signed, err := r.Solana.SignExact(ctx, solana.ExactTransfer{
+		Owner: t.Owner, FeePayer: t.FeePayer, Network: t.Network, Mint: t.Mint,
+		PayTo: t.PayTo, Amount: t.AtomicAmount, Memo: t.Memo, Sign: t.Sign,
+	})
+	if err != nil {
+		return settlement.RailSigned{}, err
+	}
+	return settlement.RailSigned{
+		Transaction: signed.Transaction, LastValidBlockHeight: signed.LastValidBlockHeight, Message: signed.Message,
+	}, nil
 }
 
 // SolanaWallets is what SettlementWallets needs from a custodian: in

@@ -9,7 +9,7 @@ import (
 )
 
 // Module composes this feature's service — the single entry point the rest
-// of the application is allowed to touch. Routes arrive with Task 6.2.
+// of the application is allowed to touch.
 type Module struct {
 	svc *Service
 }
@@ -27,6 +27,10 @@ type Deps struct {
 	Ledger         Ledger
 	Decisions      DecisionLog
 	Outbox         Outbox
+
+	// Transfers quotes and signs. Required: an approved payment that cannot be
+	// signed is money debited for nothing.
+	Transfers Transfers
 
 	// Rail is recorded on every payment. Required, since a payment row with
 	// no rail cannot be reconciled with the chain.
@@ -54,6 +58,8 @@ func New(d Deps) (*Module, error) {
 		return nil, fmt.Errorf("%w: decision log", ErrMissingDependency)
 	case d.Outbox == nil:
 		return nil, fmt.Errorf("%w: outbox", ErrMissingDependency)
+	case d.Transfers == nil:
+		return nil, fmt.Errorf("%w: transfers", ErrMissingDependency)
 	case d.Rail.Name == "" || d.Rail.Token == "" || d.Rail.Network == "":
 		return nil, fmt.Errorf("%w: rail", ErrMissingDependency)
 	}
@@ -69,6 +75,7 @@ func New(d Deps) (*Module, error) {
 		events:    d.Outbox,
 		clock:     clockOrSystem(d.Clock),
 		rail:      d.Rail,
+		transfers: d.Transfers,
 	}}, nil
 }
 

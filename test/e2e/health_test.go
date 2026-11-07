@@ -19,6 +19,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/CleargateFinance/cleargate-core/internal/app"
+	"github.com/CleargateFinance/cleargate-core/internal/infrastructure/cdp/cdptest"
 	"github.com/CleargateFinance/cleargate-core/internal/infrastructure/config"
 	"github.com/CleargateFinance/cleargate-core/internal/infrastructure/crypto"
 	"github.com/CleargateFinance/cleargate-core/test/fixtures"
@@ -46,6 +47,15 @@ func TestHealth_ReturnsOKAgainstRealDependencies(t *testing.T) {
 	require.NoError(t, err)
 
 	cfg := &config.Config{
+		// A fake custodian: this test is about the database and the cache,
+		// and the API refuses to start with no custodian at all.
+		CDP: cdptest.New(t).Config(),
+		Solana: config.Solana{
+			RPCURL:       "http://127.0.0.1:1", // Never reached by the health route.
+			Network:      "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+			USDCMint:     "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+			USDCDecimals: 6,
+		},
 		// Debug, because that is the only mode the logging mail transport is
 		// allowed in, and no other transport exists yet.
 		Server:    config.Server{Mode: "debug"},

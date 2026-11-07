@@ -342,6 +342,42 @@ func (r *postgresRepo) SpentIn(
 	return currency.Parse(total.String(), asset)
 }
 
+// PaymentEntry implements Repository.
+func (r *postgresRepo) PaymentEntry(ctx context.Context, paymentID id.PaymentID, at time.Time) (id.JournalEntryID, error) {
+	var entry string
+	err := r.db.QueryRow(ctx, `
+		SELECT id FROM journal_entry
+		WHERE kind = 'payment' AND reference_type = 'payment' AND reference_id = $1 AND created_at = $2`,
+		string(paymentID), at).Scan(&entry)
+	if err != nil {
+		return "", fmt.Errorf("ledger: find payment entry: %w", err)
+	}
+	return id.JournalEntryID(entry), nil
+}
+
+// FundedTotal implements Repository. Summed from the postings, never kept, for
+// the same reason a balance is: it cannot then disagree with the book.
+func (r *postgresRepo) FundedTotal(ctx context.Context, accounts []id.AccountID, asset currency.Asset) (currency.Amount, error) {
+	keys := make([]string, len(accounts))
+	for i, a := range accounts {
+		keys[i] = string(a)
+	}
+	var total decimal.Decimal
+	err := r.db.QueryRow(ctx, `
+		SELECT COALESCE(SUM(po.amount), 0)
+		FROM posting po
+		JOIN journal_entry je ON je.id = po.journal_entry_id AND je.created_at = po.created_at
+		JOIN ledger_account la ON la.id = po.ledger_account_id
+		WHERE je.kind = 'funding'
+		  AND la.type = 'customer_funds'
+		  AND la.account_id = ANY($1::uuid[])
+		  AND po.asset = $2`, keys, string(asset)).Scan(&total)
+	if err != nil {
+		return currency.Amount{}, fmt.Errorf("ledger: funded total: %w", err)
+	}
+	return currency.Parse(total.String(), asset)
+}
+
 // SpendSnapshot reads the stored counters and the recomputed ones in a single
 // statement, tagged by side, so both come from the same snapshot.
 //

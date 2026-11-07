@@ -26,6 +26,30 @@ func TestLoad_TrustsNoProxyByDefault(t *testing.T) {
 	assert.Positive(t, cfg.RateLimit.Console)
 }
 
+// TestLoad_SolanaDefaultsToDevnet: reaching mainnet must be something somebody
+// wrote down, never what a missing variable falls back to.
+func TestLoad_SolanaDefaultsToDevnet(t *testing.T) {
+	required(t)
+
+	cfg, err := Load()
+
+	require.NoError(t, err)
+	assert.Contains(t, cfg.Solana.RPCURL, "devnet")
+	assert.Equal(t, "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1", cfg.Solana.Network)
+	assert.Equal(t, 6, cfg.Solana.USDCDecimals)
+}
+
+func TestLoad_RefusesImpossibleTokenDecimals(t *testing.T) {
+	for _, decimals := range []string{"0", "19"} {
+		required(t)
+		t.Setenv("SOLANA_USDC_DECIMALS", decimals)
+
+		_, err := Load()
+
+		assert.ErrorContains(t, err, "SOLANA_USDC_DECIMALS", decimals)
+	}
+}
+
 func TestLoad_ReadsTrustedProxies(t *testing.T) {
 	required(t)
 	t.Setenv("SERVER_TRUSTED_PROXIES", " 10.0.0.0/8, ,192.0.2.7 ")

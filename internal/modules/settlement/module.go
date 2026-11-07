@@ -21,6 +21,18 @@ type Deps struct {
 	// one hands out addresses nobody holds the key to, and every deposit to
 	// them is lost.
 	Wallets WalletProvider
+
+	// Accounts decides who may read an account's deposit address. Required:
+	// the route has no safe answer without it.
+	Accounts Accounts
+
+	// Rail builds and signs payments. Required: there is no safe stand-in for
+	// the thing that moves money.
+	Rail Rail
+
+	// Token is the money on this rail, reported beside the address. Required:
+	// a deposit in the wrong token is never credited.
+	Token Token
 }
 
 // ErrMissingDependency reports a module built without something it cannot
@@ -34,8 +46,16 @@ func New(d Deps) (*Module, error) {
 		return nil, fmt.Errorf("%w: database", ErrMissingDependency)
 	case d.Wallets == nil:
 		return nil, fmt.Errorf("%w: wallet provider", ErrMissingDependency)
+	case d.Accounts == nil:
+		return nil, fmt.Errorf("%w: accounts", ErrMissingDependency)
+	case d.Rail == nil:
+		return nil, fmt.Errorf("%w: rail", ErrMissingDependency)
+	case d.Token.Symbol == "" || d.Token.Network == "" || d.Token.Mint == "" || d.Token.Decimals <= 0:
+		return nil, fmt.Errorf("%w: token", ErrMissingDependency)
 	}
-	return &Module{svc: NewService(NewPostgresRepository(d.DB), d.Wallets)}, nil
+	svc := NewService(NewPostgresRepository(d.DB), d.Wallets)
+	svc.accounts, svc.rail, svc.token = d.Accounts, d.Rail, d.Token
+	return &Module{svc: svc}, nil
 }
 
 // Service returns the module's service, for other modules to consume through

@@ -9,15 +9,20 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/CleargateFinance/cleargate-core/internal/infrastructure/cache"
+	"github.com/CleargateFinance/cleargate-core/internal/infrastructure/cdp"
 	"github.com/CleargateFinance/cleargate-core/internal/infrastructure/config"
 	"github.com/CleargateFinance/cleargate-core/internal/infrastructure/crypto"
 	"github.com/CleargateFinance/cleargate-core/internal/infrastructure/database"
+	"github.com/CleargateFinance/cleargate-core/internal/infrastructure/outbox"
 	"github.com/CleargateFinance/cleargate-core/internal/infrastructure/server"
+	"github.com/CleargateFinance/cleargate-core/internal/infrastructure/solana"
 	"github.com/CleargateFinance/cleargate-core/internal/modules/account"
+	"github.com/CleargateFinance/cleargate-core/internal/modules/counterparty"
 	"github.com/CleargateFinance/cleargate-core/internal/modules/decisionlog"
 	"github.com/CleargateFinance/cleargate-core/internal/modules/ledger"
 	"github.com/CleargateFinance/cleargate-core/internal/modules/mandate"
 	"github.com/CleargateFinance/cleargate-core/internal/modules/payment"
+	"github.com/CleargateFinance/cleargate-core/internal/modules/settlement"
 	"github.com/CleargateFinance/cleargate-core/internal/modules/summary"
 )
 
@@ -35,6 +40,8 @@ type API struct {
 	mandates  *mandate.Module
 	decisions *decisionlog.Module
 	summaries *summary.Module
+	wallets   *settlement.Module
+	payments  *payment.Module
 
 	// surfaces are kept so a test can add a probe route to each and check the
 	// group's middleware, not only the routes registered today.
@@ -125,6 +132,42 @@ func BuildAPI(ctx context.Context, cfg *config.Config, log *slog.Logger) (*API, 
 		return fail(fmt.Errorf("app: summary module: %w", err))
 	}
 
+	custodian, err := cdp.New(cdp.Options{
+		APIKeyID: cfg.CDP.APIKeyID, APIKeySecret: cfg.CDP.APIKeySecret,
+		WalletSecret: cfg.CDP.WalletSecret, BaseURL: cfg.CDP.BaseURL,
+	})
+	if err != nil {
+		return fail(fmt.Errorf("app: %w", err))
+	}
+	chain, err := solana.New(solana.Options{RPCURL: cfg.Solana.RPCURL})
+	if err != nil {
+		return fail(fmt.Errorf("app: %w", err))
+	}
+	wallets, err := settlement.New(settlement.Deps{
+		DB:       db,
+		Wallets:  SettlementWallets{CDP: custodian},
+		Accounts: SettlementAccounts{Accounts: accounts.Service()},
+		Rail:     SettlementRail{Solana: chain},
+		Token:    token(cfg.Solana),
+	})
+	if err != nil {
+		return fail(fmt.Errorf("app: settlement module: %w", err))
+	}
+	payments, err := payment.New(payment.Deps{
+		DB:             db,
+		Accounts:       PaymentAccounts{Accounts: accounts.Service()},
+		Mandates:       PaymentMandates{Mandates: mandates.Service()},
+		Counterparties: PaymentCounterparties{Counterparties: counterparty.New(db, nil).Service()},
+		Ledger:         PaymentLedger{Ledger: ledger.New(db, nil).Service()},
+		Decisions:      PaymentDecisions{Decisions: decisionlog.NewService(decisionlog.NewPostgresRepository(db))},
+		Outbox:         outbox.NewWriter(db),
+		Transfers:      PaymentTransfers{Settlement: wallets.Service()},
+		Rail:           paymentRail(cfg.Solana),
+	})
+	if err != nil {
+		return fail(fmt.Errorf("app: payment module: %w", err))
+	}
+
 	limits, err := newLimiters(cfg.RateLimit, cacheClient, log)
 	if err != nil {
 		return fail(fmt.Errorf("app: rate limits: %w", err))
@@ -143,6 +186,8 @@ func BuildAPI(ctx context.Context, cfg *config.Config, log *slog.Logger) (*API, 
 		mandates:  mandates,
 		decisions: decisions,
 		summaries: summaries,
+		wallets:   wallets,
+		payments:  payments,
 	}
 
 	api.registerRoutes(limits)
@@ -155,6 +200,16 @@ func BuildAPI(ctx context.Context, cfg *config.Config, log *slog.Logger) (*API, 
 	}
 
 	return api, cleanup, nil
+}
+
+// token says which token is money on the configured network.
+func token(c config.Solana) settlement.Token {
+	return settlement.Token{Symbol: "USDC", Network: c.Network, Mint: c.USDCMint, Decimals: c.USDCDecimals}
+}
+
+// paymentRail is the label recorded on every payment. Only one exists for now.
+func paymentRail(c config.Solana) payment.Rail {
+	return payment.Rail{Name: "x402-exact-solana", Token: "USDC", Network: c.Network}
 }
 
 // healthResponse is the body returned by the health endpoint.

@@ -36,6 +36,18 @@ var devnetRail = payment.Rail{
 	Name: "x402-exact-solana", Token: "USDC", Network: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
 }
 
+// noTransfers stands in for the rail where a test exercises only Authorize,
+// which never reaches it.
+type noTransfers struct{}
+
+func (noTransfers) Quote([]byte) (payment.Quote, error) {
+	return payment.Quote{}, errors.New("no rail in this test")
+}
+
+func (noTransfers) Transfer(context.Context, payment.TransferRequest) (payment.Transfer, error) {
+	return payment.Transfer{}, errors.New("no rail in this test")
+}
+
 type testClock struct {
 	mu  sync.Mutex
 	now time.Time
@@ -130,6 +142,7 @@ func newAuthorizeFixture(t *testing.T, balance string) *authorizeFixture {
 		Ledger:         PaymentLedger{Ledger: f.ledger},
 		Decisions:      PaymentDecisions{Decisions: decisionlog.NewService(decisionlog.NewPostgresRepository(db.DB))},
 		Outbox:         outbox.NewWriter(db.DB),
+		Transfers:      noTransfers{},
 		Rail:           devnetRail,
 	}
 	f.rebuild()
