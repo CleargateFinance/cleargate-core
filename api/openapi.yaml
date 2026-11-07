@@ -136,7 +136,8 @@ components:
             - `mfa_enrolment_required` (403): enrol a second factor first.
             - `mfa_required` (403): step up (`POST /v1/mfa/step-up`), then retry within 15 minutes.
             - `rate_limited` (429): too many requests from this caller; wait `Retry-After`.
-          enum: [mfa_enrolment_required, mfa_required, rate_limited]
+            - `transaction_in_flight` (409): another payment of the same order holds an identical transaction; wait `Retry-After`, then retry with the same key.
+          enum: [mfa_enrolment_required, mfa_required, rate_limited, transaction_in_flight]
         request_id:
           type: string
           description: Quote it in a support request.
@@ -717,6 +718,13 @@ paths:
         hours. A retry returns the same transaction and charges nothing new; the
         same key with a different request is a `409`. A `5xx` is not remembered:
         retry it with the same key.
+
+        A `409` with code `transaction_in_flight` is the one `409` to retry with
+        the same key, after `Retry-After`. The payment is approved and held, but
+        its transaction came out identical to another payment's, which happens
+        when a merchant's memo repeats within the same block. The chain would
+        accept only one of the two transactions, so this one is not handed out.
+        Without a retry, the hold is released after 10 minutes.
 
         The merchant's facilitator pays the fee and submits the transaction.
         `settled`, `expired` and `failed` arrive afterwards, in the console.

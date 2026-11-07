@@ -176,16 +176,29 @@ func (r *postgresRepo) SaveTransfer(ctx context.Context, paymentID id.PaymentID,
 		return Transfer{}, fmt.Errorf("payment: block height %d does not fit", t.LastValidBlockHeight)
 	}
 	_, err := r.db.Exec(ctx, `
-		INSERT INTO payment_transfer (payment_id, memo, wallet_address, signed_transaction,
+		INSERT INTO payment_transfer (payment_id, memo, wallet_address, signed_transaction, message_digest,
 		                              payment_signature, last_valid_block_height, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		ON CONFLICT (payment_id) DO NOTHING`,
-		string(paymentID), t.Memo, t.WalletAddress, t.Transaction, t.PaymentSignature,
+		string(paymentID), t.Memo, t.WalletAddress, t.Transaction, t.MessageDigest, t.PaymentSignature,
 		int64(t.LastValidBlockHeight), at, //nolint:gosec // Bounded above.
 	)
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "CG001" {
 		return Transfer{}, errNoLongerAuthorized
+	}
+	// ON CONFLICT names only the primary key, so two retries of this payment
+	// signing the same message can meet on the digest instead. The message is
+	// another payment's only if this one still has no transfer of its own.
+	if errors.As(err, &pgErr) && pgErr.ConstraintName == "payment_transfer_message_digest_key" {
+		stored, found, readErr := r.StoredTransfer(ctx, paymentID)
+		if readErr != nil {
+			return Transfer{}, readErr
+		}
+		if found {
+			return stored, nil
+		}
+		return Transfer{}, ErrTransactionInFlight
 	}
 	if err != nil {
 		return Transfer{}, fmt.Errorf("payment: save transfer: %w", err)

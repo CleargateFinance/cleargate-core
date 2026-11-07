@@ -61,6 +61,9 @@ type RailTransfer struct {
 type RailSigned struct {
 	Transaction          string
 	LastValidBlockHeight uint64
+
+	// Message is the bytes every signer signs, which the chain takes once.
+	Message []byte
 }
 
 // ChainReader reads the chain the wallets live on, for the configured token,

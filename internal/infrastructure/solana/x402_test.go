@@ -131,6 +131,7 @@ func TestSignExact_SignsExactlyWhatWasAsked(t *testing.T) {
 	assert.True(t, tx.Signatures[0].IsZero(), "the fee payer's slot is left for it")
 	assert.True(t, tx.Message.AccountKeys[1].Equals(key.PublicKey()))
 	assert.True(t, tx.Signatures[1].Verify(key.PublicKey(), message))
+	assert.Equal(t, message, signed.Message, "the message reported is the one signed")
 
 	var memo string
 	var transferred *token.TransferChecked

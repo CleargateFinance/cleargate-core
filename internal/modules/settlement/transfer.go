@@ -2,6 +2,7 @@ package settlement
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 
@@ -39,6 +40,11 @@ type SignedTransfer struct {
 
 	// LastValidBlockHeight is the height after which it can never land.
 	LastValidBlockHeight uint64
+
+	// MessageDigest is SHA-256 of the signed message. The chain takes a message
+	// once, so two payments must never hold the same one: a merchant's reused
+	// memo on one blockhash would otherwise settle both from one transfer.
+	MessageDigest []byte
 }
 
 // Quote reads what a requirement asks for, before anything is decided.
@@ -87,17 +93,22 @@ func (s *Service) Transfer(ctx context.Context, r TransferRequest) (SignedTransf
 	if err != nil {
 		return SignedTransfer{}, err
 	}
+	if len(signed.Message) == 0 {
+		return SignedTransfer{}, apperr.Internal("settlement: the rail returned no message", nil)
+	}
 
 	header, err := paymentSignature(req, signed.Transaction)
 	if err != nil {
 		return SignedTransfer{}, err
 	}
+	digest := sha256.Sum256(signed.Message)
 	return SignedTransfer{
 		Memo:                 memo,
 		WalletAddress:        wallet.Address,
 		Transaction:          signed.Transaction,
 		PaymentSignature:     header,
 		LastValidBlockHeight: signed.LastValidBlockHeight,
+		MessageDigest:        digest[:],
 	}, nil
 }
 

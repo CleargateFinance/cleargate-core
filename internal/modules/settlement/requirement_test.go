@@ -2,6 +2,7 @@ package settlement
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -203,6 +204,22 @@ func TestSign_RefusesTheWalletAsFeePayer(t *testing.T) {
 
 	assert.ErrorIs(t, err, ErrFeePayerIsWallet)
 	assert.Empty(t, rail.got.Owner)
+}
+
+// TestSign_DigestIsOfTheSignedMessage: the digest is what stops two payments
+// holding one transaction, so it must be of the message the signers signed.
+func TestSign_DigestIsOfTheSignedMessage(t *testing.T) {
+	svc, rail := transferFixture(addrA)
+
+	got, err := svc.Transfer(context.Background(), transferRequest(t, required(option("10000", "order-7"))))
+
+	require.NoError(t, err)
+	want := sha256.Sum256([]byte("message:order-7"))
+	assert.Equal(t, want[:], got.MessageDigest)
+
+	rail.noMessage = true
+	_, err = svc.Transfer(context.Background(), transferRequest(t, required(option("10000", "order-7"))))
+	assert.Error(t, err, "nothing is handed out that cannot be told apart")
 }
 
 func TestSign_ASigningFailureReachesTheCaller(t *testing.T) {

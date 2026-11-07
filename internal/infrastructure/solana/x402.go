@@ -48,6 +48,10 @@ type SignedExact struct {
 	// after the SDK's: a later blockhash lives at least as long, so the figure
 	// can only err late, and releasing funds late is the safe side.
 	LastValidBlockHeight uint64
+
+	// Message is the bytes every signer signs. The chain takes a message once,
+	// whoever signs it, so it is what identifies the transfer.
+	Message []byte
 }
 
 // SignExact builds the transfer with the x402 SDK, which is what guarantees the
@@ -77,12 +81,16 @@ func (c *Client) SignExact(ctx context.Context, t ExactTransfer) (SignedExact, e
 	if !ok || transaction == "" {
 		return SignedExact{}, errors.New("solana: the x402 SDK returned no transaction")
 	}
+	message, err := MessageOf(transaction)
+	if err != nil {
+		return SignedExact{}, err
+	}
 
 	lastValid, err := c.LastValidBlockHeight(ctx)
 	if err != nil {
 		return SignedExact{}, err
 	}
-	return SignedExact{Transaction: transaction, LastValidBlockHeight: lastValid}, nil
+	return SignedExact{Transaction: transaction, LastValidBlockHeight: lastValid, Message: message}, nil
 }
 
 // custodySigner signs through the custodian rather than with a key in memory.

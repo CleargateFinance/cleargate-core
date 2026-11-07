@@ -47,6 +47,12 @@ func (f *payFixture) sweep() {
 // land puts a paid transaction on-chain, as the merchant's facilitator would.
 func (f *payFixture) land(paid authorizeJSON, failed bool) {
 	f.t.Helper()
+	f.landWithMemo(paid, paid.PaymentID, failed)
+}
+
+// landWithMemo lands a transaction whose memo the merchant chose.
+func (f *payFixture) landWithMemo(paid authorizeJSON, memo string, failed bool) {
+	f.t.Helper()
 	raw, err := base64.StdEncoding.DecodeString(*paid.PaymentSignature)
 	require.NoError(f.t, err)
 	var payload struct {
@@ -55,7 +61,7 @@ func (f *payFixture) land(paid authorizeJSON, failed bool) {
 		} `json:"payload"`
 	}
 	require.NoError(f.t, json.Unmarshal(raw, &payload))
-	f.node.Land(f.wallet, payload.Payload.Transaction, paid.PaymentID, failed, time.Now())
+	f.node.Land(f.wallet, payload.Payload.Transaction, memo, failed, time.Now())
 }
 
 func (f *payFixture) status(paid authorizeJSON) string {
@@ -291,8 +297,8 @@ func TestPayment_AReleasedPaymentCannotGainATransaction(t *testing.T) {
 	require.NoError(t, f.sweeper(late).Sweep(context.Background()))
 
 	_, err := f.db.Exec(context.Background(), `
-		INSERT INTO payment_transfer (payment_id, memo, wallet_address, signed_transaction, payment_signature, last_valid_block_height)
-		SELECT id, 'memo', $1, 'tx', 'sig', 1 FROM payment`, f.wallet)
+		INSERT INTO payment_transfer (payment_id, memo, wallet_address, signed_transaction, message_digest, payment_signature, last_valid_block_height)
+		SELECT id, 'memo', $1, 'tx', decode(repeat('01', 32), 'hex'), 'sig', 1 FROM payment`, f.wallet)
 
 	assert.ErrorContains(t, err, "cannot gain a transaction")
 }

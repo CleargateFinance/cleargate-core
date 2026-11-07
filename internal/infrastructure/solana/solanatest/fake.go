@@ -103,6 +103,15 @@ func (f *Fake) SetLastValid(height uint64) {
 	f.lastValid = height
 }
 
+// NextBlockhash moves the latest blockhash on, as a new block would. Until it
+// is called every transaction is built on the same one, so two identical
+// requests sign identical messages.
+func (f *Fake) NextBlockhash() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.blockhash[0]++
+}
+
 // Calls is how many times method was called.
 func (f *Fake) Calls(method string) int {
 	f.mu.Lock()

@@ -44,7 +44,8 @@ type Repository interface {
 	// SaveTransfer stores the payment's signed transaction unless it already
 	// has one, and returns whichever is stored afterwards, so the loser of two
 	// concurrent signings hands out the winner's. It reports
-	// errNoLongerAuthorized for a payment already released.
+	// errNoLongerAuthorized for a payment already released, and
+	// ErrTransactionInFlight for a message another payment already holds.
 	SaveTransfer(ctx context.Context, paymentID id.PaymentID, t Transfer, at time.Time) (Transfer, error)
 
 	// AwaitingSettlement returns up to limit authorized payments, oldest first.
@@ -240,6 +241,10 @@ type Transfer struct {
 	Transaction          string
 	PaymentSignature     string
 	LastValidBlockHeight uint64
+
+	// MessageDigest is SHA-256 of the signed message, unique across payments.
+	// Saving and handing out only; a transfer read back leaves it empty.
+	MessageDigest []byte
 }
 
 // TransferOutcomes says what the chain did with signed transfers.

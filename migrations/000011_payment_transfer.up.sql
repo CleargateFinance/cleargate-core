@@ -23,6 +23,12 @@ CREATE TABLE payment_transfer (
     -- Base64, signed by the account's wallet, the fee payer's slot empty.
     signed_transaction text NOT NULL CHECK (signed_transaction <> ''),
 
+    -- SHA-256 of the message every signer signs. A merchant's memo replaces
+    -- the payment id, so two payments of one order on one blockhash sign the
+    -- same message. The chain takes it once, and Task 7.7 would settle both
+    -- payments from it. Unique, so a message belongs to one payment.
+    message_digest bytea NOT NULL UNIQUE CHECK (octet_length(message_digest) = 32),
+
     -- What the agent sends the merchant as the PAYMENT-SIGNATURE header.
     payment_signature text NOT NULL CHECK (payment_signature <> ''),
 

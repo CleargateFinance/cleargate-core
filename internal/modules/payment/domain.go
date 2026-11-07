@@ -299,3 +299,12 @@ var (
 	ErrBusy = apperr.RateLimited("too many payments are competing for this account, retry shortly").
 		WithRetryAfter(time.Second)
 )
+
+// ErrTransactionInFlight is a payment whose transaction came out identical to
+// another payment's: the same order, merchant memo included, signed on the
+// same blockhash. The chain would take it once and both would settle from it,
+// so this one is not handed out. It stays approved and unsigned; the same key
+// retried once the blockhash moves on signs a transaction of its own, and
+// without a retry the sweep releases it.
+var ErrTransactionInFlight = apperr.Conflict("another payment holds an identical transaction, retry shortly").
+	WithCode("transaction_in_flight").WithRetryAfter(time.Second)

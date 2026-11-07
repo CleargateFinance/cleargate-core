@@ -236,6 +236,7 @@ func (t PaymentTransfers) Transfer(ctx context.Context, r payment.TransferReques
 	return payment.Transfer{
 		Memo: signed.Memo, WalletAddress: signed.WalletAddress, Transaction: signed.Transaction,
 		PaymentSignature: signed.PaymentSignature, LastValidBlockHeight: signed.LastValidBlockHeight,
+		MessageDigest: signed.MessageDigest,
 	}, nil
 }
 
@@ -656,7 +657,9 @@ func (r SettlementRail) Transfer(ctx context.Context, t settlement.RailTransfer)
 	if err != nil {
 		return settlement.RailSigned{}, err
 	}
-	return settlement.RailSigned{Transaction: signed.Transaction, LastValidBlockHeight: signed.LastValidBlockHeight}, nil
+	return settlement.RailSigned{
+		Transaction: signed.Transaction, LastValidBlockHeight: signed.LastValidBlockHeight, Message: signed.Message,
+	}, nil
 }
 
 // SolanaWallets is what SettlementWallets needs from a custodian: in

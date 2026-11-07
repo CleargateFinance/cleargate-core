@@ -3,6 +3,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -261,6 +262,39 @@ func TestPay_ConcurrentRetriesAgreeOnOneTransaction(t *testing.T) {
 	assert.Equal(t, 1, f.rows(`SELECT count(*) FROM payment_transfer`))
 }
 
+// TestPay_AReusedMemoNeverSharesATransaction: a merchant's memo replaces the
+// payment id, so two payments of the same order on the same blockhash would
+// sign the same message. The chain can take it once, and both would settle
+// from it. The second is refused until the blockhash moves on, then signs a
+// transaction of its own.
+func TestPay_AReusedMemoNeverSharesATransaction(t *testing.T) {
+	f := newPayFixture(t, "50")
+	order := strings.Replace(f.body("1000000", "data_api"), `"extra":{`, `"extra":{"memo":"order-1",`, 1)
+
+	first := f.pays("key-1", order)
+	rec := f.authorize("key-2", order)
+
+	assert.Equal(t, http.StatusConflict, rec.Code, rec.Body.String())
+	assert.Contains(t, rec.Body.String(), "transaction_in_flight")
+	assert.NotEmpty(t, rec.Header().Get("Retry-After"))
+	assert.Equal(t, 1, f.rows(`SELECT count(*) FROM payment_transfer`))
+	assert.Equal(t, "48", f.balance(), "held until a retry or the sweep")
+
+	f.node.NextBlockhash()
+	second := f.pays("key-2", order)
+	require.NotNil(t, second.PaymentSignature)
+	assert.True(t, second.Replayed)
+	assert.NotEqual(t, *first.PaymentSignature, *second.PaymentSignature)
+
+	f.landWithMemo(first, "order-1", false)
+	f.sweep()
+
+	assert.Equal(t, "settled", f.status(first))
+	assert.Equal(t, "authorized", f.status(second), "the first transaction is not the second's")
+	assert.Equal(t, 1, f.rows(`SELECT count(*) FROM journal_entry WHERE kind = 'payout'`))
+	f.bookIsClean()
+}
+
 // TestPay_ASigningFailureCanBeRetried: the payment is approved and debited, the
 // custodian is down, and the agent is told it did not happen. Nobody holds a
 // transaction, so the same key signing again is safe, and it pays once.
@@ -332,18 +366,30 @@ func TestPayment_TransferSchemaRefuses(t *testing.T) {
 	ctx := context.Background()
 	approved := f.pays("key-1", f.body("1000000", "data_api"))
 	declined := f.pays("key-2", f.body("85000000", "data_api"))
-	unsigned := f.rows(`SELECT count(*) FROM payment_transfer`)
-	require.Equal(t, 1, unsigned)
+	f.cdp.FailSigning(true)
+	unsignedRec := f.authorize("key-3", f.body("2000000", "data_api"))
+	require.GreaterOrEqual(t, unsignedRec.Code, 500)
+	f.cdp.FailSigning(false)
+	var unsigned string
+	require.NoError(t, f.db.QueryRow(ctx,
+		`SELECT p.id FROM payment p LEFT JOIN payment_transfer t ON t.payment_id = p.id
+		 WHERE p.status = 'authorized' AND t.payment_id IS NULL`).Scan(&unsigned))
+	var taken []byte
+	require.NoError(t, f.db.QueryRow(ctx, `SELECT message_digest FROM payment_transfer`).Scan(&taken))
 
-	insert := func(paymentID string, height int) error {
+	insert := func(paymentID string, digest []byte) error {
 		_, err := f.db.Exec(ctx, `
-			INSERT INTO payment_transfer (payment_id, memo, wallet_address, signed_transaction, payment_signature, last_valid_block_height)
-			VALUES ($1, 'memo', $2, 'tx', 'sig', $3)`, paymentID, f.wallet, height)
+			INSERT INTO payment_transfer (payment_id, memo, wallet_address, signed_transaction, message_digest, payment_signature, last_valid_block_height)
+			VALUES ($1, 'memo', $2, 'tx', $3, 'sig', 1)`, paymentID, f.wallet, digest)
 		return err
 	}
+	fresh := bytes.Repeat([]byte{1}, 32)
 
-	assert.ErrorContains(t, insert(declined.PaymentID, 1), "cannot gain a transaction", "a declined payment")
-	assert.ErrorContains(t, insert(approved.PaymentID, 1), "payment_transfer_pkey", "a second transaction")
+	assert.ErrorContains(t, insert(declined.PaymentID, fresh), "cannot gain a transaction", "a declined payment")
+	assert.ErrorContains(t, insert(approved.PaymentID, fresh), "payment_transfer_pkey", "a second transaction")
+	assert.ErrorContains(t, insert(unsigned, taken), "payment_transfer_message_digest_key", "another payment's message")
+	assert.ErrorContains(t, insert(unsigned, []byte{1, 2, 3}), "message_digest_check", "not a SHA-256")
+	require.NoError(t, insert(unsigned, fresh))
 	_, err := f.db.Exec(ctx, `UPDATE payment_transfer SET memo = 'other'`)
 	assert.ErrorContains(t, err, "append-only")
 	_, err = f.db.Exec(ctx, `DELETE FROM payment_transfer`)
