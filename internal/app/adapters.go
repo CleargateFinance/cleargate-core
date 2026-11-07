@@ -209,6 +209,36 @@ func (l PaymentLedger) RecordSpend(
 	return day, month, nil
 }
 
+// PaymentTransfers satisfies payment.Transfers with the settlement module.
+type PaymentTransfers struct {
+	Settlement *settlement.Service
+}
+
+var _ payment.Transfers = PaymentTransfers{}
+
+// Quote implements payment.Transfers.
+func (t PaymentTransfers) Quote(requirement []byte) (payment.Quote, error) {
+	req, err := t.Settlement.Quote(requirement)
+	if err != nil {
+		return payment.Quote{}, err
+	}
+	return payment.Quote{Amount: req.Amount, PayTo: req.PayTo, ResourceURL: req.ResourceURL}, nil
+}
+
+// Transfer implements payment.Transfers.
+func (t PaymentTransfers) Transfer(ctx context.Context, r payment.TransferRequest) (payment.Transfer, error) {
+	signed, err := t.Settlement.Transfer(ctx, settlement.TransferRequest{
+		AccountID: r.AccountID, PaymentID: r.PaymentID, Amount: r.Amount, PayTo: r.PayTo, Requirement: r.Requirement,
+	})
+	if err != nil {
+		return payment.Transfer{}, err
+	}
+	return payment.Transfer{
+		Memo: signed.Memo, WalletAddress: signed.WalletAddress, Transaction: signed.Transaction,
+		PaymentSignature: signed.PaymentSignature, LastValidBlockHeight: signed.LastValidBlockHeight,
+	}, nil
+}
+
 // PaymentDecisions satisfies payment.DecisionLog with the decisionlog module.
 type PaymentDecisions struct {
 	Decisions *decisionlog.Service
@@ -500,6 +530,26 @@ func (c SettlementChain) Transaction(ctx context.Context, signature, owner strin
 		return settlement.ChainTransaction{}, err
 	}
 	return settlement.ChainTransaction{Failed: tx.Failed, TokenChange: tx.TokenChange(owner, c.Mint)}, nil
+}
+
+// SettlementRail satisfies settlement.Rail with x402 `exact` on Solana, through
+// the x402 SDK (Task 7.6).
+type SettlementRail struct {
+	Solana *solana.Client
+}
+
+var _ settlement.Rail = SettlementRail{}
+
+// Transfer implements settlement.Rail.
+func (r SettlementRail) Transfer(ctx context.Context, t settlement.RailTransfer) (settlement.RailSigned, error) {
+	signed, err := r.Solana.SignExact(ctx, solana.ExactTransfer{
+		Owner: t.Owner, FeePayer: t.FeePayer, Network: t.Network, Mint: t.Mint,
+		PayTo: t.PayTo, Amount: t.AtomicAmount, Memo: t.Memo, Sign: t.Sign,
+	})
+	if err != nil {
+		return settlement.RailSigned{}, err
+	}
+	return settlement.RailSigned{Transaction: signed.Transaction, LastValidBlockHeight: signed.LastValidBlockHeight}, nil
 }
 
 // SolanaWallets is what SettlementWallets needs from a custodian: in

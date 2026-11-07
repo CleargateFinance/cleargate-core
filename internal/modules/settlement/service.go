@@ -14,6 +14,7 @@ type Service struct {
 	repo     Repository
 	wallets  WalletProvider
 	accounts Accounts
+	rail     Rail
 	token    Token
 }
 

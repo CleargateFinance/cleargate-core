@@ -3,6 +3,7 @@ package payment
 import (
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -162,7 +163,36 @@ const (
 	StatusDeclined Status = "declined"
 	// StatusAuthorized is a payment approved and debited, not yet settled.
 	StatusAuthorized Status = "authorized"
+	// StatusSettled is a payment whose transfer landed on-chain (Task 7.7).
+	StatusSettled Status = "settled"
+	// StatusExpired is a payment whose transfer can never land. Its funds and
+	// budget were given back.
+	StatusExpired Status = "expired"
+	// StatusFailed is a payment whose transfer landed and failed. Its funds and
+	// budget were given back.
+	StatusFailed Status = "failed"
 )
+
+// PayRequest is one payment an agent asks for, as the merchant priced it.
+type PayRequest struct {
+	AccountID      id.AccountID
+	AgentID        id.AgentID
+	IdempotencyKey string
+
+	// Requirement is the merchant's PAYMENT-REQUIRED, as the agent received it.
+	Requirement []byte
+	Category    string
+	Signals     authz.Signals
+}
+
+// Paid is what Pay answers: the decision, and what to pay with if it was yes.
+type Paid struct {
+	Result
+
+	// PaymentSignature is the PAYMENT-SIGNATURE header value. Empty on a
+	// decline, and once the payment has expired or failed, when it is worthless.
+	PaymentSignature string
+}
 
 // Recorded is a payment as it was stored: what the agent asked for, and where
 // the payment stands now.
@@ -249,6 +279,10 @@ func decodeResult(raw []byte) (Result, error) {
 		ReasonCode: s.ReasonCode, Reason: s.Reason, DecidedAt: s.DecidedAt,
 	}, nil
 }
+
+// errNoLongerAuthorized is a payment released by the settlement sweep while its
+// transaction was being signed. The transaction is thrown away unseen.
+var errNoLongerAuthorized = errors.New("payment: no longer authorized")
 
 var (
 	// ErrKeyReused is a key sent again with a different request. That is a

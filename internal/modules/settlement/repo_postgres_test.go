@@ -55,7 +55,7 @@ func TestAddress_IsRecordedOnceAndReadBack(t *testing.T) {
 	db := fixtures.NewTestDB(t)
 	accountID := newAccount(t, db, "acme")
 	provider := &countingProvider{address: addrA}
-	m, err := New(Deps{DB: db.DB, Wallets: provider, Accounts: everyoneIsAMember{}, Token: testToken})
+	m, err := New(Deps{DB: db.DB, Wallets: provider, Accounts: everyoneIsAMember{}, Rail: &fakeRail{}, Token: testToken})
 	require.NoError(t, err)
 
 	first, err := m.Service().Address(ctx, accountID)
@@ -80,7 +80,7 @@ func TestAddress_IsRecordedOnceAndReadBack(t *testing.T) {
 func TestAddress_ConcurrentFirstCallsLeaveOneWallet(t *testing.T) {
 	db := fixtures.NewTestDB(t)
 	accountID := newAccount(t, db, "acme")
-	m, err := New(Deps{DB: db.DB, Wallets: &countingProvider{address: addrA}, Accounts: everyoneIsAMember{}, Token: testToken})
+	m, err := New(Deps{DB: db.DB, Wallets: &countingProvider{address: addrA}, Accounts: everyoneIsAMember{}, Rail: &fakeRail{}, Token: testToken})
 	require.NoError(t, err)
 
 	const n = 10

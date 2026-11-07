@@ -16,6 +16,11 @@
 // the database refuses a second wallet for an account, an address shared by
 // two accounts, and any change to a wallet once recorded.
 //
+// Payments (Task 7.6): Service.Transfer checks a merchant's requirement against
+// the approved payment and signs it through Rail. It sends nothing: the
+// merchant's facilitator pays the fee and submits. This file group is also the
+// only place a token amount becomes money, at par, in either direction.
+//
 // Deposits (Phase 8): DepositWatcher reads each wallet's history at finality
 // and credits what arrived. A deposit is keyed by transaction and wallet, so
 // reading the same history twice credits nothing twice. Address screening is

@@ -51,6 +51,7 @@ func TestHealth_ReturnsOKAgainstRealDependencies(t *testing.T) {
 		// and the API refuses to start with no custodian at all.
 		CDP: cdptest.New(t).Config(),
 		Solana: config.Solana{
+			RPCURL:       "http://127.0.0.1:1", // Never reached by the health route.
 			Network:      "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
 			USDCMint:     "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
 			USDCDecimals: 6,

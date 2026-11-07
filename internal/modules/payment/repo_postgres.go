@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -147,6 +148,57 @@ func (r *postgresRepo) AgentPayments(ctx context.Context, agentID id.AgentID, id
 		return nil, fmt.Errorf("payment: read payments: %w", err)
 	}
 	return out, nil
+}
+
+// StoredTransfer reads a payment's signed transaction.
+func (r *postgresRepo) StoredTransfer(ctx context.Context, paymentID id.PaymentID) (Transfer, bool, error) {
+	var t Transfer
+	var height int64
+	err := r.db.QueryRow(ctx, `
+		SELECT memo, wallet_address, signed_transaction, payment_signature, last_valid_block_height
+		FROM payment_transfer WHERE payment_id = $1`, string(paymentID),
+	).Scan(&t.Memo, &t.WalletAddress, &t.Transaction, &t.PaymentSignature, &height)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Transfer{}, false, nil
+	}
+	if err != nil {
+		return Transfer{}, false, fmt.Errorf("payment: read transfer: %w", err)
+	}
+	t.LastValidBlockHeight = uint64(height) //nolint:gosec // The column is checked positive.
+	return t, true, nil
+}
+
+// SaveTransfer inserts a payment's signed transaction. The primary key settles
+// two concurrent signings, and the insert trigger refuses a payment the sweep
+// has already released (migration 000011).
+func (r *postgresRepo) SaveTransfer(ctx context.Context, paymentID id.PaymentID, t Transfer, at time.Time) (Transfer, error) {
+	if t.LastValidBlockHeight > math.MaxInt64 {
+		return Transfer{}, fmt.Errorf("payment: block height %d does not fit", t.LastValidBlockHeight)
+	}
+	_, err := r.db.Exec(ctx, `
+		INSERT INTO payment_transfer (payment_id, memo, wallet_address, signed_transaction,
+		                              payment_signature, last_valid_block_height, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		ON CONFLICT (payment_id) DO NOTHING`,
+		string(paymentID), t.Memo, t.WalletAddress, t.Transaction, t.PaymentSignature,
+		int64(t.LastValidBlockHeight), at, //nolint:gosec // Bounded above.
+	)
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "CG001" {
+		return Transfer{}, errNoLongerAuthorized
+	}
+	if err != nil {
+		return Transfer{}, fmt.Errorf("payment: save transfer: %w", err)
+	}
+
+	stored, found, err := r.StoredTransfer(ctx, paymentID)
+	if err != nil {
+		return Transfer{}, err
+	}
+	if !found {
+		return Transfer{}, fmt.Errorf("payment: transfer for %s not readable after saving", paymentID)
+	}
+	return stored, nil
 }
 
 // DeclinesSince groups by agent and asset in one statement. A decline can be

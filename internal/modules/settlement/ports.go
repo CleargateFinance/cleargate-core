@@ -33,6 +33,36 @@ type WalletProvider interface {
 	Sign(ctx context.Context, address string, tx []byte) ([]byte, error)
 }
 
+// Rail builds and signs one payment (§8.6). It is the seam a second scheme or a
+// second chain arrives through, so nothing above it knows what a chain is. The
+// MVP's only implementation is x402 `exact` on Solana (Task 7.6).
+type Rail interface {
+	Transfer(ctx context.Context, t RailTransfer) (RailSigned, error)
+}
+
+// RailTransfer is one transfer to build and sign.
+type RailTransfer struct {
+	// Owner is the wallet paying, and FeePayer who pays the fee and submits.
+	Owner, FeePayer string
+
+	Network, Mint, PayTo string
+
+	// AtomicAmount is exactly what the merchant asked for, in atomic units.
+	AtomicAmount string
+
+	// Memo goes on-chain, and is how the transaction is found again.
+	Memo string
+
+	// Sign adds Owner's signature to a serialized transaction.
+	Sign func(ctx context.Context, tx []byte) ([]byte, error)
+}
+
+// RailSigned is a signed transfer, not yet on-chain.
+type RailSigned struct {
+	Transaction          string
+	LastValidBlockHeight uint64
+}
+
 // ChainReader reads the chain the wallets live on, for the configured token,
 // at finality: nothing here can be rolled back after the ledger has moved.
 type ChainReader interface {

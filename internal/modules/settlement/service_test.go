@@ -189,3 +189,14 @@ func TestDepositAddress_NamesTheAddressAndTheToken(t *testing.T) {
 type refusingAccounts struct{ err error }
 
 func (r refusingAccounts) RequireMember(context.Context, id.UserID, id.AccountID) error { return r.err }
+
+// fakeRail records the transfer it was asked for and signs nothing.
+type fakeRail struct {
+	got RailTransfer
+	err error
+}
+
+func (r *fakeRail) Transfer(_ context.Context, t RailTransfer) (RailSigned, error) {
+	r.got = t
+	return RailSigned{Transaction: "c2lnbmVk", LastValidBlockHeight: 1150}, r.err
+}

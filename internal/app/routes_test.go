@@ -39,6 +39,7 @@ type apiFixture struct {
 	api  *API
 	mail *mailLog
 	cdp  *cdptest.Fake
+	node *solanatest.Fake
 	cfg  *config.Config
 
 	accountID id.AccountID
@@ -57,10 +58,10 @@ func newAPIFixture(t *testing.T, configure ...func(*config.Config)) *apiFixture 
 	_, err := rand.Read(key)
 	require.NoError(t, err)
 
-	custodian := cdptest.New(t)
+	custodian, node := cdptest.New(t), solanatest.New(t)
 	cfg := &config.Config{
 		CDP:       custodian.Config(),
-		Solana:    config.Solana{Network: devnetRail.Network, USDCMint: solanatest.DevnetUSDC, USDCDecimals: 6},
+		Solana:    config.Solana{RPCURL: node.URL(), Network: devnetRail.Network, USDCMint: solanatest.DevnetUSDC, USDCDecimals: 6},
 		Server:    config.Server{Mode: "debug"},
 		RateLimit: config.RateLimit{Public: 1000, Agent: 1000, Console: 1000},
 		Database:  config.Database{DSN: db.DSN, MaxConns: 4, MinConns: 1, ConnectTimeout: 10 * time.Second},
@@ -78,7 +79,7 @@ func newAPIFixture(t *testing.T, configure ...func(*config.Config)) *apiFixture 
 	require.NoError(t, err)
 	t.Cleanup(cleanup)
 
-	f := &apiFixture{t: t, db: db, api: api, mail: mail, cdp: custodian, cfg: cfg}
+	f := &apiFixture{t: t, db: db, api: api, mail: mail, cdp: custodian, node: node, cfg: cfg}
 	f.seedAgent()
 	return f
 }

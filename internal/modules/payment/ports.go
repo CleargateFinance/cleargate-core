@@ -38,6 +38,15 @@ type Repository interface {
 	// order. An id that names another agent's payment, or none, is left out.
 	AgentPayments(ctx context.Context, agentID id.AgentID, ids []id.PaymentID) ([]Recorded, error)
 
+	// StoredTransfer returns the payment's signed transaction, if it has one.
+	StoredTransfer(ctx context.Context, paymentID id.PaymentID) (Transfer, bool, error)
+
+	// SaveTransfer stores the payment's signed transaction unless it already
+	// has one, and returns whichever is stored afterwards, so the loser of two
+	// concurrent signings hands out the winner's. It reports
+	// errNoLongerAuthorized for a payment already released.
+	SaveTransfer(ctx context.Context, paymentID id.PaymentID, t Transfer, at time.Time) (Transfer, error)
+
 	// DeclinesSince totals the account's declined payments decided at or after
 	// since, one row per agent and asset.
 	DeclinesSince(ctx context.Context, accountID id.AccountID, since time.Time) ([]DeclineTotal, error)
@@ -182,6 +191,45 @@ type DecisionRecord struct {
 // Outbox appends events in the caller's transaction.
 type Outbox interface {
 	Append(ctx context.Context, e outbox.Event) error
+}
+
+// Transfers is what this module needs from the settlement rail. Nothing here
+// knows what a chain is: a requirement is opaque bytes that come back as an
+// amount and a payee, and a transfer is an opaque signed thing to hand over.
+type Transfers interface {
+	// Quote reads a merchant's requirement into what the engine judges,
+	// converted to the unit of account. A requirement the rail cannot pay is an
+	// invalid request, refused before anything is recorded.
+	Quote(requirement []byte) (Quote, error)
+
+	// Transfer builds and signs an approved payment. It is a network call, so
+	// it runs after the decision commits.
+	Transfer(ctx context.Context, t TransferRequest) (Transfer, error)
+}
+
+// Quote is what a requirement asks for.
+type Quote struct {
+	Amount      currency.Amount
+	PayTo       string
+	ResourceURL string
+}
+
+// TransferRequest is an approved payment to sign.
+type TransferRequest struct {
+	AccountID   id.AccountID
+	PaymentID   id.PaymentID
+	Amount      currency.Amount
+	PayTo       string
+	Requirement []byte
+}
+
+// Transfer is a signed payment, kept so a retry returns the same one.
+type Transfer struct {
+	Memo                 string
+	WalletAddress        string
+	Transaction          string
+	PaymentSignature     string
+	LastValidBlockHeight uint64
 }
 
 // Clock supplies the current time, so the decision instant and key expiry

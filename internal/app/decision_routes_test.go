@@ -103,6 +103,7 @@ func (f *apiFixture) paymentService(balance string) *payment.Service {
 		Ledger:         PaymentLedger{Ledger: ledgerSvc},
 		Decisions:      PaymentDecisions{Decisions: decisionlog.NewService(decisionlog.NewPostgresRepository(f.db.DB))},
 		Outbox:         outbox.NewWriter(f.db.DB),
+		Transfers:      noTransfers{},
 		Rail:           devnetRail,
 	})
 	require.NoError(f.t, err)
