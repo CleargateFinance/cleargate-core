@@ -132,6 +132,11 @@ type FundingLedger interface {
 type FundingGate interface {
 	// FundingAllowed reports false when amount would take the account past its
 	// funding cap. Any other failure is an error, and nothing is decided.
+	//
+	// The cap is a total across the owner's accounts, so it holds a lock on
+	// that owner until the transaction on ctx ends. Call it inside the
+	// transaction that credits: outside one, a concurrent credit to another of
+	// the owner's accounts is not yet counted.
 	FundingAllowed(ctx context.Context, accountID id.AccountID, amount currency.Amount) (bool, error)
 }
 

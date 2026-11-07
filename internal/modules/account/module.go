@@ -90,6 +90,14 @@ func (p *Principals) Of(ctx context.Context, accountID id.AccountID) (id.Princip
 	return p.repo.principalOf(ctx, accountID)
 }
 
+// Lock holds the principal's row until the transaction on ctx ends. A funding
+// cap is a total across the principal's accounts, so a check and the credit it
+// allows must run under this lock, in one transaction: two deposits checked
+// side by side would each see the total from before the other.
+func (p *Principals) Lock(ctx context.Context, principalID id.PrincipalID) error {
+	return p.repo.lockPrincipal(ctx, principalID)
+}
+
 // Accounts returns every account a principal holds.
 func (p *Principals) Accounts(ctx context.Context, principalID id.PrincipalID) ([]id.AccountID, error) {
 	return p.repo.accountsOfPrincipal(ctx, principalID)

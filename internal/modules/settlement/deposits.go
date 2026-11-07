@@ -155,18 +155,24 @@ func (w *DepositWatcher) process(ctx context.Context, wallet Wallet, signature s
 // record writes the deposit and, unless the funding gate refuses it, its ledger
 // credit, in one transaction. A deposit already recorded fails the insert and
 // rolls the credit back with it, so a rescan or a second worker changes nothing.
+//
+// The gate runs inside that transaction too, and holds the owner's lock until
+// it commits. The cap is a total across the owner's accounts, so a second
+// worker crediting another of them waits here and then counts this credit,
+// rather than both checking against the total from before either.
 func (w *DepositWatcher) record(ctx context.Context, wallet Wallet, signature string, amount currency.Amount) error {
 	seen, err := w.repo.DepositSeen(ctx, w.token.Network, signature, wallet.Address)
 	if err != nil || seen {
 		return err
 	}
-	allowed, err := w.gate.FundingAllowed(ctx, wallet.AccountID, amount)
-	if err != nil {
-		return err
-	}
 
 	at := w.clock.Now().UTC()
+	var allowed bool
 	err = w.uow.Do(ctx, func(ctx context.Context) error {
+		var err error
+		if allowed, err = w.gate.FundingAllowed(ctx, wallet.AccountID, amount); err != nil {
+			return err
+		}
 		d := Deposit{
 			Network: w.token.Network, Signature: signature, AccountID: wallet.AccountID,
 			Address: wallet.Address, Amount: amount, Status: DepositQuarantined,

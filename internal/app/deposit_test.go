@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -212,6 +213,51 @@ func TestDeposit_CapCountsWhatWasAlreadyFunded(t *testing.T) {
 	f.poll()
 
 	assert.Equal(t, "60", f.balance())
+	assert.Equal(t, 1, f.count(`SELECT count(*) FROM deposit WHERE status = 'quarantined'`))
+}
+
+// TestDeposit_TheCapHoldsAgainstAConcurrentCredit: another worker is part-way
+// through crediting the same principal's other account. The cap check waits for
+// it rather than reading the total from before it, so two deposits that each
+// fit cannot together pass the cap.
+func TestDeposit_TheCapHoldsAgainstAConcurrentCredit(t *testing.T) {
+	f := newDepositFixture(t)
+	ctx := context.Background()
+	var principalID, otherAccount string
+	require.NoError(t, f.db.QueryRow(ctx, `SELECT principal_id FROM account WHERE id = $1`, string(f.accountID)).Scan(&principalID))
+	require.NoError(t, f.db.QueryRow(ctx,
+		`INSERT INTO account (principal_id, display_name) VALUES ($1, 'second') RETURNING id`, principalID).Scan(&otherAccount))
+	f.deposit(60_000_000)
+
+	credited, release, done := make(chan struct{}), make(chan struct{}), make(chan error, 1)
+	go func() {
+		done <- f.db.UoW.Do(ctx, func(ctx context.Context) error {
+			if _, err := f.db.Exec(ctx, `SELECT 1 FROM principal WHERE id = $1 FOR UPDATE`, principalID); err != nil {
+				return err
+			}
+			funding := SettlementFundingLedger{Ledger: ledger.New(f.db.DB, nil).Service()}
+			if _, err := funding.CreditFunding(ctx, id.AccountID(otherAccount), usd(t, "60"), time.Now()); err != nil {
+				return err
+			}
+			close(credited)
+			<-release
+			return nil
+		})
+	}()
+	<-credited
+
+	polled := make(chan error, 1)
+	go func() { polled <- f.watcher.Poll(ctx) }()
+	select {
+	case err := <-polled:
+		t.Fatalf("the cap check did not wait for the other credit (poll returned %v)", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+	close(release)
+	require.NoError(t, <-done)
+	require.NoError(t, <-polled)
+
+	assert.Equal(t, "0", f.balance(), "60 already funded and 60 more is past the basic tier's 100")
 	assert.Equal(t, 1, f.count(`SELECT count(*) FROM deposit WHERE status = 'quarantined'`))
 }
 

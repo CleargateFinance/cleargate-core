@@ -561,6 +561,9 @@ func (g SettlementFundingGate) FundingAllowed(ctx context.Context, accountID id.
 	if err != nil {
 		return false, err
 	}
+	if err := g.Principals.Lock(ctx, principalID); err != nil {
+		return false, err
+	}
 	err = g.Accounts.RequireFundingAllowed(ctx, account.FundingRequest{PrincipalID: principalID, Amount: amount})
 	if errors.Is(err, account.ErrFundingCapExceeded) {
 		return false, nil

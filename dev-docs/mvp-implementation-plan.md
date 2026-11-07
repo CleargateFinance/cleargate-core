@@ -1114,6 +1114,7 @@ Tasks marked **Not in MVP** are outside this total. Phase 6 grows because no han
 - **Quarantine means "recorded and not credited".** A deposit past the funding cap stays in the wallet, is left out of the balance, and logs `alert=deposit_quarantined`. **Nothing returns it**: that needs a person, and return-to-sender is not built. The basic tier's cap is 100 USD, so a demo with more needs the principal's tier raised.
 - **Not built:** Task 2.7's `retention_hold_until` on first funding, and `RecordFunding`'s stamp on the source address, which only withdrawals read.
 - **`FundedTotal` spans every account the principal holds**, so opening a second account does not reset the cap.
+- **The cap check runs inside the credit's transaction, under a lock on the principal's row.** Checked before it, two workers crediting two of one principal's accounts would each read the total from before the other, and two deposits that each fit would together pass the cap.
 
 **7 November 2026, deposit address (Task 6.2).** The API now builds a CDP client and **refuses to start without `CDP_*`**, in debug mode too. The worker does not read them. Any member may read the address, a viewer included, and a non-member gets the account routes' `403` before the custodian is reached. The response also names the network, token and mint. Task 2.4's gate is **not** applied here: reading an address needs no second factor, so "TOTP before funding" is not enforced anywhere yet. `cdptest` is a fake CDP that speaks its REST API and signs with real keys, so the real client runs in tests.
 

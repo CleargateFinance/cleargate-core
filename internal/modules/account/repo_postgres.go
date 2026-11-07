@@ -33,6 +33,16 @@ func (r *postgresRepo) principalOf(ctx context.Context, accountID id.AccountID) 
 	return id.PrincipalID(principalID), nil
 }
 
+// lockPrincipal takes the principal's row lock for the transaction on ctx.
+func (r *postgresRepo) lockPrincipal(ctx context.Context, principalID id.PrincipalID) error {
+	var locked string
+	err := r.db.QueryRow(ctx, `SELECT id FROM principal WHERE id = $1 FOR UPDATE`, string(principalID)).Scan(&locked)
+	if err != nil {
+		return fmt.Errorf("account: lock principal: %w", err)
+	}
+	return nil
+}
+
 // accountsOfPrincipal returns every account a principal holds.
 func (r *postgresRepo) accountsOfPrincipal(ctx context.Context, principalID id.PrincipalID) ([]id.AccountID, error) {
 	rows, err := r.db.Query(ctx, `SELECT id FROM account WHERE principal_id = $1`, string(principalID))
