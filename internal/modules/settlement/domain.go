@@ -25,6 +25,25 @@ type Wallet struct {
 	Address string
 }
 
+// Token is the one token that is money on the rail: USDC, on one network (§8.3).
+// Its decimals are configuration, never read from anything a merchant sends.
+type Token struct {
+	// Symbol is what moves, as payment.token records it.
+	Symbol string
+	// Network is a CAIP-2 chain id.
+	Network string
+	// Mint is the token's address on Network.
+	Mint string
+	// Decimals is how many atomic units make one token, as a power of ten.
+	Decimals int
+}
+
+// DepositAddress is where an account's owner sends money, and what to send.
+type DepositAddress struct {
+	Address string
+	Token   Token
+}
+
 // ErrNoWallet reports an account with no wallet on the chain asked about.
 var ErrNoWallet = apperr.NotFound("the account has no wallet")
 

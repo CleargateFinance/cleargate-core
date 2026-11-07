@@ -380,6 +380,20 @@ func (p SummaryPayments) DeclinesSince(ctx context.Context, accountID id.Account
 	return out, nil
 }
 
+// SettlementAccounts satisfies settlement.Accounts with the account module.
+type SettlementAccounts struct {
+	Accounts *account.Service
+}
+
+var _ settlement.Accounts = SettlementAccounts{}
+
+// RequireMember implements settlement.Accounts. Membership is the only thing
+// it checks, so the session needs only who the person is.
+func (a SettlementAccounts) RequireMember(ctx context.Context, userID id.UserID, accountID id.AccountID) error {
+	_, err := a.Accounts.Membership(ctx, account.Session{UserID: userID}, accountID)
+	return err
+}
+
 // SolanaWallets is what SettlementWallets needs from a custodian: in
 // production *cdp.Client, CDP's Server Wallets (Task 7.5).
 type SolanaWallets interface {

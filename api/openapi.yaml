@@ -364,6 +364,15 @@ components:
               declined_this_month: {$ref: '#/components/schemas/Declines'}
         declined_this_month: {$ref: '#/components/schemas/Declines'}
 
+    DepositAddress:
+      type: object
+      required: [address, network, token, mint]
+      properties:
+        address: {type: string, description: "The account's wallet. Send the token here, and only the token."}
+        network: {type: string, description: 'CAIP-2 chain id, for example Solana devnet.'}
+        token: {type: string, enum: [USDC]}
+        mint: {type: string, description: "The token's address on that network. Any other token sent here is not credited."}
+
     Health:
       type: object
       required: [status]
@@ -642,6 +651,23 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Summary'}
+        default: {$ref: '#/components/responses/Error'}
+
+  /v1/accounts/{id}/deposit-address:
+    get:
+      tags: [accounts]
+      summary: Where to send USDC to fund the account.
+      description: |
+        Any member may read it. The account has one wallet per network, created
+        the first time anyone asks, and its address never changes.
+      security: [{consoleSession: []}]
+      parameters: [{$ref: '#/components/parameters/accountId'}]
+      responses:
+        '200':
+          description: The deposit address.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DepositAddress'}
         default: {$ref: '#/components/responses/Error'}
 
   /v1/accounts/{id}/agents:

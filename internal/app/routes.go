@@ -79,6 +79,7 @@ func (a *API) registerRoutes(l limiters) {
 	a.mandates.RegisterConsoleRoutes(a.surfaces.console)
 	a.decisions.RegisterConsoleRoutes(a.surfaces.console)
 	a.summaries.RegisterConsoleRoutes(a.surfaces.console)
+	a.wallets.RegisterConsoleRoutes(a.surfaces.console)
 }
 
 // byClientIP counts against the address server.New's trusted proxies let

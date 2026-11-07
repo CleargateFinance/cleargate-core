@@ -30,6 +30,13 @@ type WalletProvider interface {
 	Sign(ctx context.Context, address string, tx []byte) ([]byte, error)
 }
 
+// Accounts is what this module needs from the account module.
+type Accounts interface {
+	// RequireMember refuses a person outside the account, with the answer
+	// every account route gives one.
+	RequireMember(ctx context.Context, userID id.UserID, accountID id.AccountID) error
+}
+
 // Repository is the storage this module needs.
 type Repository interface {
 	// Wallet returns the account's wallet on chain, or ErrNoWallet.

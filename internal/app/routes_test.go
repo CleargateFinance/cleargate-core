@@ -19,8 +19,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/CleargateFinance/cleargate-core/internal/infrastructure/cdp/cdptest"
 	"github.com/CleargateFinance/cleargate-core/internal/infrastructure/config"
 	"github.com/CleargateFinance/cleargate-core/internal/infrastructure/crypto"
+	"github.com/CleargateFinance/cleargate-core/internal/infrastructure/solana/solanatest"
 	"github.com/CleargateFinance/cleargate-core/internal/modules/account"
 	"github.com/CleargateFinance/cleargate-core/internal/shared/id"
 	"github.com/CleargateFinance/cleargate-core/test/fixtures"
@@ -36,6 +38,8 @@ type apiFixture struct {
 	db   *fixtures.TestDB
 	api  *API
 	mail *mailLog
+	cdp  *cdptest.Fake
+	cfg  *config.Config
 
 	accountID id.AccountID
 	agentID   id.AgentID
@@ -53,7 +57,10 @@ func newAPIFixture(t *testing.T, configure ...func(*config.Config)) *apiFixture 
 	_, err := rand.Read(key)
 	require.NoError(t, err)
 
+	custodian := cdptest.New(t)
 	cfg := &config.Config{
+		CDP:       custodian.Config(),
+		Solana:    config.Solana{Network: devnetRail.Network, USDCMint: solanatest.DevnetUSDC, USDCDecimals: 6},
 		Server:    config.Server{Mode: "debug"},
 		RateLimit: config.RateLimit{Public: 1000, Agent: 1000, Console: 1000},
 		Database:  config.Database{DSN: db.DSN, MaxConns: 4, MinConns: 1, ConnectTimeout: 10 * time.Second},
@@ -71,7 +78,7 @@ func newAPIFixture(t *testing.T, configure ...func(*config.Config)) *apiFixture 
 	require.NoError(t, err)
 	t.Cleanup(cleanup)
 
-	f := &apiFixture{t: t, db: db, api: api, mail: mail}
+	f := &apiFixture{t: t, db: db, api: api, mail: mail, cdp: custodian, cfg: cfg}
 	f.seedAgent()
 	return f
 }

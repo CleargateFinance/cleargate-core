@@ -9,6 +9,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/CleargateFinance/cleargate-core/internal/infrastructure/cache"
+	"github.com/CleargateFinance/cleargate-core/internal/infrastructure/cdp"
 	"github.com/CleargateFinance/cleargate-core/internal/infrastructure/config"
 	"github.com/CleargateFinance/cleargate-core/internal/infrastructure/crypto"
 	"github.com/CleargateFinance/cleargate-core/internal/infrastructure/database"
@@ -18,6 +19,7 @@ import (
 	"github.com/CleargateFinance/cleargate-core/internal/modules/ledger"
 	"github.com/CleargateFinance/cleargate-core/internal/modules/mandate"
 	"github.com/CleargateFinance/cleargate-core/internal/modules/payment"
+	"github.com/CleargateFinance/cleargate-core/internal/modules/settlement"
 	"github.com/CleargateFinance/cleargate-core/internal/modules/summary"
 )
 
@@ -35,6 +37,7 @@ type API struct {
 	mandates  *mandate.Module
 	decisions *decisionlog.Module
 	summaries *summary.Module
+	wallets   *settlement.Module
 
 	// surfaces are kept so a test can add a probe route to each and check the
 	// group's middleware, not only the routes registered today.
@@ -125,6 +128,23 @@ func BuildAPI(ctx context.Context, cfg *config.Config, log *slog.Logger) (*API, 
 		return fail(fmt.Errorf("app: summary module: %w", err))
 	}
 
+	custodian, err := cdp.New(cdp.Options{
+		APIKeyID: cfg.CDP.APIKeyID, APIKeySecret: cfg.CDP.APIKeySecret,
+		WalletSecret: cfg.CDP.WalletSecret, BaseURL: cfg.CDP.BaseURL,
+	})
+	if err != nil {
+		return fail(fmt.Errorf("app: %w", err))
+	}
+	wallets, err := settlement.New(settlement.Deps{
+		DB:       db,
+		Wallets:  SettlementWallets{CDP: custodian},
+		Accounts: SettlementAccounts{Accounts: accounts.Service()},
+		Token:    token(cfg.Solana),
+	})
+	if err != nil {
+		return fail(fmt.Errorf("app: settlement module: %w", err))
+	}
+
 	limits, err := newLimiters(cfg.RateLimit, cacheClient, log)
 	if err != nil {
 		return fail(fmt.Errorf("app: rate limits: %w", err))
@@ -143,6 +163,7 @@ func BuildAPI(ctx context.Context, cfg *config.Config, log *slog.Logger) (*API, 
 		mandates:  mandates,
 		decisions: decisions,
 		summaries: summaries,
+		wallets:   wallets,
 	}
 
 	api.registerRoutes(limits)
@@ -155,6 +176,11 @@ func BuildAPI(ctx context.Context, cfg *config.Config, log *slog.Logger) (*API, 
 	}
 
 	return api, cleanup, nil
+}
+
+// token says which token is money on the configured network.
+func token(c config.Solana) settlement.Token {
+	return settlement.Token{Symbol: "USDC", Network: c.Network, Mint: c.USDCMint, Decimals: c.USDCDecimals}
 }
 
 // healthResponse is the body returned by the health endpoint.

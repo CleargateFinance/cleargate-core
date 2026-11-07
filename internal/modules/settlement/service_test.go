@@ -13,6 +13,17 @@ import (
 	"github.com/CleargateFinance/cleargate-core/internal/shared/id"
 )
 
+// testToken is devnet USDC.
+var testToken = Token{
+	Symbol: "USDC", Network: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+	Mint: "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU", Decimals: 6,
+}
+
+// everyoneIsAMember lets every request through, for tests about wallets.
+type everyoneIsAMember struct{}
+
+func (everyoneIsAMember) RequireMember(context.Context, id.UserID, id.AccountID) error { return nil }
+
 const (
 	addrA = "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM"
 	addrB = "4Nd1mBQtrMJVYVfKf2PJy9NZUZdTAsp7D4xWLs4gDB4T"
@@ -145,3 +156,34 @@ func TestNew_RefusesAMissingWalletProvider(t *testing.T) {
 	_, err = New(Deps{DB: &database.DB{}})
 	assert.ErrorContains(t, err, "wallet provider")
 }
+
+// TestDepositAddress_AsksAboutTheMemberBeforeTheCustodian: a stranger's request
+// must not create a wallet at the custodian, which costs nothing to ask for
+// and is never deleted.
+func TestDepositAddress_AsksAboutTheMemberBeforeTheCustodian(t *testing.T) {
+	refused := apperr.Forbidden("no")
+	provider := &fakeProvider{addresses: map[id.AccountID]string{"acct": addrA}}
+	svc := NewService(&fakeRepo{wallets: map[id.AccountID]Wallet{}}, provider)
+	svc.accounts, svc.token = refusingAccounts{refused}, testToken
+
+	_, err := svc.DepositAddress(context.Background(), "user", "acct")
+
+	assert.ErrorIs(t, err, refused)
+	assert.Zero(t, provider.creates)
+}
+
+func TestDepositAddress_NamesTheAddressAndTheToken(t *testing.T) {
+	provider := &fakeProvider{addresses: map[id.AccountID]string{"acct": addrA}}
+	svc := NewService(&fakeRepo{wallets: map[id.AccountID]Wallet{}}, provider)
+	svc.accounts, svc.token = everyoneIsAMember{}, testToken
+
+	got, err := svc.DepositAddress(context.Background(), "user", "acct")
+
+	require.NoError(t, err)
+	assert.Equal(t, addrA, got.Address)
+	assert.Equal(t, testToken, got.Token)
+}
+
+type refusingAccounts struct{ err error }
+
+func (r refusingAccounts) RequireMember(context.Context, id.UserID, id.AccountID) error { return r.err }
