@@ -223,6 +223,10 @@ type Quote struct {
 	Amount      currency.Amount
 	PayTo       string
 	ResourceURL string
+
+	// Terms is the rest of what makes the requirement this payment, opaque
+	// here: it only joins the idempotency hash.
+	Terms string
 }
 
 // TransferRequest is an approved payment to sign.

@@ -73,6 +73,19 @@ type Requirement struct {
 	Amount currency.Amount
 }
 
+// Terms is what else in the chosen option makes it this payment, beyond the
+// amount, payee and resource the decision already judges: whose facilitator
+// submits it, and the merchant's order reference. An idempotency key retried
+// with other terms is another payment, and must not get this one's transaction.
+func (r Requirement) Terms() string {
+	// Marshalling two strings cannot fail.
+	raw, _ := json.Marshal(struct {
+		FeePayer string `json:"fee_payer"`
+		Memo     string `json:"memo,omitempty"`
+	}{r.FeePayer, r.Memo})
+	return string(raw)
+}
+
 // ParseRequirement reads a merchant's x402 PAYMENT-REQUIRED and chooses the
 // option this rail can pay: `exact`, on the configured network, in the
 // configured mint.

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -136,6 +137,24 @@ func TestRequirement_ChoosesTheOptionItCanPay(t *testing.T) {
 	assert.Equal(t, feePayer, got.FeePayer)
 	assert.Equal(t, "https://api.example.com/v1/quote", got.ResourceURL)
 	assert.JSONEq(t, option("10000", ""), string(got.Accepted))
+}
+
+// TestRequirement_TermsAreTheOrderAndItsFacilitator: two requirements differing
+// only in these are two payments, and whitespace in the merchant's bytes is not
+// a difference.
+func TestRequirement_TermsAreTheOrderAndItsFacilitator(t *testing.T) {
+	terms := func(raw []byte) string {
+		t.Helper()
+		got, err := testToken.ParseRequirement(raw)
+		require.NoError(t, err)
+		return got.Terms()
+	}
+	base := terms(required(option("10000", "order-a")))
+
+	assert.Equal(t, base, terms([]byte(strings.ReplaceAll(string(required(option("10000", "order-a"))), ",", ", "))))
+	assert.NotEqual(t, base, terms(required(option("10000", "order-b"))))
+	assert.NotEqual(t, base, terms(required(option("10000", ""))))
+	assert.NotEqual(t, base, terms(required(strings.Replace(option("10000", "order-a"), feePayer, addrB, 1))))
 }
 
 func transferFixture(wallet string) (*Service, *fakeRail) {

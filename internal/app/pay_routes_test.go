@@ -226,6 +226,33 @@ func TestPay_AKeyReusedForAnotherPaymentConflicts(t *testing.T) {
 	assert.Equal(t, "49", f.balance())
 }
 
+// TestPay_AKeyReusedForAnotherOrderConflicts: the same price to the same payee
+// is still another payment if the merchant's order or facilitator differs.
+// Answering it with the first order's transaction would pay for the wrong one.
+func TestPay_AKeyReusedForAnotherOrderConflicts(t *testing.T) {
+	f := newPayFixture(t, "50")
+	withMemo := func(memo string) string {
+		return strings.Replace(f.body("1000000", "data_api"), `"extra":{`, `"extra":{"memo":"`+memo+`",`, 1)
+	}
+	f.pays("key-1", withMemo("order-a"))
+
+	for name, body := range map[string]string{
+		"another order":       withMemo("order-b"),
+		"no order":            f.body("1000000", "data_api"),
+		"another facilitator": strings.ReplaceAll(withMemo("order-a"), f.feePayer, solanatest.RandomAddress(t)),
+	} {
+		t.Run(name, func(t *testing.T) {
+			rec := f.authorize("key-1", body)
+			assert.Equal(t, http.StatusConflict, rec.Code, rec.Body.String())
+		})
+	}
+	assert.Equal(t, "49", f.balance())
+	assert.Equal(t, 1, f.cdp.Signs())
+
+	retry := f.pays("key-1", withMemo("order-a"))
+	assert.True(t, retry.Replayed, "the same order is still a retry")
+}
+
 // TestPay_ConcurrentRetriesAgreeOnOneTransaction: every copy of a request gets
 // the same transaction, whichever signing won, and the account pays once.
 func TestPay_ConcurrentRetriesAgreeOnOneTransaction(t *testing.T) {

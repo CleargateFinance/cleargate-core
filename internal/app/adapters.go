@@ -222,7 +222,7 @@ func (t PaymentTransfers) Quote(requirement []byte) (payment.Quote, error) {
 	if err != nil {
 		return payment.Quote{}, err
 	}
-	return payment.Quote{Amount: req.Amount, PayTo: req.PayTo, ResourceURL: req.ResourceURL}, nil
+	return payment.Quote{Amount: req.Amount, PayTo: req.PayTo, ResourceURL: req.ResourceURL, Terms: req.Terms()}, nil
 }
 
 // Transfer implements payment.Transfers.

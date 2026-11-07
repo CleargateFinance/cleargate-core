@@ -64,6 +64,11 @@ type Request struct {
 	// Signals are the agent's report about the payment, recorded with the
 	// decision (Task 4.2). Signals.ResourceURL is also kept on the payment.
 	Signals authz.Signals
+
+	// Terms is the rest of a merchant's requirement that makes it this payment,
+	// such as its order reference. Nothing decides on it; it is in the hash, so
+	// a key reused for another order is a conflict, not that order's replay.
+	Terms string
 }
 
 // Validate refuses a request that cannot be recorded faithfully. Everything
@@ -131,6 +136,7 @@ func (r Request) hash() []byte {
 		Task                       string          `json:"task,omitempty"`
 		SessionID                  string          `json:"session_id,omitempty"`
 		SessionNovelCounterparties *int            `json:"session_novel_counterparties,omitempty"`
+		Terms                      string          `json:"terms,omitempty"`
 	}{
 		AgentID:                    r.AgentID,
 		Amount:                     r.Amount.String(),
@@ -143,6 +149,7 @@ func (r Request) hash() []byte {
 		Task:                       r.Signals.Task,
 		SessionID:                  r.Signals.SessionID,
 		SessionNovelCounterparties: r.Signals.SessionNovelCounterparties,
+		Terms:                      r.Terms,
 	}
 	// Marshalling a struct of strings and an *int cannot fail.
 	raw, _ := json.Marshal(canonical)

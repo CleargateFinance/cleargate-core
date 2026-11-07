@@ -72,6 +72,7 @@ func (s *Service) Pay(ctx context.Context, req PayRequest) (Paid, error) {
 		Category:       req.Category,
 		PayTo:          quote.PayTo,
 		Signals:        signals,
+		Terms:          quote.Terms,
 	})
 	if err != nil {
 		return Paid{}, err
