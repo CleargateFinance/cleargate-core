@@ -1085,6 +1085,8 @@ Tasks marked **Not in MVP** are outside this total. Phase 6 grows because no han
 
 ## Revision notes
 
+**7 November 2026, Solana client.** `internal/infrastructure/solana` reads the chain over JSON-RPC, always at `finalized`, for Tasks 7.6 and 7.7 and deposit detection. `solanatest` is a fake node that speaks the wire format, so the real client runs in tests. The network, mint, decimals and endpoint are configuration (`SOLANA_*`, all defaulting to devnet). A transaction reports its token movement as the net balance change per owner and mint, not as parsed transfer instructions, so a transfer through another program counts and an address-lookup transaction needs no account table. A landed transaction is identified by its message, which every signer signed, because its id is the fee payer's signature and Cleargate never sees it.
+
 **5 November 2026, account wallet (Task 7.5).** Differences from the plan:
 
 - **`Address` and `SignTransaction` are on `settlement.Service`, not on `WalletProvider`.** The port below them is narrower: `Create` returns an account's address at the provider, creating the wallet if there is none, and `Sign` signs with a given address. The service decides when to create and refuses to sign for an account with no recorded wallet, so the custodian never decides either.
