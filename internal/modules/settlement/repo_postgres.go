@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/CleargateFinance/cleargate-core/internal/infrastructure/database"
 	"github.com/CleargateFinance/cleargate-core/internal/shared/id"
@@ -42,14 +43,27 @@ func (r *postgresRepo) Wallet(ctx context.Context, accountID id.AccountID, chain
 // both write; the loser reads back the winner's. Only the primary key is
 // ignored: an address already recorded for another account is a conflict
 // on its own unique index and fails loudly.
+//
+// That index can also report the winner of a race: ON CONFLICT names only the
+// primary key, and a row committing just as this insert passes that check
+// fails on the address instead. So a violation is a real conflict only if the
+// account still has no wallet of its own afterwards.
 func (r *postgresRepo) Save(ctx context.Context, w Wallet) (Wallet, error) {
-	if _, err := r.db.Exec(ctx,
+	_, err := r.db.Exec(ctx,
 		`INSERT INTO account_wallet (account_id, chain, provider, address)
 		 VALUES ($1, $2, $3, $4)
 		 ON CONFLICT (account_id, chain) DO NOTHING`,
 		string(w.AccountID), string(w.Chain), w.Provider, w.Address,
-	); err != nil {
-		return Wallet{}, fmt.Errorf("settlement: save wallet: %w", err)
+	)
+	if err == nil {
+		return r.Wallet(ctx, w.AccountID, w.Chain)
 	}
-	return r.Wallet(ctx, w.AccountID, w.Chain)
+
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.ConstraintName == "account_wallet_address_key" {
+		if saved, readErr := r.Wallet(ctx, w.AccountID, w.Chain); readErr == nil {
+			return saved, nil
+		}
+	}
+	return Wallet{}, fmt.Errorf("settlement: save wallet: %w", err)
 }
