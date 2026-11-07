@@ -201,6 +201,79 @@ func (r *postgresRepo) SaveTransfer(ctx context.Context, paymentID id.PaymentID,
 	return stored, nil
 }
 
+// AwaitingSettlement reads what the sweep has to resolve, through the partial
+// index migration 000007 keeps for exactly this.
+func (r *postgresRepo) AwaitingSettlement(ctx context.Context, limit int) ([]Pending, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT p.id, p.account_id, p.agent_id, p.amount, p.asset, p.decided_at,
+		       t.memo, t.wallet_address, t.signed_transaction, t.payment_signature, t.last_valid_block_height
+		FROM payment p
+		LEFT JOIN payment_transfer t ON t.payment_id = p.id
+		WHERE p.status = 'authorized'
+		ORDER BY p.decided_at
+		LIMIT $1`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("payment: read pending payments: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Pending
+	for rows.Next() {
+		var p Pending
+		var paymentID, accountID, agentID, asset string
+		var amount decimal.Decimal
+		var memo, wallet, transaction, signature *string
+		var height *int64
+		if err := rows.Scan(&paymentID, &accountID, &agentID, &amount, &asset, &p.DecidedAt,
+			&memo, &wallet, &transaction, &signature, &height); err != nil {
+			return nil, fmt.Errorf("payment: scan pending payment: %w", err)
+		}
+		if p.Amount, err = currency.Parse(amount.String(), currency.Asset(asset)); err != nil {
+			return nil, fmt.Errorf("payment: parse pending amount: %w", err)
+		}
+		p.ID, p.AccountID, p.AgentID = id.PaymentID(paymentID), id.AccountID(accountID), id.AgentID(agentID)
+		if memo != nil {
+			p.Transfer = &Transfer{
+				Memo: *memo, WalletAddress: *wallet, Transaction: *transaction, PaymentSignature: *signature,
+				LastValidBlockHeight: uint64(*height), //nolint:gosec // The column is checked positive.
+			}
+		}
+		out = append(out, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("payment: read pending payments: %w", err)
+	}
+	return out, nil
+}
+
+// LockAuthorized takes the row lock the sweep's decision rests on.
+func (r *postgresRepo) LockAuthorized(ctx context.Context, paymentID id.PaymentID) (bool, error) {
+	var status string
+	err := r.db.QueryRow(ctx, `SELECT status FROM payment WHERE id = $1 FOR UPDATE`, string(paymentID)).Scan(&status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("payment: lock payment: %w", err)
+	}
+	return Status(status) == StatusAuthorized, nil
+}
+
+// Resolve writes a payment's final status. payment_guard permits only
+// authorized to an outcome, so a defect here fails rather than rewrites history.
+func (r *postgresRepo) Resolve(ctx context.Context, paymentID id.PaymentID, status Status, at time.Time) error {
+	tag, err := r.db.Exec(ctx,
+		`UPDATE payment SET status = $2, resolved_at = $3 WHERE id = $1 AND status = 'authorized'`,
+		string(paymentID), string(status), at)
+	if err != nil {
+		return fmt.Errorf("payment: resolve payment: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return fmt.Errorf("payment: %s was not authorized when resolved", paymentID)
+	}
+	return nil
+}
+
 // DeclinesSince groups by agent and asset in one statement. A decline can be
 // in any asset the agent asked for (asset_not_permitted is one), so the sums
 // stay apart rather than being added across assets.

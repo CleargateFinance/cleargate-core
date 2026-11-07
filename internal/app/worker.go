@@ -8,6 +8,7 @@ import (
 
 	"github.com/CleargateFinance/cleargate-core/internal/infrastructure/config"
 	"github.com/CleargateFinance/cleargate-core/internal/infrastructure/database"
+	"github.com/CleargateFinance/cleargate-core/internal/infrastructure/outbox"
 	"github.com/CleargateFinance/cleargate-core/internal/infrastructure/solana"
 	"github.com/CleargateFinance/cleargate-core/internal/modules/account"
 	"github.com/CleargateFinance/cleargate-core/internal/modules/decisionlog"
@@ -63,6 +64,11 @@ func BuildWorker(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Wo
 	if err != nil {
 		db.Close()
 		return nil, nil, fmt.Errorf("app: deposit watcher: %w", err)
+	}
+	settler, err := newSettler(db, chain, cfg.Solana, nil, log)
+	if err != nil {
+		db.Close()
+		return nil, nil, fmt.Errorf("app: settler: %w", err)
 	}
 
 	w := &Worker{
@@ -127,6 +133,13 @@ func BuildWorker(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Wo
 				name:  "deposit_detection",
 				every: chainPollInterval,
 				run:   deposits.Poll,
+			},
+			{
+				// Moves authorized payments to settled, failed or expired, and
+				// gives back the funds and budget of any that never went out.
+				name:  "payment_settlement",
+				every: chainPollInterval,
+				run:   settler.Sweep,
 			},
 		},
 	}
@@ -200,6 +213,25 @@ func newDepositWatcher(
 		Ledger: SettlementFundingLedger{Ledger: ledgerSvc},
 		Gate:   SettlementFundingGate{Principals: principals, Accounts: gate},
 		Token:  token(c),
+		Clock:  clock,
+		Log:    log,
+	})
+}
+
+// newSettler wires the sweep. Like the deposit watcher it only reads the chain,
+// so the worker still holds no credential that can move money.
+func newSettler(
+	db *database.DB, chain *solana.Client, c config.Solana, clock payment.Clock, log *slog.Logger,
+) (*payment.Settler, error) {
+	observer, err := settlement.NewTransferObserver(SettlementChain{Solana: chain, Mint: c.USDCMint})
+	if err != nil {
+		return nil, err
+	}
+	return payment.NewSettler(payment.SettlerDeps{
+		DB:     db,
+		Ledger: PaymentLedger{Ledger: ledger.New(db, nil).Service()},
+		Chain:  PaymentOutcomes{Observer: observer},
+		Outbox: outbox.NewWriter(db),
 		Clock:  clock,
 		Log:    log,
 	})

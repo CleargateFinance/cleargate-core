@@ -21,6 +21,10 @@
 // merchant's facilitator pays the fee and submits. This file group is also the
 // only place a token amount becomes money, at par, in either direction.
 //
+// Outcomes (Task 7.7): TransferObserver finds a signed transfer in its wallet's
+// history by memo and message, and only then concludes anything from its
+// absence. The payment module owns what each outcome does to the money.
+//
 // Deposits (Phase 8): DepositWatcher reads each wallet's history at finality
 // and credits what arrived. A deposit is keyed by transaction and wallet, so
 // reading the same history twice credits nothing twice. Address screening is

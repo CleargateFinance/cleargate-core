@@ -77,6 +77,13 @@ type ChainReader interface {
 	// Transaction reads one transaction, with what it did to owner's holding of
 	// the token.
 	Transaction(ctx context.Context, signature, owner string) (ChainTransaction, error)
+
+	// FinalizedHeight is how far the chain has finalized.
+	FinalizedHeight(ctx context.Context) (uint64, error)
+
+	// MessageOf is the message of a signed transaction, in the form
+	// ChainTransaction.Message reports it.
+	MessageOf(signedTransaction string) ([]byte, error)
 }
 
 // ChainPage selects a range of an address's history.
@@ -89,10 +96,21 @@ type ChainPage struct {
 type ChainSignature struct {
 	Signature string
 	Failed    bool
+
+	// Memo is how the chain renders the transaction's memos, so match it with
+	// strings.Contains.
+	Memo string
+
+	// BlockTime is zero when the node does not know it.
+	BlockTime time.Time
 }
 
 // ChainTransaction is what one transaction did.
 type ChainTransaction struct {
+	// Message is the bytes every signer signed, which identifies a transaction
+	// whose id Cleargate never saw.
+	Message []byte
+
 	Failed bool
 
 	// TokenChange is how much of the token the owner gained, in atomic units,

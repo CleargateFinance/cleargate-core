@@ -239,6 +239,103 @@ func (t PaymentTransfers) Transfer(ctx context.Context, r payment.TransferReques
 	}, nil
 }
 
+// Settle implements payment.SettlementLedger: payee payable to the on-chain
+// float, which is the money having left.
+func (l PaymentLedger) Settle(ctx context.Context, p payment.Pending, at time.Time) error {
+	asset := p.Amount.Asset()
+	payable, err := l.Ledger.EnsureAccount(ctx, nil, ledger.TypePayeePayable, asset)
+	if err != nil {
+		return err
+	}
+	float, err := l.Ledger.EnsureAccount(ctx, nil, ledger.TypeOnchainFloat, asset)
+	if err != nil {
+		return err
+	}
+	paymentID := p.ID
+	_, err = l.Ledger.Post(ctx, ledger.Entry{
+		Kind:          ledger.KindPayout,
+		Asset:         asset,
+		Lines:         ledger.Transfer(payable, float, p.Amount),
+		ReferenceType: "payment",
+		ReferenceID:   &paymentID,
+		OccurredAt:    at,
+	})
+	return err
+}
+
+// Release implements payment.SettlementLedger: a reversing entry back to the
+// account's funds (the ledger is append-only, §8.3), and the budget given back
+// in the windows the payment was charged to, even if they have since closed.
+func (l PaymentLedger) Release(ctx context.Context, p payment.Pending, at time.Time) error {
+	asset := p.Amount.Asset()
+	original, err := l.Ledger.PaymentEntry(ctx, p.ID, p.DecidedAt)
+	if err != nil {
+		return err
+	}
+	payable, err := l.Ledger.EnsureAccount(ctx, nil, ledger.TypePayeePayable, asset)
+	if err != nil {
+		return err
+	}
+	funds, err := l.Ledger.EnsureAccount(ctx, &p.AccountID, ledger.TypeCustomerFunds, asset)
+	if err != nil {
+		return err
+	}
+	paymentID := p.ID
+	if _, err := l.Ledger.Post(ctx, ledger.Entry{
+		Kind:          ledger.KindReversal,
+		Asset:         asset,
+		Lines:         ledger.Transfer(payable, funds, p.Amount),
+		ReferenceType: "payment",
+		ReferenceID:   &paymentID,
+		Reverses:      &original,
+		OccurredAt:    at,
+	}); err != nil {
+		return err
+	}
+	return l.Ledger.ReleaseSpend(ctx, p.AgentID, p.Amount, p.DecidedAt)
+}
+
+// PaymentOutcomes satisfies payment.TransferOutcomes with the settlement module.
+type PaymentOutcomes struct {
+	Observer *settlement.TransferObserver
+}
+
+var _ payment.TransferOutcomes = PaymentOutcomes{}
+
+// Outcomes implements payment.TransferOutcomes. A payment still pending on the
+// chain comes back authorized, which is what it remains.
+func (o PaymentOutcomes) Outcomes(ctx context.Context, pending []payment.Pending) (map[id.PaymentID]payment.Status, error) {
+	transfers := make([]settlement.PendingTransfer, 0, len(pending))
+	for _, p := range pending {
+		if p.Transfer == nil {
+			continue
+		}
+		transfers = append(transfers, settlement.PendingTransfer{
+			PaymentID:            p.ID,
+			WalletAddress:        p.Transfer.WalletAddress,
+			Memo:                 p.Transfer.Memo,
+			Transaction:          p.Transfer.Transaction,
+			LastValidBlockHeight: p.Transfer.LastValidBlockHeight,
+			DecidedAt:            p.DecidedAt,
+		})
+	}
+	found, err := o.Observer.Outcomes(ctx, transfers)
+	out := make(map[id.PaymentID]payment.Status, len(found))
+	for paymentID, outcome := range found {
+		switch outcome {
+		case settlement.TransferLanded:
+			out[paymentID] = payment.StatusSettled
+		case settlement.TransferFailed:
+			out[paymentID] = payment.StatusFailed
+		case settlement.TransferExpired:
+			out[paymentID] = payment.StatusExpired
+		case settlement.TransferPending:
+			out[paymentID] = payment.StatusAuthorized
+		}
+	}
+	return out, err
+}
+
 // PaymentDecisions satisfies payment.DecisionLog with the decisionlog module.
 type PaymentDecisions struct {
 	Decisions *decisionlog.Service
@@ -518,7 +615,7 @@ func (c SettlementChain) Signatures(ctx context.Context, address string, p settl
 	}
 	out := make([]settlement.ChainSignature, len(found))
 	for i, s := range found {
-		out[i] = settlement.ChainSignature{Signature: s.Signature, Failed: s.Failed}
+		out[i] = settlement.ChainSignature{Signature: s.Signature, Failed: s.Failed, Memo: s.Memo, BlockTime: s.BlockTime}
 	}
 	return out, nil
 }
@@ -529,7 +626,17 @@ func (c SettlementChain) Transaction(ctx context.Context, signature, owner strin
 	if err != nil {
 		return settlement.ChainTransaction{}, err
 	}
-	return settlement.ChainTransaction{Failed: tx.Failed, TokenChange: tx.TokenChange(owner, c.Mint)}, nil
+	return settlement.ChainTransaction{Message: tx.Message, Failed: tx.Failed, TokenChange: tx.TokenChange(owner, c.Mint)}, nil
+}
+
+// FinalizedHeight implements settlement.ChainReader.
+func (c SettlementChain) FinalizedHeight(ctx context.Context) (uint64, error) {
+	return c.Solana.FinalizedHeight(ctx)
+}
+
+// MessageOf implements settlement.ChainReader.
+func (c SettlementChain) MessageOf(signedTransaction string) ([]byte, error) {
+	return solana.MessageOf(signedTransaction)
 }
 
 // SettlementRail satisfies settlement.Rail with x402 `exact` on Solana, through

@@ -82,3 +82,42 @@ func TestWallet_SignsVerifiableTransaction(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, wantMessage, gotMessage, "CDP signs what it was given and changes nothing")
 }
+
+// TestWallet_SignsATransactionSomebodyElsePaysFor is the shape every x402 payment
+// has, and the one thing the fakes cannot prove: a v0 transaction whose fee payer
+// is another account, with that account's signature slot left empty. CDP must
+// fill the wallet's slot, leave the other, and change nothing in the message.
+func TestWallet_SignsATransactionSomebodyElsePaysFor(t *testing.T) {
+	c := devnetClient(t)
+	address, err := c.SolanaAccount(t.Context(), "cleargate-test-wallet-a")
+	require.NoError(t, err)
+	wallet := solana.MustPublicKeyFromBase58(address)
+	feePayer, err := solana.NewRandomPrivateKey()
+	require.NoError(t, err)
+
+	tx, err := solana.NewTransaction(
+		[]solana.Instruction{solana.NewInstruction(solana.MemoProgramID,
+			solana.AccountMetaSlice{solana.Meta(wallet).SIGNER()}, []byte("cleargate test"))},
+		solana.Hash{1, 2, 3},
+		solana.TransactionPayer(feePayer.PublicKey()))
+	require.NoError(t, err)
+	tx.Message.SetVersion(solana.MessageVersionV0)
+	tx.Signatures = make([]solana.Signature, tx.Message.Header.NumRequiredSignatures)
+	unsigned, err := tx.MarshalBinary()
+	require.NoError(t, err)
+
+	signedBytes, err := c.SignSolanaTransaction(t.Context(), address, unsigned)
+	require.NoError(t, err)
+
+	signed, err := solana.TransactionFromBytes(signedBytes)
+	require.NoError(t, err)
+	wantMessage, err := tx.Message.MarshalBinary()
+	require.NoError(t, err)
+	gotMessage, err := signed.Message.MarshalBinary()
+	require.NoError(t, err)
+	assert.Equal(t, wantMessage, gotMessage, "CDP signs what it was given and changes nothing")
+
+	require.Len(t, signed.Signatures, 2)
+	assert.True(t, signed.Signatures[0].IsZero(), "the fee payer's slot stays empty")
+	assert.True(t, signed.Signatures[1].Verify(wallet, wantMessage), "the wallet's slot verifies")
+}

@@ -971,10 +971,11 @@ Three background workers, none in the payment hot path, each solving a distinct 
 
 ### Task 7.7: Confirmation, expiry and chain reconciliation
 
-- [ ] Worker over `authorized` payments: look for a finalized transaction from the account wallet carrying the payment's memo (`getSignaturesForAddress`). Succeeded: post payee payable → on-chain float and mark the payment `settled`. Failed, or not found once the finalized block height passes `lastValidBlockHeight`, means it can never land: post a reversal (`Reverses`), call `ReleaseSpend` with the authorization time, and mark it `failed` or `expired`.
+- [x] **Built** in `internal/modules/payment/settler.go`, `internal/modules/settlement/outcomes.go` and the worker's `payment_settlement` job (Revision notes, 7 November 2026, "confirmation"). Worker over `authorized` payments: look for a finalized transaction from the account wallet carrying the payment's memo (`getSignaturesForAddress`). Succeeded: post payee payable → on-chain float and mark the payment `settled`. Failed, or not found once the finalized block height passes `lastValidBlockHeight`, means it can never land: post a reversal (`Reverses`), call `ReleaseSpend` with the authorization time, and mark it `failed` or `expired`.
 - [ ] Hourly: each account's customer funds in the ledger never exceed the USDC in its wallet on-chain. It is the one check tying the ledger to real balances.
-- [ ] **Tests:** `TestConfirm_SettlesLandedTransaction`, `TestExpire_ReleasesFundsAndBudget`, `TestExpire_NeverBeforeBlockhashExpires`, `TestChainReconciliation_FlagsFundsAboveWalletBalance`
-- [ ] Commit `feat(settlement): exact payments on Solana — sign, confirm, expire`
+- [x] **Tests:** `TestConfirm_SettlesLandedTransaction`, `TestExpire_ReleasesFundsAndBudget`, `TestExpire_NeverBeforeBlockhashExpires`, in `internal/app/settle_test.go`, beside `TestMVP_DefinitionOfDone`.
+- [ ] **Test with the hourly check above:** `TestChainReconciliation_FlagsFundsAboveWalletBalance`
+- [x] Commit `feat(settlement): exact payments on Solana — sign, confirm, expire`
 
 ---
 
@@ -1085,6 +1086,15 @@ Tasks marked **Not in MVP** are outside this total. Phase 6 grows because no han
 
 ## Revision notes
 
+**7 November 2026, confirmation (Task 7.7).** Differences from the plan:
+
+- **The hourly chain check is cut for the MVP**, and its step stays open. It is the only check tying the ledger to real balances, so it is the first thing to add afterwards. Nothing else notices if the wallet holds less than the ledger says.
+- **A payment that never got a transaction expires after `payment.UnsignedExpiry`, 10 minutes.** Task 7.7 covered only a transaction that exists, so a signing failure followed by no retry would have held the funds forever, with no block height to pass. The row lock and the trigger on `payment_transfer` settle a late signing against the sweep either way.
+- **A landed transaction is found by memo, then proved by message.** A merchant can reuse `extra.memo`, so the memo only narrows the search. The message is the bytes the wallet signed.
+- **Expiry needs the last valid height plus 150 blocks, and a complete read of the history.** The height is read before the history. A failed or incomplete read concludes nothing, so a node outage can never look like a transfer that did not land. This errs late on purpose: releasing funds for a payment that then lands is the one mistake here that loses money.
+- **A settled payment posts `payout`**, payee payable to on-chain float. A failed or expired one posts a `reversal` naming the original and gives the budget back in the windows it was charged to, and the spend counter check stays clean after both.
+- **`TestMVP_DefinitionOfDone`** walks the definition of done through the real API and the worker's jobs. The chain and the custodian are fakes speaking their wire formats, so **it does not prove the real devnet path**.
+
 **7 November 2026, paying (Tasks 7.6 and 6.2).** `POST /v1/payments/authorize` takes the merchant's requirement and returns the `PAYMENT-SIGNATURE` value. Differences from the plan:
 
 - **A requirement the rail cannot pay is a `400`, not a recorded decline.** Cut for the MVP, so no new reason code or migration of `decision`'s CHECK. It appears nowhere in the decision log, and the API docs' "Known gaps" says so. Add the code before relying on the log to show every attempt. `TestSign_NoSolanaUSDCOptionIsDeclined` and `TestRequirement_MalformedAmountIsDeclined` assert the refusal.
@@ -1094,7 +1104,7 @@ Tasks marked **Not in MVP** are outside this total. Phase 6 grows because no han
 - **The rail's seam is `settlement.Rail`, and `payment.Transfers` is what the payment module sees.** The existing `payment.Rail` struct remains the label recorded on a row. The x402 SDK and solana-go stay in `internal/infrastructure/solana`.
 - **An amount is decimals-from-config at the edge:** `Token.ParseRequirement` converts on the way in and signs the merchant's exact integer on the way out, so nothing is reversed and nothing can round.
 - **`payment_signature` is the header's value**, base64 of the x402 payload, echoing the merchant's `accepted` and `resource` byte for byte, because a merchant compares them with what it issued.
-- **Not tested against real CDP or real devnet.** No credentials were available while building. `TestSignExact_AFacilitatorAcceptsIt` runs the transaction through the x402 SDK's own facilitator verifier, and `cdptest` signs with real keys, but CDP's handling of a v0 transaction with an empty fee-payer slot still needs one real run.
+- **Not tested against real CDP or real devnet.** No credentials were available while building. `TestSignExact_AFacilitatorAcceptsIt` runs the transaction through the x402 SDK's own facilitator verifier, and `cdptest` signs with real keys, but CDP's handling of a v0 transaction with an empty fee-payer slot still needs one real run: `TestWallet_SignsATransactionSomebodyElsePaysFor` in `internal/infrastructure/cdp/cdp_devnet_test.go` (`set -a; source .env; set +a; go test -tags integration -run TestWallet ./internal/infrastructure/cdp/`).
 
 **7 November 2026, deposit detection (Phase 8).** Differences from the plan:
 

@@ -342,6 +342,19 @@ func (r *postgresRepo) SpentIn(
 	return currency.Parse(total.String(), asset)
 }
 
+// PaymentEntry implements Repository.
+func (r *postgresRepo) PaymentEntry(ctx context.Context, paymentID id.PaymentID, at time.Time) (id.JournalEntryID, error) {
+	var entry string
+	err := r.db.QueryRow(ctx, `
+		SELECT id FROM journal_entry
+		WHERE kind = 'payment' AND reference_type = 'payment' AND reference_id = $1 AND created_at = $2`,
+		string(paymentID), at).Scan(&entry)
+	if err != nil {
+		return "", fmt.Errorf("ledger: find payment entry: %w", err)
+	}
+	return id.JournalEntryID(entry), nil
+}
+
 // FundedTotal implements Repository. Summed from the postings, never kept, for
 // the same reason a balance is: it cannot then disagree with the book.
 func (r *postgresRepo) FundedTotal(ctx context.Context, accounts []id.AccountID, asset currency.Asset) (currency.Amount, error) {

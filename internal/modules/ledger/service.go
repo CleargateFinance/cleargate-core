@@ -100,6 +100,13 @@ func (s *Service) AccountBalance(
 	return s.repo.Balance(ctx, bucket, asset)
 }
 
+// PaymentEntry finds the entry that debited a payment, for a reversal to name.
+// at is the payment's decision instant, which stamps its entry, so this reads
+// one partition rather than all of them.
+func (s *Service) PaymentEntry(ctx context.Context, paymentID id.PaymentID, at time.Time) (id.JournalEntryID, error) {
+	return s.repo.PaymentEntry(ctx, paymentID, at)
+}
+
 // FundedTotal is how much these accounts have ever been funded, which is what a
 // verification tier's cap is measured against (Task 2.7).
 func (s *Service) FundedTotal(ctx context.Context, accounts []id.AccountID, asset currency.Asset) (currency.Amount, error) {

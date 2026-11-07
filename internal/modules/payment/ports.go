@@ -47,6 +47,16 @@ type Repository interface {
 	// errNoLongerAuthorized for a payment already released.
 	SaveTransfer(ctx context.Context, paymentID id.PaymentID, t Transfer, at time.Time) (Transfer, error)
 
+	// AwaitingSettlement returns up to limit authorized payments, oldest first.
+	AwaitingSettlement(ctx context.Context, limit int) ([]Pending, error)
+
+	// LockAuthorized reports whether the payment is still authorized, and holds
+	// its row until the transaction on ctx ends.
+	LockAuthorized(ctx context.Context, paymentID id.PaymentID) (bool, error)
+
+	// Resolve moves an authorized payment to its final status.
+	Resolve(ctx context.Context, paymentID id.PaymentID, status Status, at time.Time) error
+
 	// DeclinesSince totals the account's declined payments decided at or after
 	// since, one row per agent and asset.
 	DeclinesSince(ctx context.Context, accountID id.AccountID, since time.Time) ([]DeclineTotal, error)
@@ -230,6 +240,39 @@ type Transfer struct {
 	Transaction          string
 	PaymentSignature     string
 	LastValidBlockHeight uint64
+}
+
+// TransferOutcomes says what the chain did with signed transfers.
+type TransferOutcomes interface {
+	// Outcomes returns each payment's status now: StatusAuthorized while the
+	// transfer could still land, otherwise settled, failed or expired. A
+	// payment it could not read about is left out. A returned error may come
+	// with some outcomes, which still stand.
+	Outcomes(ctx context.Context, pending []Pending) (map[id.PaymentID]Status, error)
+}
+
+// Pending is an authorized payment waiting on its outcome.
+type Pending struct {
+	ID        id.PaymentID
+	AccountID id.AccountID
+	AgentID   id.AgentID
+	Amount    currency.Amount
+	DecidedAt time.Time
+
+	// Transfer is nil when signing never succeeded.
+	Transfer *Transfer
+}
+
+// SettlementLedger is what the settler needs from the ledger. Both join the
+// transaction open on ctx.
+type SettlementLedger interface {
+	// Settle moves the payment's amount from payee payable to the on-chain
+	// float: the money has left.
+	Settle(ctx context.Context, p Pending, at time.Time) error
+
+	// Release reverses the payment's debit and gives back its budget in the
+	// windows it was charged to: the money never left.
+	Release(ctx context.Context, p Pending, at time.Time) error
 }
 
 // Clock supplies the current time, so the decision instant and key expiry

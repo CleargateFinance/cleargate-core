@@ -15,6 +15,9 @@ import (
 // be swapped for a fake in tests, or for a remote one later, without service
 // code changing.
 type Repository interface {
+	// PaymentEntry returns the entry that debited a payment, written at at.
+	PaymentEntry(ctx context.Context, paymentID id.PaymentID, at time.Time) (id.JournalEntryID, error)
+
 	// FundedTotal sums what funding entries credited these accounts, in asset.
 	FundedTotal(ctx context.Context, accounts []id.AccountID, asset currency.Asset) (currency.Amount, error)
 

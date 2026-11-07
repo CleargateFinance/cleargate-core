@@ -38,6 +38,7 @@ type Fake struct {
 	calls        map[string]int
 	commitments  map[string]bool
 	forgotten    map[string]transactionEntry
+	failing      map[string]bool
 }
 
 type signatureEntry struct {
@@ -78,6 +79,7 @@ func New(t *testing.T) *Fake {
 		calls:        map[string]int{},
 		commitments:  map[string]bool{},
 		forgotten:    map[string]transactionEntry{},
+		failing:      map[string]bool{},
 	}
 	f.server = httptest.NewServer(http.HandlerFunc(f.handle))
 	t.Cleanup(f.server.Close)
@@ -119,6 +121,13 @@ func (f *Fake) OnlyFinalized() bool {
 		}
 	}
 	return true
+}
+
+// Fail makes every call to method answer with an error, or stops that.
+func (f *Fake) Fail(method string, fail bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.failing[method] = fail
 }
 
 // Forget makes the node stop returning a transaction it still lists, as a
@@ -289,6 +298,9 @@ func (f *Fake) note(params []json.RawMessage) {
 }
 
 func (f *Fake) answer(req rpcRequest) (any, error) {
+	if f.failing[req.Method] {
+		return nil, fmt.Errorf("solanatest: %s is failing", req.Method)
+	}
 	switch req.Method {
 	case "getBlockHeight":
 		return f.height, nil
