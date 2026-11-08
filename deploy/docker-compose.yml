@@ -1,8 +1,9 @@
 # Local development dependencies only. Production runs elsewhere.
 #
-# Host ports are deliberately non-default (5433 rather than 5432) so this
-# project does not collide with any Postgres already installed on the machine.
-# Inside the container the service still listens on its normal port.
+# Postgres is on its default port, 5432, so stop any Postgres already running on
+# the machine first. Redis is on 6380 rather than 6379 so it does not collide
+# with one already installed. Inside the containers both listen on their normal
+# ports.
 services:
   postgres:
     image: postgres:17-alpine
