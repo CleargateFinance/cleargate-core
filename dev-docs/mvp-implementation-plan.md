@@ -972,9 +972,9 @@ Three background workers, none in the payment hot path, each solving a distinct 
 ### Task 7.7: Confirmation, expiry and chain reconciliation
 
 - [x] **Built** in `internal/modules/payment/settler.go`, `internal/modules/settlement/outcomes.go` and the worker's `payment_settlement` job (Revision notes, 7 November 2026, "confirmation"). Worker over `authorized` payments: look for a finalized transaction from the account wallet carrying the payment's memo (`getSignaturesForAddress`). Succeeded: post payee payable → on-chain float and mark the payment `settled`. Failed, or not found once the finalized block height passes `lastValidBlockHeight`, means it can never land: post a reversal (`Reverses`), call `ReleaseSpend` with the authorization time, and mark it `failed` or `expired`.
-- [ ] Hourly: each account's customer funds in the ledger never exceed the USDC in its wallet on-chain. It is the one check tying the ledger to real balances.
+- [x] Hourly: each account's customer funds in the ledger never exceed the USDC in its wallet on-chain. It is the one check tying the ledger to real balances. **Built** as `settlement.WalletReconciler` (`internal/modules/settlement/reconcile.go`), `Client.TokenBalance` in `internal/infrastructure/solana`, and the worker's `wallet_reconcile` job, which logs `alert=funds_above_wallet` (Revision notes, 8 November 2026, "chain reconciliation").
 - [x] **Tests:** `TestConfirm_SettlesLandedTransaction`, `TestExpire_ReleasesFundsAndBudget`, `TestExpire_NeverBeforeBlockhashExpires`, in `internal/app/settle_test.go`, beside `TestMVP_DefinitionOfDone`.
-- [ ] **Test with the hourly check above:** `TestChainReconciliation_FlagsFundsAboveWalletBalance`
+- [x] **Test with the hourly check above:** `TestChainReconciliation_FlagsFundsAboveWalletBalance`, in `internal/app/chain_reconcile_test.go` with the other `TestChainReconciliation_*`; `TestCheckWallets_*` in `internal/modules/settlement/reconcile_test.go`; `TestTokenBalance_*` in `internal/infrastructure/solana/solana_test.go`.
 - [x] Commit `feat(settlement): exact payments on Solana — sign, confirm, expire`
 
 ---
@@ -1085,6 +1085,14 @@ Tasks marked **Not in MVP** are outside this total. Phase 6 grows because no han
 ---
 
 ## Revision notes
+
+**8 November 2026, chain reconciliation (Task 7.7).** The hourly check cut from the MVP on 7 November is built. Differences from the plan:
+
+- **A wallet's holding is every token account it owns for the USDC mint**, summed (`getTokenAccountsByOwner` at `finalized`), not only the associated one. Deposits are credited from the owner's net change across all its token accounts, so counting only the associated account could page on money that is there. Each account's bytes are checked against the owner and mint asked for; that check has no test, because the fake node cannot answer with the wrong account.
+- **Each wallet is read ledger first, then chain, back to back.** Every legitimate movement lowers the ledger before the chain (a payment is debited, then sent) or raises the chain before the ledger (a deposit is finalized, then credited). In this order a movement between the reads can only make the wallet look fuller than promised, so the check needs no snapshot and never pages on a payment in flight.
+- **More on-chain than in the ledger is normal and is not reported**: an uncredited or quarantined deposit, or a payment debited but not yet landed. Only funds above the holding page, as `alert=funds_above_wallet` with both figures. Nothing pages on it yet, as with every alert (Phase 8).
+- **An unreadable wallet fails the job** after the readable wallets are reported, so a node outage never logs a clean check.
+- **`TestWallet_SignsATransactionSomebodyElsePaysFor` passed against real CDP** on 8 November 2026, so CDP signs a v0 transaction with an empty fee-payer slot. The rest of the 7 November "paying" note's real-devnet gap stands: no payment has gone through a real facilitator yet.
 
 **7 November 2026, confirmation (Task 7.7).** Differences from the plan:
 
