@@ -20,7 +20,7 @@ The brief asks for a payment request, verification or settlement on Solana, and 
 4. **Verification and settlement on Solana.** The merchant's facilitator verifies the transfer, adds its signature as fee payer and submits it. Cleargate's worker then finds the transaction in the wallet's history at `finalized` and marks the payment `settled`.
 5. **Delivery.** The merchant returns the resource.
 
-The README has [a sequence diagram of the flow](README.md#how-a-payment-works).
+The README has [a sequence diagram of the flow](README.md#how-a-payment-works). The [demo](demo/README.md) runs the whole flow on devnet, against a real x402 merchant and the public x402.org facilitator. In a run on 8 November 2026, [this transaction](https://explorer.solana.com/tx/3av7JQG5ZCZ1y9FersMXhyy1XKMrxcxfZ9WxF2oNcDT5mA4Yugaih4JeSB14enZMZuWAg9B4tyn58vYnWEqtR3Ts?cluster=devnet) paid for a quote. The facilitator was the fee payer, the account's wallet signed only as the owner of the USDC, and the memo was the payment's ID. The worker marked the payment `settled` 30 seconds after it landed.
 
 ## How Solana powers Cleargate
 
@@ -47,7 +47,7 @@ There is more detail in [Settlement on Solana](README.md#settlement-on-solana).
 
 Failure handling is designed in, not added afterwards:
 
-- **A decline moves nothing.** It returns a `reason_code` telling the agent what to do, such as waiting for the daily window or stopping and asking a person, and it is recorded in the decision log.
+- **A decline moves nothing.** It returns a `reason_code` telling the agent what to do, such as waiting for the daily window or stopping and asking a person, and it is recorded in the decision log. The demo shows three: over the per-payment cap, a payee not on the allowlist, and over the daily cap.
 - **A retry is free.** The same idempotency key returns the same answer and the same transaction, and charges once.
 - **A signed payment that never lands gives everything back.** Once its blockhash has expired, the worker marks it `expired`, posts a reversing ledger entry and returns the spend to the budget windows it was charged to. A transaction that fails on chain is handled the same way.
 - **A Solana node outage releases nothing early.** An incomplete read concludes nothing, because releasing funds for a payment that then lands is the one mistake that loses money.
@@ -60,13 +60,13 @@ The full table is in [When a payment fails](README.md#when-a-payment-fails).
 | Criterion | Where to look |
 |---|---|
 | Meaningful integration of x402 and Solana | [How a payment works](README.md#how-a-payment-works) and [Settlement on Solana](README.md#settlement-on-solana). In the code: `internal/infrastructure/solana/x402.go`, `internal/modules/settlement/` |
-| Reliability of the payment-to-access flow | Idempotency, finality and expiry rules in the README. In the tests: `internal/app/settle_test.go` and `TestMVP_DefinitionOfDone` |
+| Reliability of the payment-to-access flow | Idempotency, finality and expiry rules in the README. In the tests: `internal/app/settle_test.go` and `TestMVP_DefinitionOfDone`. On devnet: the [demo](demo/README.md) |
 | A compelling use case | [Why](README.md#why) in the README, and the [whitepaper](docs/cleargate-finance-whitepaper.md) |
 | Clear documentation, and sensible handling of failed payments | [When a payment fails](README.md#when-a-payment-fails), [the API](README.md#api), [`api/openapi.yaml`](api/openapi.yaml) |
 
 | Requirement | Where |
 |---|---|
-| A working demo on Solana devnet | [Demo](README.md#demo) *(to add: the demo's run instructions)* |
+| A working demo on Solana devnet | [demo/README.md](demo/README.md), summarised in the README's [Demo](README.md#demo) |
 | A repository with a README and setup instructions | [Running it locally](README.md#running-it-locally) |
 | A 2–4 minute demo video | [Above](#demo-video) *(to add)* |
 | How Solana powers the project | [Above](#how-solana-powers-cleargate) |
