@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"math/big"
 	"time"
 
 	"github.com/CleargateFinance/cleargate-core/internal/infrastructure/solana"
@@ -641,6 +642,23 @@ func (c SettlementChain) FinalizedHeight(ctx context.Context) (uint64, error) {
 // MessageOf implements settlement.ChainReader.
 func (c SettlementChain) MessageOf(signedTransaction string) ([]byte, error) {
 	return solana.MessageOf(signedTransaction)
+}
+
+// TokenBalance implements settlement.ChainReader.
+func (c SettlementChain) TokenBalance(ctx context.Context, owner string) (*big.Int, error) {
+	return c.Solana.TokenBalance(ctx, owner, c.Mint)
+}
+
+// SettlementFundsLedger satisfies settlement.FundsLedger with the ledger.
+type SettlementFundsLedger struct {
+	Ledger *ledger.Service
+}
+
+var _ settlement.FundsLedger = SettlementFundsLedger{}
+
+// CustomerFunds implements settlement.FundsLedger, in the unit of account.
+func (l SettlementFundsLedger) CustomerFunds(ctx context.Context, accountID id.AccountID) (currency.Amount, error) {
+	return l.Ledger.AccountBalance(ctx, accountID, currency.USD)
 }
 
 // SettlementRail satisfies settlement.Rail with x402 `exact` on Solana, through

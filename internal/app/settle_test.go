@@ -406,10 +406,10 @@ func TestBuildWorker_RunsTheChainJobs(t *testing.T) {
 
 	ran := map[string]bool{}
 	for _, j := range w.jobs {
-		if j.name == "deposit_detection" || j.name == "payment_settlement" {
+		if j.name == "deposit_detection" || j.name == "payment_settlement" || j.name == "wallet_reconcile" {
 			assert.NoError(t, j.run(context.Background()), j.name)
 			ran[j.name] = true
 		}
 	}
-	assert.Len(t, ran, 2)
+	assert.Len(t, ran, 3)
 }
