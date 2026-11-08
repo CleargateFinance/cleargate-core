@@ -173,7 +173,7 @@ Configuration comes only from the environment. [`.env.example`](.env.example) do
 
 ### From sign-up to a first payment
 
-The console is a separate repository. Until the demo's setup script exists (see [Demo](#demo)), these are the routes it calls, in order:
+The console is a separate repository. The demo's [`console`](demo/console/main.go) stands in for it and makes these calls for you (see [Demo](#demo)). These are the routes, in order:
 
 1. `POST /v1/auth/signup` creates a person and their account. Then `POST /v1/auth/verify-email` with the token from the link in the API's log.
 2. `POST /v1/auth/login` sets the `cg_session` cookie.
@@ -188,16 +188,34 @@ The console is a separate repository. Until the demo's setup script exists (see 
 
 ## Demo
 
-> **Not built yet.** This section will hold the commands, once `examples/merchant` (an x402 resource server on devnet), `examples/agent` (an agent that pays it through Cleargate) and a setup script exist.
+[`demo/`](demo/README.md) runs the whole loop on Solana devnet. A research agent with a Cleargate API key and no wallet buys market data from **Atlas Data**, an ordinary x402 merchant that knows nothing about Cleargate. The public x402.org facilitator pays the fee and submits each payment.
 
-The demo will show the whole loop on devnet:
+The agent tries five purchases under a mandate of 0.60 USD a payment and 1.00 a day, payable only to the merchant:
 
-- a `402` from the merchant;
-- the payment authorized and signed by Cleargate;
-- the transaction settled on Solana and visible in Solana Explorer;
-- the resource delivered.
+| Purchase | Price | Result |
+|---|---|---|
+| A quote | 0.01 | Paid, landed on devnet, data delivered |
+| A sector report | 0.50 | Paid, landed on devnet, data delivered |
+| The full dataset | 5.00 | Declined `over_per_tx_cap` |
+| A partner's feed, paid to another wallet | 0.05 | Declined `payee_not_permitted` |
+| A second report | 0.50 | Declined `over_daily_cap`, since 0.51 is already spent today |
 
-It will also show a payment declined over its cap, and an unsubmitted payment that expires and is given back.
+The owner's side shows the decision log, with the two payments `settled` once the worker finds them at `finalized`, and a freeze that stops every agent at once.
+
+```sh
+cd demo
+./run.sh deps                                   # once: the demo's own Postgres and Redis, then migrations
+./run.sh api                                    # terminal 1
+./run.sh worker                                 # terminal 2
+go run ./merchant keygen                        # once: the merchant's wallet
+go run ./console setup                          # owner, TOTP, agent, mandate, API key
+go run ./console fund                           # devnet USDC from CDP's faucet, then waits for the credit
+go run ./merchant                               # terminal 3
+go run ./agent                                  # the five purchases
+go run ./console decisions                      # what the owner sees
+```
+
+[demo/README.md](demo/README.md) explains each step, the three wallets involved, and a script for recording the video. A run on 8 November 2026 paid the quote in [this transaction](https://explorer.solana.com/tx/3av7JQG5ZCZ1y9FersMXhyy1XKMrxcxfZ9WxF2oNcDT5mA4Yugaih4JeSB14enZMZuWAg9B4tyn58vYnWEqtR3Ts?cluster=devnet). The facilitator is the fee payer, the account's wallet signs only as the owner of the USDC, and the memo is the payment's ID.
 
 ## API
 
@@ -305,6 +323,7 @@ Infrastructure lives in `internal/infrastructure`:
 | `deposit_detection` | 30 s | Credits USDC that arrived in account wallets |
 | `payment_settlement` | 30 s | Moves authorized payments to `settled`, `failed` or `expired` |
 | `ledger_book_check` | 1 h | Re-checks that every entry in the book sums to zero |
+| `wallet_reconcile` | 1 h | Checks that no account's funds in the ledger exceed the USDC its wallet holds on chain |
 | `spend_counter_reconcile` | 24 h | Re-derives spend counters from postings and compares |
 | `idempotency_key_expiry` | 1 h | Forgets keys older than 24 hours |
 | `*_partition_maintenance` | 24 h | Creates monthly partitions for the ledger and decisions ahead of time |
@@ -318,6 +337,7 @@ internal/shared/     apperr, currency, typed IDs, clock, caller
 migrations/          numbered up/down SQL pairs
 api/openapi.yaml     the public contract
 deploy/              docker-compose for local Postgres and Redis
+demo/                the devnet demo: merchant, agent and console stand-in (its own Go module)
 docs/                whitepaper, data architecture, roles
 dev-docs/            the build plan
 ```
@@ -329,7 +349,8 @@ dev-docs/            the build plan
 ```sh
 make test       # unit tests: no Docker, no network
 make test-int   # integration tests against real Postgres and Redis (testcontainers; needs Docker)
-make check      # gofmt, vet, lint, unit and integration tests: what a change must pass
+make test-demo  # the demo's unit tests (demo/ is its own Go module)
+make check      # gofmt, vet, lint, unit, integration and demo tests: what a change must pass
 ```
 
 - **No mocks of the database.** Integration tests run against real Postgres and Redis in containers.
@@ -343,6 +364,7 @@ make check      # gofmt, vet, lint, unit and integration tests: what a change mu
   ```
 
   This creates an account wallet, signs a transaction, and has CDP sign a transfer whose fee someone else pays. It passed on 8 November 2026.
+- **The whole devnet path** is proven by running the [demo](#demo), by hand: a real merchant, the x402.org facilitator, CDP and Solana devnet. CI's tests use fakes of the chain and the custodian.
 
 ## Status
 
@@ -356,11 +378,11 @@ make check      # gofmt, vet, lint, unit and integration tests: what a change mu
 - Account wallets on CDP, and x402 `exact` signing on Solana.
 - Confirmation, failure and expiry of payments from the chain.
 - Deposit detection, and the account summary.
+- An hourly check that no account's funds in the ledger exceed the USDC its wallet holds on chain.
+- An end-to-end [demo](#demo) on devnet, with a real x402 merchant and the x402.org facilitator.
 
 **Next:**
 
-- An end-to-end demo on devnet with a real merchant and facilitator.
-- An hourly check of each wallet's on-chain USDC against the ledger.
 - Address screening.
 - Mandates signed with a passkey.
 - A hash-chained decision log.
@@ -374,8 +396,8 @@ Build status task by task is in [dev-docs/mvp-implementation-plan.md](dev-docs/m
 What this version does not do, stated plainly:
 
 - **Devnet only, with no address screening.** Deposits are capped per verification tier, but the sending address is not screened, so this version must not hold real money.
-- **Not yet run end to end on devnet.** Signing against real CDP is tested. A full payment through a real merchant and facilitator comes with the demo.
-- **Nothing checks the ledger against the chain yet.** The hourly comparison of wallet balances with the ledger was cut from the MVP.
+- **The devnet path is proven by hand.** The demo has paid through a real merchant and facilitator on devnet, but CI runs against fakes of the chain and the custodian.
+- **Alerts are log lines.** `alert=funds_above_wallet` and the others are logged with a stable key, and nothing pages a person yet.
 - **A deposit past the funding cap is not credited or returned.** It stays in the wallet until a person acts.
 - **A requirement the rail cannot pay is a `400`, not a recorded decline.** It appears nowhere in the decision log.
 - **Mandates are approved with a TOTP step-up, not a passkey signature.** The server records who approved the rules and when, but the approval is not a signature over the rules themselves.
