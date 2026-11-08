@@ -165,7 +165,8 @@ How it behaves:
   A payment that later fails or expires on-chain gives the money and the budget
   back.
 - **Every decision is recorded, declines included.** Each record lists the
-  checks that ran and is hash-chained to the one before it.
+  checks that ran, and the database refuses to update or delete one. (Chaining
+  each record to the one before it by hash is planned, not built.)
 
 ## The scenario
 
