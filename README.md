@@ -3,7 +3,7 @@
 [![CI](https://github.com/CleargateFinance/cleargate-core/actions/workflows/ci.yml/badge.svg)](https://github.com/CleargateFinance/cleargate-core/actions/workflows/ci.yml)
 ![Go 1.26](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)
 ![Solana devnet](https://img.shields.io/badge/Solana-devnet-9945FF?logo=solana&logoColor=white)
-![x402 v2](https://img.shields.io/badge/x402-v2-222222)
+[![x402 v2](https://img.shields.io/badge/x402-v2-0052FF)](https://x402.org)
 
 The buyer-side authorization layer for AI agents that pay with [x402](https://x402.org) on Solana. A person funds an account and sets a **mandate** for each agent. The agent then pays merchants within that mandate. **Agents hold spending authority, never money.**
 
