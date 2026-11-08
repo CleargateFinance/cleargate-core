@@ -11,8 +11,10 @@
 package solana
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"math/big"
@@ -243,6 +245,55 @@ func (t Transaction) apply(balances []rpc.TokenBalance, sign int64) error {
 		t.changes[key].Add(t.changes[key], amount.Mul(amount, big.NewInt(sign)))
 	}
 	return nil
+}
+
+// tokenAccountSize is an SPL token account's length. Its mint is at offset 0,
+// its owner at 32 and its amount, a little-endian u64, at 64.
+const tokenAccountSize = 165
+
+// TokenBalance is how much of mint owner holds, in atomic units, summed over
+// every token account the owner has for it. An owner with none holds zero.
+//
+// It counts every account, not only the associated one, because a balance is
+// a claim on what the owner holds, and a deposit can be credited from an
+// account beside the associated one (Transaction.TokenChange counts it too).
+// Each account's bytes are checked against the owner and mint asked for, so a
+// node answering for something else is an error, never a balance.
+func (c *Client) TokenBalance(ctx context.Context, owner, mint string) (*big.Int, error) {
+	ownerKey, err := sol.PublicKeyFromBase58(owner)
+	if err != nil {
+		return nil, fmt.Errorf("solana: owner: %w", err)
+	}
+	mintKey, err := sol.PublicKeyFromBase58(mint)
+	if err != nil {
+		return nil, fmt.Errorf("solana: mint: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
+	res, err := c.rpc.GetTokenAccountsByOwner(ctx, ownerKey,
+		&rpc.GetTokenAccountsConfig{Mint: &mintKey},
+		&rpc.GetTokenAccountsOpts{Commitment: rpc.CommitmentFinalized, Encoding: sol.EncodingBase64})
+	if err != nil {
+		return nil, fmt.Errorf("solana: token accounts: %w", err)
+	}
+	if res == nil {
+		return nil, errors.New("solana: token accounts: empty answer")
+	}
+
+	total := new(big.Int)
+	for _, a := range res.Value {
+		if a == nil || a.Account.Data == nil {
+			return nil, errors.New("solana: token accounts: an account without data")
+		}
+		data := a.Account.Data.GetBinary()
+		if a.Account.Owner != sol.TokenProgramID || len(data) != tokenAccountSize ||
+			!bytes.Equal(data[0:32], mintKey[:]) || !bytes.Equal(data[32:64], ownerKey[:]) {
+			return nil, fmt.Errorf("solana: token accounts: %s is not %s's account of %s", a.Pubkey, owner, mint)
+		}
+		total.Add(total, new(big.Int).SetUint64(binary.LittleEndian.Uint64(data[64:72])))
+	}
+	return total, nil
 }
 
 // TokenAccount is the associated token account that holds mint for owner: the

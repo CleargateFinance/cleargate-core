@@ -39,6 +39,13 @@ type Fake struct {
 	commitments  map[string]bool
 	forgotten    map[string]transactionEntry
 	failing      map[string]bool
+	accounts     map[string]tokenAccount
+}
+
+// tokenAccount is an SPL token account the node holds.
+type tokenAccount struct {
+	owner, mint string
+	amount      uint64
 }
 
 type signatureEntry struct {
@@ -80,6 +87,7 @@ func New(t *testing.T) *Fake {
 		commitments:  map[string]bool{},
 		forgotten:    map[string]transactionEntry{},
 		failing:      map[string]bool{},
+		accounts:     map[string]tokenAccount{},
 	}
 	f.server = httptest.NewServer(http.HandlerFunc(f.handle))
 	t.Cleanup(f.server.Close)
@@ -158,6 +166,31 @@ func (f *Fake) Restore() {
 	}
 }
 
+// SetBalance sets how much of mint owner's associated token account holds,
+// creating the account if there is none.
+func (f *Fake) SetBalance(owner, mint string, amount uint64) {
+	f.t.Helper()
+	f.SetTokenAccount(associated(f.t, owner, mint), owner, mint, amount)
+}
+
+// SetTokenAccount places a token account at address holding amount of mint for
+// owner. An address other than the associated one is a second account the
+// owner holds the same token in.
+func (f *Fake) SetTokenAccount(address, owner, mint string, amount uint64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.accounts[address] = tokenAccount{owner: owner, mint: mint, amount: amount}
+}
+
+func associated(t *testing.T, owner, mint string) string {
+	t.Helper()
+	ata, _, err := sol.FindAssociatedTokenAddress(sol.MustPublicKeyFromBase58(owner), sol.MustPublicKeyFromBase58(mint))
+	if err != nil {
+		t.Fatalf("solanatest: token account: %v", err)
+	}
+	return ata.String()
+}
+
 // RandomAddress is a fresh address nobody holds a key to.
 func RandomAddress(t *testing.T) string {
 	t.Helper()
@@ -217,6 +250,8 @@ type Holdings struct {
 
 // Transfer adds a finalized transaction that changes token balances, listed
 // under each holding's associated token account, and returns its signature.
+// Each associated token account then holds the holding's After, failed or not,
+// so a test sets what a failed transfer left with SetBalance.
 func (f *Fake) Transfer(failed bool, holdings ...Holdings) string {
 	f.t.Helper()
 	sig := randomSignature(f.t)
@@ -227,12 +262,9 @@ func (f *Fake) Transfer(failed bool, holdings ...Holdings) string {
 	for _, h := range holdings {
 		entry.pre = append(entry.pre, balance(h.Owner, h.Mint, h.Before))
 		entry.post = append(entry.post, balance(h.Owner, h.Mint, h.After))
-		ata, _, err := sol.FindAssociatedTokenAddress(
-			sol.MustPublicKeyFromBase58(h.Owner), sol.MustPublicKeyFromBase58(h.Mint))
-		if err != nil {
-			f.t.Fatalf("solanatest: token account: %v", err)
-		}
-		f.prepend(ata.String(), signatureEntry{signature: sig, failed: failed, blockTime: time.Now()})
+		ata := associated(f.t, h.Owner, h.Mint)
+		f.prepend(ata, signatureEntry{signature: sig, failed: failed, blockTime: time.Now()})
+		f.accounts[ata] = tokenAccount{owner: h.Owner, mint: h.Mint, amount: h.After}
 	}
 	f.transactions[sig] = entry
 	return sig
@@ -324,6 +356,8 @@ func (f *Fake) answer(req rpcRequest) (any, error) {
 		return f.history(req)
 	case "getTransaction":
 		return f.transaction(req)
+	case "getTokenAccountsByOwner":
+		return f.tokenAccounts(req)
 	default:
 		return nil, fmt.Errorf("solanatest: method %s is not faked", req.Method)
 	}
@@ -411,4 +445,42 @@ func (f *Fake) transaction(req rpcRequest) (any, error) {
 		"slot": f.height, "blockTime": time.Now().Unix(), "version": 0, "meta": meta,
 		"transaction": []string{base64.StdEncoding.EncodeToString(e.raw), "base64"},
 	}, nil
+}
+
+// tokenAccounts answers for an owner and a mint with every token account that
+// matches, each an SPL token Account, 165 bytes, with its mint at offset 0, its
+// owner at 32 and its amount at 64.
+func (f *Fake) tokenAccounts(req rpcRequest) (any, error) {
+	var owner string
+	var filter struct {
+		Mint string `json:"mint"`
+	}
+	if len(req.Params) < 2 {
+		return nil, fmt.Errorf("solanatest: getTokenAccountsByOwner needs an owner and a filter")
+	}
+	if err := json.Unmarshal(req.Params[0], &owner); err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(req.Params[1], &filter); err != nil || filter.Mint == "" {
+		return nil, fmt.Errorf("solanatest: getTokenAccountsByOwner is faked only by mint")
+	}
+	out := []map[string]any{}
+	for address, a := range f.accounts {
+		if a.owner != owner || a.mint != filter.Mint {
+			continue
+		}
+		data := make([]byte, 165)
+		copy(data[0:32], sol.MustPublicKeyFromBase58(a.mint).Bytes())
+		copy(data[32:64], sol.MustPublicKeyFromBase58(a.owner).Bytes())
+		binary.LittleEndian.PutUint64(data[64:72], a.amount)
+		data[108] = 1 // initialized
+		out = append(out, map[string]any{
+			"pubkey": address,
+			"account": map[string]any{
+				"lamports": 2_039_280, "owner": sol.TokenProgramID.String(), "executable": false, "rentEpoch": 0,
+				"data": []string{base64.StdEncoding.EncodeToString(data), "base64"},
+			},
+		})
+	}
+	return map[string]any{"context": map[string]any{"slot": f.height}, "value": out}, nil
 }

@@ -70,6 +70,11 @@ func BuildWorker(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Wo
 		db.Close()
 		return nil, nil, fmt.Errorf("app: settler: %w", err)
 	}
+	wallets, err := newWalletReconciler(db, chain, cfg.Solana)
+	if err != nil {
+		db.Close()
+		return nil, nil, fmt.Errorf("app: wallet reconciler: %w", err)
+	}
 
 	w := &Worker{
 		log: log,
@@ -140,6 +145,14 @@ func BuildWorker(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Wo
 				name:  "payment_settlement",
 				every: chainPollInterval,
 				run:   settler.Sweep,
+			},
+			{
+				// The ledger balancing says nothing about whether the money is
+				// there. This is the one check that the wallets hold what the
+				// ledger promises their accounts (Task 7.7).
+				name:  "wallet_reconcile",
+				every: time.Hour,
+				run:   func(ctx context.Context) error { return checkWallets(ctx, log, wallets) },
 			},
 		},
 	}
@@ -235,6 +248,53 @@ func newSettler(
 		Clock:  clock,
 		Log:    log,
 	})
+}
+
+// newWalletReconciler wires the chain check. It reads the ledger and the chain
+// and writes neither.
+func newWalletReconciler(db *database.DB, chain *solana.Client, c config.Solana) (*settlement.WalletReconciler, error) {
+	return settlement.NewWalletReconciler(settlement.WalletReconcilerDeps{
+		DB:    db,
+		Chain: SettlementChain{Solana: chain, Mint: c.USDCMint},
+		Funds: SettlementFundsLedger{Ledger: ledger.New(db, nil).Service()},
+		Token: token(c),
+	})
+}
+
+// checkWallets verifies that every wallet holds at least the customer funds
+// the ledger records for its account.
+//
+// A wallet holding less means the ledger promises money that is not there: a
+// payment released as expired that landed after all, a transfer nobody
+// authorized, or a defect in crediting. Nothing else notices, because the
+// book still sums to zero, so each one pages.
+func checkWallets(ctx context.Context, log *slog.Logger, r *settlement.WalletReconciler) error {
+	checks, err := r.CheckWallets(ctx)
+
+	short := 0
+	for _, c := range checks {
+		if !c.Short() {
+			continue
+		}
+		short++
+		log.Error("customer funds above the wallet's balance",
+			slog.String(alertKey, "funds_above_wallet"),
+			slog.String("account_id", string(c.Wallet.AccountID)),
+			slog.String("address", c.Wallet.Address),
+			slog.String("funds", c.Funds.String()),
+			slog.String("held", c.Held.String()),
+		)
+	}
+
+	// An unreadable wallet fails the job, after the readable ones are
+	// reported, so a node outage is never logged as a clean check.
+	if err != nil {
+		return err
+	}
+	if short == 0 {
+		log.Info("wallets hold the customer funds", slog.Int("wallets", len(checks)))
+	}
+	return nil
 }
 
 // alertKey marks a log line that must reach a person, with a stable value
