@@ -87,6 +87,10 @@ type ChainReader interface {
 	// MessageOf is the message of a signed transaction, in the form
 	// ChainTransaction.Message reports it.
 	MessageOf(signedTransaction string) ([]byte, error)
+
+	// TokenBalance is how much of the token owner holds, in atomic units, zero
+	// when it has no token account. A failed read is an error, never zero.
+	TokenBalance(ctx context.Context, owner string) (*big.Int, error)
 }
 
 // ChainPage selects a range of an address's history.
@@ -126,6 +130,13 @@ type FundingLedger interface {
 	// CreditFunding moves amount from the on-chain float to the account's
 	// funds, joining the transaction open on ctx, and returns the entry.
 	CreditFunding(ctx context.Context, accountID id.AccountID, amount currency.Amount, at time.Time) (id.JournalEntryID, error)
+}
+
+// FundsLedger is what the wallet reconciler needs from the ledger.
+type FundsLedger interface {
+	// CustomerFunds is what the ledger holds for the account, in the unit of
+	// account: the balance it has promised the customer.
+	CustomerFunds(ctx context.Context, accountID id.AccountID) (currency.Amount, error)
 }
 
 // FundingGate decides whether money may be accepted.
