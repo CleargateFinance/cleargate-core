@@ -24,20 +24,21 @@ import (
 	"time"
 
 	sol "github.com/gagliardetto/solana-go"
-	"github.com/gagliardetto/solana-go/rpc"
 	"github.com/gin-gonic/gin"
 	x402 "github.com/x402-foundation/x402/go"
 	x402http "github.com/x402-foundation/x402/go/http"
 	ginmw "github.com/x402-foundation/x402/go/http/gin"
 	svm "github.com/x402-foundation/x402/go/mechanisms/svm/exact/server"
+
+	"github.com/CleargateFinance/cleargate-core/demo/internal/devnet"
 )
 
 const (
 	// network and usdcMint are Solana devnet and Circle's devnet USDC, the
 	// pair Cleargate's devnet configuration pays in. A merchant offering any
 	// other pair would get "no usable option" from Cleargate.
-	network  = "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1"
-	usdcMint = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
+	network  = devnet.Network
+	usdcMint = devnet.USDCMint
 )
 
 // wallet is the merchant's state file, written by keygen.
@@ -84,8 +85,9 @@ func keygen(path string) error {
 		return err
 	}
 	fmt.Printf("Merchant wallet: %s\nPartner payee:   %s\nSaved to %s\n\n", w.Address, w.Partner, path)
-	fmt.Println("Next: send this wallet some devnet USDC once (https://faucet.circle.com, Solana Devnet),")
-	fmt.Println("so its USDC token account exists. An x402 payment cannot create it.")
+	fmt.Println("This wallet needs devnet USDC once, so its USDC token account exists: an x402 payment")
+	fmt.Println("cannot create it. `go run ./console fund` sends it 1 USDC from CDP's faucet, or send")
+	fmt.Println("some yourself from https://faucet.circle.com (Solana Devnet).")
 	return nil
 }
 
@@ -189,23 +191,13 @@ func report(c *gin.Context) {
 // An x402 `exact` transaction carries only the transfer, never an instruction
 // creating the receiving account, so every payment to such a wallet fails.
 func checkTokenAccount(rpcURL, owner string) error {
-	ownerKey, err := sol.PublicKeyFromBase58(owner)
-	if err != nil {
-		return err
-	}
-	ata, _, err := sol.FindAssociatedTokenAddress(ownerKey, sol.MustPublicKeyFromBase58(usdcMint))
-	if err != nil {
-		return err
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	_, err = rpc.New(rpcURL).GetAccountInfo(ctx, ata)
-	if errors.Is(err, rpc.ErrNotFound) {
-		return fmt.Errorf("%s has no USDC token account yet, so payments to it will fail: "+
-			"send it devnet USDC once from https://faucet.circle.com", owner)
-	}
+	ready, err := devnet.HasUSDCAccount(context.Background(), rpcURL, owner)
 	if err != nil {
 		return fmt.Errorf("could not check the merchant's USDC account: %w", err)
+	}
+	if !ready {
+		return fmt.Errorf("%s has no USDC token account yet, so payments to it will fail: "+
+			"run `go run ./console fund`, or send it devnet USDC once from https://faucet.circle.com", owner)
 	}
 	return nil
 }

@@ -76,7 +76,8 @@ route.
 On Solana, USDC sits in a *token account* that belongs to the wallet, at an
 address derived from the wallet and the USDC mint. A wallet that has never held
 USDC has no such account, and an x402 payment cannot create one. That is why the
-merchant's wallet needs one faucet deposit before anyone can pay it.
+merchant's wallet needs one deposit before anyone can pay it; `console fund`
+makes it.
 
 ## Run it
 
@@ -90,9 +91,11 @@ command from this `demo/` directory, each long-running one in its own terminal.
 ./run.sh worker            # terminal 2: credits deposits, settles payments (polls Solana every 30 s)
 
 go run ./merchant keygen   # once: the merchant's wallet
-go run ./merchant          # terminal 3: Atlas Data on :4021
-
 go run ./console setup     # the owner signs up and connects an agent with a mandate
+go run ./console fund      # devnet USDC for both wallets, then waits for the credit
+
+go run ./merchant          # terminal 3: Atlas Data on :4021
+go run ./agent             # the scenario below
 ```
 
 `console setup` signs the owner up, picks the email verification link out of
@@ -103,31 +106,34 @@ and connects a fresh agent with a fresh mandate.
 
 ## Fund it with devnet USDC
 
-Two faucet requests, both at **https://faucet.circle.com**. Choose **USDC**,
-network **Solana Devnet**, paste the address, and send.
+`go run ./console fund` puts devnet USDC where the demo needs it, from CDP's
+devnet faucet, using the CDP API key in `../.env`:
 
-1. **The account's wallet**, the address `console setup` printed (or run
-   `go run ./console fund`, which prints it and waits). This is the money the
-   agent spends. One faucet request covers many demo runs: each run spends 0.51
-   USDC.
-2. **The merchant's wallet**, the address `merchant keygen` printed. This creates
-   its USDC token account. Until it exists, the merchant prints a warning at
-   start-up and every payment to it fails. You only do this once.
+1. **The merchant's wallet**, only if it has no USDC token account yet: 1 USDC
+   creates it. Until it exists, the merchant prints a warning at start-up and
+   every payment to it fails. This happens once.
+2. **The account's wallet**, Cleargate's deposit address: 1 USDC, or as many as
+   you ask for (`go run ./console fund 3`). This is the money the agent spends.
+   One USDC covers the scenario once, which spends 0.51.
 
-```sh
-go run ./console fund      # prints the deposit address, waits until the worker credits it
-```
+Each transfer prints its Solana Explorer link. Then `fund` waits until the
+worker credits the account, about a minute after the faucet sends: the worker
+credits a deposit once Solana has finalized it.
 
-The worker credits a deposit once Solana has finalized it, about a minute after
-the faucet sends. Two limits apply:
+CDP's faucet sends at most **10 USDC a day**, counted per CDP project and per
+address. Past that, or without a CDP key, `fund` prints the address and waits
+for you to send USDC by hand from **https://faucet.circle.com** (choose
+**USDC** and **Solana Devnet**).
+
+Two limits apply to what is credited:
 
 - **Funding cap.** A new account is on the basic verification tier, capped at
   **100 USD of deposits in total**. A deposit past the cap is not credited: it
   stays in the wallet, quarantined, until a person acts.
-- **Only USDC counts.** USDC must come from Circle's devnet mint
-  (`4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU`). Other tokens, and SOL, sent
-  to the deposit address are never credited. The account's wallet needs no SOL,
-  because the facilitator pays every fee.
+- **Only USDC counts.** USDC must be devnet USDC
+  (`4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU`), which both faucets send.
+  Other tokens, and SOL, sent to the deposit address are never credited. The
+  account's wallet needs no SOL, because the facilitator pays every fee.
 
 ## The mandate
 
@@ -223,8 +229,9 @@ plays out exactly as before.
 
 ## Troubleshooting
 
-- **The merchant warns "has no USDC token account yet".** Send its wallet USDC
-  once from the faucet, then restart the merchant.
+- **The merchant warns "has no USDC token account yet".** Run
+  `go run ./console fund`, or send its wallet USDC once from
+  https://faucet.circle.com, then restart the merchant.
 - **The merchant answers 402 again after an approval.** The facilitator refused
   or could not land the transaction, and the merchant's log says why. The
   payment stays `authorized` until its blockhash expires, about a minute, then

@@ -3,7 +3,7 @@
 // connect an agent, approve its mandate, issue its key, and watch what it does.
 //
 //	go run ./console setup       # sign up once, then a fresh agent each run
-//	go run ./console fund        # print the deposit address, wait for the credit
+//	go run ./console fund [usdc] # devnet USDC from CDP's faucet, then wait for the credit
 //	go run ./console status      # balance and each agent's spend against its caps
 //	go run ./console decisions   # the agent's decision log, declines included
 //	go run ./console freeze      # stop every agent at once
@@ -16,6 +16,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -27,12 +28,15 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
 
 	"github.com/pquerna/otp"
 	"github.com/pquerna/otp/totp"
+
+	"github.com/CleargateFinance/cleargate-core/demo/internal/devnet"
 )
 
 // state is everything the console remembers between runs.
@@ -74,7 +78,7 @@ func (e *apiError) Error() string {
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: go run ./console setup|fund|status|decisions|freeze|unfreeze")
+		fmt.Fprintln(os.Stderr, "usage: go run ./console setup|fund [usdc]|status|decisions|freeze|unfreeze")
 		os.Exit(2)
 	}
 	c := &console{
@@ -94,7 +98,10 @@ func main() {
 	case "setup":
 		err = c.setup()
 	case "fund":
-		err = c.fund()
+		var usdc int
+		if usdc, err = fundAmount(os.Args[2:]); err == nil {
+			err = c.fund(usdc)
+		}
 	case "status":
 		err = c.status()
 	case "decisions":
@@ -418,10 +425,57 @@ func (c *console) summary() (summary, error) {
 	return s, err
 }
 
-// fund prints where to send devnet USDC and waits for the worker to credit it.
-// The worker reads the chain at `finalized` every 30 seconds, so a deposit
-// shows up about a minute after the faucet sends it.
-func (c *console) fund() error {
+// fundAmount is the USDC `fund` asks the faucet for: 1 unless given, and never
+// more than the faucet sends in a day.
+func fundAmount(args []string) (int, error) {
+	if len(args) == 0 {
+		return 1, nil
+	}
+	n, err := strconv.Atoi(args[0])
+	if err != nil || n < 1 || n > devnet.FaucetDailyLimit {
+		return 0, fmt.Errorf("fund takes a whole number of USDC from 1 to %d, got %q", devnet.FaucetDailyLimit, args[0])
+	}
+	return n, nil
+}
+
+// fund puts devnet USDC where the demo needs it, then waits for the worker to
+// credit the account.
+//
+// The merchant's wallet comes first, and only if it has no USDC token account:
+// an x402 payment cannot create one, so until it exists every payment to the
+// merchant fails. One USDC creates it. Then the account's wallet gets usdc,
+// the money the agent spends.
+//
+// Both come from CDP's devnet faucet, with the CDP key in ../.env. Without the
+// key, or once the faucet's daily limit is reached, it says where to send USDC
+// by hand and waits all the same. The worker reads the chain at `finalized`
+// every 30 seconds, so a deposit is credited about a minute after it is sent.
+func (c *console) fund(usdc int) error {
+	ctx := context.Background()
+	env, err := devnet.Env(envOr("CLEARGATE_ENV_FILE", filepath.Join("..", ".env")))
+	if err != nil {
+		return err
+	}
+	faucet, faucetErr := devnet.NewFaucet(env("CDP_API_KEY_ID"), env("CDP_API_KEY_SECRET"), env("CDP_BASE_URL"))
+	rpcURL := env("SOLANA_RPC_URL")
+	if rpcURL == "" {
+		rpcURL = "https://api.devnet.solana.com"
+	}
+
+	if merchant, err := c.merchantAddress(); err == nil {
+		switch ready, err := devnet.HasUSDCAccount(ctx, rpcURL, merchant); {
+		case err != nil:
+			fmt.Printf("Could not check the merchant's wallet, so leaving it alone: %v\n", err)
+		case ready:
+			say("The merchant's wallet %s already has its USDC account", merchant)
+		default:
+			fmt.Printf("The merchant's wallet %s has no USDC account yet, so payments to it would fail.\n", merchant)
+			if fromFaucet(ctx, faucet, faucetErr, merchant, 1) == 0 {
+				manualFunding(merchant)
+			}
+		}
+	}
+
 	address, err := c.depositAddress()
 	if err != nil {
 		return err
@@ -430,12 +484,13 @@ func (c *console) fund() error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("Send devnet USDC to the account's wallet:\n\n    %s\n\n", address)
-	fmt.Println("1. Open https://faucet.circle.com")
-	fmt.Println("2. Pick USDC and Solana Devnet, paste the address above, and send.")
-	fmt.Println("   Keep the account's total deposits under 100 USDC: past the basic tier's cap a deposit is held, not credited.")
-	fmt.Printf("\nBalance now %s USD. Waiting for the credit (Ctrl-C to stop)...\n", start.Balance.Amount)
+	fmt.Printf("\nThe account's wallet %s holds %s USD.\n", address, start.Balance.Amount)
+	if fromFaucet(ctx, faucet, faucetErr, address, usdc) == 0 {
+		manualFunding(address)
+		fmt.Println("   Keep the account's total deposits under 100 USDC: past the basic tier's cap a deposit is held, not credited.")
+	}
 
+	fmt.Println("\nWaiting for the worker to credit the account, about a minute after finality (Ctrl-C to stop)...")
 	for {
 		time.Sleep(10 * time.Second)
 		s, err := c.summary()
@@ -443,10 +498,40 @@ func (c *console) fund() error {
 			return err
 		}
 		if s.Balance.Amount != start.Balance.Amount {
-			fmt.Printf("Credited: balance is now %s USD.\n", s.Balance.Amount)
+			fmt.Printf("Credited: the balance is now %s USD.\n", s.Balance.Amount)
 			return nil
 		}
 	}
+}
+
+// fromFaucet asks CDP's faucet for n USDC to address, 1 a request, and returns
+// how many were sent. It stops at the first refusal and says why.
+func fromFaucet(ctx context.Context, faucet *devnet.Faucet, faucetErr error, address string, n int) int {
+	if faucetErr != nil {
+		fmt.Printf("Not using CDP's faucet: %v\n", faucetErr)
+		return 0
+	}
+	sent := 0
+	for sent < n {
+		signature, err := faucet.SendUSDC(ctx, address)
+		if errors.Is(err, devnet.ErrFaucetLimit) {
+			fmt.Printf("CDP's faucet sends at most %d USDC a day, per project and per address. It sent %d of %d.\n",
+				devnet.FaucetDailyLimit, sent, n)
+			break
+		}
+		if err != nil {
+			fmt.Printf("CDP's faucet refused: %v\n", err)
+			break
+		}
+		sent++
+		say("1 USDC from CDP's faucet to %s: %s", address, devnet.Explorer("tx", signature))
+	}
+	return sent
+}
+
+// manualFunding says how to send devnet USDC to address by hand.
+func manualFunding(address string) {
+	fmt.Printf("Send it devnet USDC from https://faucet.circle.com: pick USDC and Solana Devnet, and paste\n\n    %s\n\n", address)
 }
 
 func (c *console) status() error {
