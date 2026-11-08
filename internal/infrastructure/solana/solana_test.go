@@ -160,6 +160,44 @@ func TestTokenAccount_IsDerivedFromOwnerAndMint(t *testing.T) {
 	assert.Error(t, err)
 }
 
+// TestTokenBalance_SumsEveryAccountOfTheMint: the owner can hold the token in
+// accounts besides the associated one, and all of it is theirs; another mint
+// or another owner's account is not.
+func TestTokenBalance_SumsEveryAccountOfTheMint(t *testing.T) {
+	fake, c := newClient(t)
+	owner, other := solanatest.RandomAddress(t), solanatest.RandomAddress(t)
+	fake.SetBalance(owner, solanatest.DevnetUSDC, 2_500_000)
+	fake.SetTokenAccount(solanatest.RandomAddress(t), owner, solanatest.DevnetUSDC, 500_000)
+	fake.SetBalance(owner, solanatest.RandomAddress(t), 9)
+	fake.SetBalance(other, solanatest.DevnetUSDC, 7)
+
+	got, err := c.TokenBalance(context.Background(), owner, solanatest.DevnetUSDC)
+
+	require.NoError(t, err)
+	assert.Equal(t, "3000000", got.String())
+	assert.True(t, fake.OnlyFinalized(), "a balance is read at finalized, like everything else")
+}
+
+// TestTokenBalance_NoAccountHoldsNothing: a wallet nobody has paid yet has no
+// token account at all, which is a balance of zero rather than an error.
+func TestTokenBalance_NoAccountHoldsNothing(t *testing.T) {
+	_, c := newClient(t)
+
+	got, err := c.TokenBalance(context.Background(), solanatest.RandomAddress(t), solanatest.DevnetUSDC)
+
+	require.NoError(t, err)
+	assert.Equal(t, "0", got.String())
+}
+
+func TestTokenBalance_AFailedReadIsAnError(t *testing.T) {
+	fake, c := newClient(t)
+	fake.Fail("getTokenAccountsByOwner", true)
+
+	_, err := c.TokenBalance(context.Background(), solanatest.RandomAddress(t), solanatest.DevnetUSDC)
+
+	assert.Error(t, err, "an unreadable balance is never zero")
+}
+
 // signedTransaction is a v0 transaction with an empty signature slot for its
 // payer, base64 encoded the way x402 carries one.
 func signedTransaction(t *testing.T, payer string) string {
