@@ -1,4 +1,4 @@
-.PHONY: help check build test test-int lint fmt migrate-up migrate-down migrate-version run-api run-worker dev-up dev-down
+.PHONY: help check build test test-int test-demo lint fmt migrate-up migrate-down migrate-version run-api run-worker dev-up dev-down
 
 help:
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
@@ -7,7 +7,7 @@ help:
 check:          ## Everything a change must pass: gofmt, vet, lint, unit and integration tests
 	@test -z "$$(gofmt -l .)" || { echo "gofmt needed on:"; gofmt -l .; exit 1; }
 	go vet -tags=integration ./...
-	$(MAKE) lint test test-int
+	$(MAKE) lint test test-int test-demo
 
 build:          ## Build all binaries
 	go build ./...
@@ -21,11 +21,16 @@ test:           ## Unit tests (no external dependencies, must stay fast)
 test-int:       ## Integration tests (spins real Postgres + Redis via testcontainers)
 	go test ./... -race -count=1 -tags=integration
 
-lint:           ## Lint, including the architecture import rules
+# demo/ is its own Go module, so ./... from the root never reaches it.
+test-demo:      ## Vet and unit-test the demo in demo/ (no external dependencies)
+	cd demo && go vet ./... && go test ./... -race -count=1
+
+lint:           ## Lint, including the architecture import rules, and the demo
 	golangci-lint run ./...
+	cd demo && golangci-lint run ./...
 
 fmt:
-	gofmt -w . && go mod tidy
+	gofmt -w . && go mod tidy && cd demo && go mod tidy
 
 migrate-up:     ## Apply every pending migration
 	go run ./cmd/migrate up
