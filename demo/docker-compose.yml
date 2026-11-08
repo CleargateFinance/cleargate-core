@@ -1,0 +1,31 @@
+# The demo's own Postgres and Redis, apart from deploy/docker-compose.yml, on
+# ports that do not collide with a Postgres or Redis already on the machine.
+# run.sh points DATABASE_DSN and CACHE_ADDR here, whatever .env says.
+name: cleargate-demo
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: cleargate
+      POSTGRES_PASSWORD: cleargate
+      POSTGRES_DB: cleargate
+    ports: ["5433:5432"]
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cleargate"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  redis:
+    image: redis:7-alpine
+    ports: ["6381:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  pgdata:
