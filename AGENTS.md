@@ -5,6 +5,7 @@ Go modular monolith for Cleargate Finance: the buyer-side authorization layer fo
 ## Read before you build
 
 - [dev-docs/mvp-implementation-plan.md](dev-docs/mvp-implementation-plan.md): the build plan, long. Grep for `### Task N.N` and read that task plus its "Why this and not that" boxes; do not read it whole. Its Revision notes record deliberate changes.
+- [dev-docs/implementation-plan-v2.md](dev-docs/implementation-plan-v2.md): what comes after the MVP (Phases 9–19: hosting, the console, the sandbox, AWS staging, testers, then everything V1 deferred and the mainnet gate). It continues V1's task numbering, so `### Task N.N` is unique across both files. New work starts here; V1 stays the record and the Why boxes for Phases 0–8.
 - [docs/cleargate-finance-whitepaper.md](docs/cleargate-finance-whitepaper.md): the spec. Code comments cite it as `§8.3`; look the section up before changing that code.
 - [docs/data-architecture.md](docs/data-architecture.md): read before any migration or schema change.
 - [docs/cleargate-roles-and-connection-models.md](docs/cleargate-roles-and-connection-models.md): read before touching entity or role vocabulary.
