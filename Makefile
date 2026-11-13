@@ -1,4 +1,4 @@
-.PHONY: help check build test test-int test-demo lint fmt migrate-up migrate-down migrate-version run-api run-worker dev-up dev-down
+.PHONY: help check build image test test-int test-demo lint fmt migrate-up migrate-down migrate-version run-api run-worker dev-up dev-down
 
 help:
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
@@ -11,6 +11,14 @@ check:          ## Everything a change must pass: gofmt, vet, lint, unit and int
 
 build:          ## Build all binaries
 	go build ./...
+
+# linux/arm64 is the Fargate target (Graviton). The build cross-compiles, so it
+# needs no emulator, even on an x86 machine.
+IMAGE   ?= cleargate-core
+GIT_SHA ?= $(shell git rev-parse HEAD 2>/dev/null || echo dev)
+
+image:          ## Build the container image (api, worker, migrate) for linux/arm64
+	docker buildx build --platform linux/arm64 --build-arg GIT_SHA=$(GIT_SHA) -t $(IMAGE):$(GIT_SHA) --load .
 
 test:           ## Unit tests (no external dependencies, must stay fast)
 	go test ./internal/... -race -count=1
