@@ -63,6 +63,44 @@ jobs:
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@v7
 
+  # Task 9.1: the one image every role runs from. It is built for linux/arm64,
+  # the Fargate target, and run here under QEMU, so the artifact tested is the
+  # architecture that ships. It is not pushed: deploying is Task 13.9's job.
+  image:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: cleargate
+          POSTGRES_PASSWORD: cleargate
+          POSTGRES_DB: cleargate
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U cleargate"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU, to run the arm64 image on an x86 runner
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build the image
+        run: make image IMAGE=cleargate-core GIT_SHA=${{ github.sha }}
+
+      # migrate needs only DATABASE_DSN (config.LoadMigrate). Running up and
+      # then version proves the migrations are inside the image and apply.
+      - name: Apply the migrations from the image
+        env:
+          DATABASE_DSN: postgres://cleargate:cleargate@localhost:5432/cleargate?sslmode=disable
+        run: |
+          docker run --rm --network host -e DATABASE_DSN cleargate-core:${{ github.sha }} /migrate up
+          docker run --rm --network host -e DATABASE_DSN cleargate-core:${{ github.sha }} /migrate version
+
   # demo/ is its own Go module, which ./... from the root never reaches, so it
   # is built, tested and linted in a job of its own.
   demo:
