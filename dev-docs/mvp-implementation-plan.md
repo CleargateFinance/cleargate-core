@@ -1,5 +1,7 @@
 # MVP Implementation Plan
 
+> **Continued in [implementation-plan-v2.md](implementation-plan-v2.md)** (Phases 9–15), written 13 November 2026 after the hackathon. This file remains the record for Phases 0–8 and the design of the tasks V2 defers.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** An agent owner funds an account, connects an agent with spending rules, that agent pays for things through Cleargate, and the owner sees every payment and every block. (Whitepaper §22)
