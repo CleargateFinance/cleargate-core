@@ -18,6 +18,11 @@ import (
 	"github.com/CleargateFinance/cleargate-core/internal/infrastructure/logger"
 )
 
+// version is the commit the binary was built from, set by the image build
+// with -ldflags "-X main.version=<sha>". It is logged at start-up, so a log
+// line can always be traced to the code that wrote it.
+var version = "dev"
+
 func main() {
 	// run returns an error rather than calling os.Exit itself, so that every
 	// deferred cleanup actually runs. os.Exit skips defers, which would leak
@@ -52,6 +57,6 @@ func run() error {
 	}
 	defer cleanup()
 
-	log.Info("worker starting")
+	log.Info("worker starting", slog.String("version", version))
 	return worker.Run(ctx)
 }

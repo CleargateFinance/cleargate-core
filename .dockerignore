@@ -1,0 +1,13 @@
+# An allow-list, not a deny-list. The image needs the Go module, the code and
+# the migrations; everything else stays out of the build context, so a local
+# secret (.env, demo/.state, an editor's settings) can never reach a layer,
+# whatever new file appears in the repository later.
+*
+!go.mod
+!go.sum
+!cmd/
+!internal/
+!migrations/
+
+# Tests are compiled only by `go test`; keep their fixtures out as well.
+**/testdata/

@@ -16,6 +16,11 @@ import (
 	"github.com/CleargateFinance/cleargate-core/internal/infrastructure/logger"
 )
 
+// version is the commit the binary was built from, set by the image build
+// with -ldflags "-X main.version=<sha>". It is logged at start-up, so a log
+// line can always be traced to the code that wrote it.
+var version = "dev"
+
 func main() {
 	// run returns an error rather than calling os.Exit itself, so that every
 	// deferred cleanup actually runs. os.Exit skips defers, which would leak
@@ -37,6 +42,7 @@ func run() error {
 		Format: cfg.Log.Format,
 	})
 	slog.SetDefault(log)
+	log.Info("api starting", slog.String("version", version))
 
 	// notifyContext cancels ctx when the process receives an interrupt or
 	// termination signal, which is how a container orchestrator asks a service

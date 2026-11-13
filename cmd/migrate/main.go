@@ -1,4 +1,5 @@
-// Command migrate applies database migrations from ./migrations.
+// Command migrate applies database migrations from MIGRATIONS_DIR, which
+// defaults to ./migrations and is /migrations in the container image.
 //
 // Migrations run as a deliberate step, never automatically on API boot. A
 // rolling deploy starts several API instances at once, and if each ran
@@ -31,8 +32,12 @@ import (
 	"github.com/CleargateFinance/cleargate-core/internal/infrastructure/config"
 )
 
+// version is the commit the binary was built from, set by the image build
+// with -ldflags "-X main.version=<sha>".
+var version = "dev"
+
 func main() {
-	migrationsPath := flag.String("path", "migrations", "directory holding the migration files")
+	migrationsPath := flag.String("path", "", "directory holding the migration files (default $MIGRATIONS_DIR, else ./migrations)")
 	flag.Parse()
 
 	args := flag.Args()
@@ -41,15 +46,19 @@ func main() {
 		os.Exit(2)
 	}
 
-	cfg, err := config.Load()
+	cfg, err := config.LoadMigrate()
 	if err != nil {
 		log.Fatalf("config: %v", err)
 	}
+	if *migrationsPath != "" {
+		cfg.Dir = *migrationsPath
+	}
+	log.Printf("migrate %s, migrations from %s", version, cfg.Dir)
 
 	// golang-migrate takes a source URL and a database URL. The file:// source
 	// reads the .sql files, the DSN points at the database that records which
 	// of them have already run.
-	m, err := migrate.New("file://"+*migrationsPath, cfg.Database.DSN)
+	m, err := migrate.New("file://"+cfg.Dir, cfg.DSN)
 	if err != nil {
 		log.Fatalf("migrate: open: %v", err)
 	}
@@ -160,6 +169,8 @@ Commands:
   version          print the current schema version
   force <version>  clear a dirty state by asserting the current version
 
-The database connection is read from DATABASE_DSN.
+The database connection is read from DATABASE_DSN, and nothing else is
+required. The migrations directory is -path, else MIGRATIONS_DIR, else
+./migrations.
 `)
 }

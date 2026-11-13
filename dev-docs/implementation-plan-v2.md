@@ -250,17 +250,15 @@ Changes to Core that any hosted environment needs, whatever the platform. All ar
 
 ### Task 9.1: Container image
 
+**Built** in `Dockerfile`, `.dockerignore`, the `image` target in `Makefile` and CI job `image` in `.github/workflows/ci.yml`. `config.LoadMigrate` (`internal/infrastructure/config/config.go`) and `cmd/migrate` read only `DATABASE_DSN` and `MIGRATIONS_DIR`. The tests are `TestLoadMigrate_NeedsOnlyTheDSN`, `TestLoadMigrate_RefusesMissingDSN`, `TestLoadMigrate_DirDefaultsToTheRepository`, `TestLoadMigrate_ReadsMigrationsDir`, and the CI job. Differences are in the Revision note of 13 November 2026, "container image".
+
 **Goal:** one image holding the three binaries `api`, `worker` and `migrate`, and later `faucet`. The command is chosen per container, so the same image runs every role.
 
-**Files:**
-- Create: `Dockerfile`, `.dockerignore`
-- Modify: `Makefile` (add `image`), `.github/workflows/ci.yml` (build the image on PRs, do not push)
-
-- [ ] Multi-stage build. The first stage is `golang:1.26` building with `CGO_ENABLED=0` and `-trimpath -ldflags "-s -w -X main.version=$GIT_SHA"`, for `linux/arm64` (Graviton is cheaper on Fargate). The second stage is `gcr.io/distroless/static-debian12:nonroot`.
-- [ ] Copy `migrations/` into the image at `/migrations`, and make `cmd/migrate` read `MIGRATIONS_DIR`, defaulting to the current relative path so `make migrate-up` is unchanged.
-- [ ] No shell in the image. The container's health check is the ALB's `GET /v1/health`, not a `HEALTHCHECK` instruction.
-- [ ] `.dockerignore` excludes `.env`, `.git`, `demo/.state`, `web/` and `.vscode/`, so no local secret reaches a layer.
-- [ ] **Test:** CI job `image` runs `docker build` and then `docker run --rm <image> /migrate version` against a throwaway Postgres service container. The command must exit 0.
+- [x] Multi-stage build: `golang:1.26.4-bookworm` cross-compiling with `CGO_ENABLED=0 -trimpath -ldflags "-s -w -X main.version=$GIT_SHA"` for `linux/arm64`, then `gcr.io/distroless/static-debian12:nonroot`.
+- [x] `migrations/` is in the image at `/migrations`, and `cmd/migrate` reads `MIGRATIONS_DIR`, defaulting to `./migrations` so `make migrate-up` is unchanged.
+- [x] No shell in the image and no `HEALTHCHECK`; the ALB's `GET /v1/health` decides.
+- [x] `.dockerignore` keeps local secrets out of every layer.
+- [x] **Test:** CI job `image` builds the arm64 image, then runs `/migrate up` and `/migrate version` from it against a Postgres service container. Both must exit 0.
 
 > **Why one image and not three**
 > The three binaries come from the same modules and must agree on the schema. Shipping them as one artifact with one tag makes "the migrate that ran is the code that is serving" true by construction. Three images can drift by one build.
@@ -1498,3 +1496,11 @@ AWS is the hosting platform (owner decision), because the landing page already r
 - **Settlement stays `exact`.** V2 builds no channels, vouchers, netting or redemption. Phase 18 prepares only what is costly to retrofit (hold states, `scheme` on every transfer, one `Realize` entry point) and writes a design note from the x402 spec as it stands that day. The settlement-profile, channel and voucher tables are deliberately **not** created: new tables can be added later without touching an existing row, and V1's sketch for them predates reading the SDK's batch scheme. This settles the V1 open decision "`batch-settlement` support" for now.
 - **Changes from V1's design, flagged for the owner (D12 to D14):** a cooldown on newly enrolled credentials (15.2), decision-log signatures as periodic checkpoints rather than per record (16.2), and an on-ramp webhook that never posts to the ledger (17.4).
 - **Still open, and not decided here:** the primary CDP control model on mainnet (D11), and the choice of verification provider (D10).
+
+**13 November 2026, container image (Task 9.1).** Differences from the task as written:
+
+- **`cmd/migrate` no longer loads the whole configuration.** It called `config.Load`, which refuses to start without `CRYPTO_MASTER_KEYS`, so the migrate task would have needed the key that opens every second factor. `config.LoadMigrate` reads only `DATABASE_DSN` and `MIGRATIONS_DIR`, which is what Task 13.4 grants it. The `-path` flag stays and wins over `MIGRATIONS_DIR`.
+- **`.dockerignore` is an allow-list** (`go.mod`, `go.sum`, `cmd/`, `internal/`, `migrations/`), not the deny-list the task named. A deny-list leaks whatever new file nobody thought to list.
+- **The image carries the RDS CA bundle** at `/etc/ssl/certs/rds-global-bundle.pem`, which Task 13.3 assumed. RDS server certificates are signed by AWS's own CAs, so `sslmode=verify-full` needs it. It is fetched over HTTPS at build time without a pinned checksum, because AWS rotates the bundle.
+- **Every binary logs its version at start-up** (`main.version`, the full commit SHA), so a log line can be traced to the code that wrote it. `CMD` defaults to `/api`; a task definition names its binary.
+- **CI runs the arm64 image under QEMU** on the x86 runner, so the tested artifact is the architecture that ships. The build itself cross-compiles and needs no emulator. A first local build took about 7 minutes, almost all of it downloading modules; later builds reuse the module cache.
