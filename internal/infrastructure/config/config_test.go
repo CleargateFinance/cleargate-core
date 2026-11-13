@@ -77,3 +77,46 @@ func TestLoad_RefusesBadProxiesAndLimits(t *testing.T) {
 		})
 	}
 }
+
+// TestLoadMigrate_NeedsOnlyTheDSN: the migrate task is given the database and
+// nothing else (Task 13.4), so it must not demand the master keys or the
+// custodian's credentials just to start.
+func TestLoadMigrate_NeedsOnlyTheDSN(t *testing.T) {
+	t.Setenv("DATABASE_DSN", "postgres://localhost/test")
+	t.Setenv("CRYPTO_MASTER_KEYS", "")
+
+	cfg, err := LoadMigrate()
+
+	require.NoError(t, err)
+	assert.Equal(t, "postgres://localhost/test", cfg.DSN)
+}
+
+func TestLoadMigrate_RefusesMissingDSN(t *testing.T) {
+	t.Setenv("DATABASE_DSN", "")
+
+	_, err := LoadMigrate()
+
+	assert.ErrorContains(t, err, "DATABASE_DSN")
+}
+
+// TestLoadMigrate_DirDefaultsToTheRepository keeps `make migrate-up`, run from
+// the repository root, working unchanged; the image sets MIGRATIONS_DIR.
+func TestLoadMigrate_DirDefaultsToTheRepository(t *testing.T) {
+	t.Setenv("DATABASE_DSN", "postgres://localhost/test")
+	t.Setenv("MIGRATIONS_DIR", "")
+
+	cfg, err := LoadMigrate()
+
+	require.NoError(t, err)
+	assert.Equal(t, "migrations", cfg.Dir)
+}
+
+func TestLoadMigrate_ReadsMigrationsDir(t *testing.T) {
+	t.Setenv("DATABASE_DSN", "postgres://localhost/test")
+	t.Setenv("MIGRATIONS_DIR", "/migrations")
+
+	cfg, err := LoadMigrate()
+
+	require.NoError(t, err)
+	assert.Equal(t, "/migrations", cfg.Dir)
+}

@@ -262,6 +262,32 @@ func loadMasterKeys() (map[byte][]byte, byte, error) {
 	return keys, byte(activeID), nil
 }
 
+// Migrate is the configuration of cmd/migrate, which is deliberately not the
+// whole Config.
+type Migrate struct {
+	// DSN is the database whose schema is migrated.
+	DSN string
+
+	// Dir holds the migration files. The default suits `make migrate-up` from
+	// the repository root; the container image sets MIGRATIONS_DIR=/migrations.
+	Dir string
+}
+
+// LoadMigrate reads only what migrating needs. Load would also demand the
+// master keys, and the migrate task is given the database and nothing else
+// (Task 13.4): a deploy step that changes the schema has no reason to hold the
+// key that opens every second factor.
+func LoadMigrate() (Migrate, error) {
+	m := Migrate{
+		DSN: env("DATABASE_DSN", ""),
+		Dir: env("MIGRATIONS_DIR", "migrations"),
+	}
+	if m.DSN == "" {
+		return Migrate{}, errors.New("DATABASE_DSN is required")
+	}
+	return m, nil
+}
+
 // validate checks the values that have no safe default and would otherwise
 // fail much later, at the first request rather than at boot.
 func (c *Config) validate() error {
