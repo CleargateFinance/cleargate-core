@@ -1,0 +1,8 @@
+Confirm that this is your email address to finish signing up for Cleargate.
+
+Confirm email address:
+{{.Link}}
+
+The link works once and expires. If you did not sign up for Cleargate, ignore this email and nothing will happen.
+
+Cleargate never asks for your password or a code by email.

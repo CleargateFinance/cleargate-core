@@ -1,16 +1,14 @@
 // Package mail delivers transactional email.
 //
-// It holds no templates and no business rules. Callers hand it an address and
-// the single value the message is built around, and each implementation
-// decides how that becomes a message and how it reaches the recipient.
+// It holds no business rules. Callers hand it an address and the single value
+// the message is built around, and each implementation decides how that becomes
+// a message and how it reaches the recipient: SESMailer sends it, and
+// LoggingMailer writes its link to the log in development.
 package mail
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
-	"net/url"
-	"strings"
 )
 
 // LoggingMailer writes the message it would have sent to the log.
@@ -20,11 +18,8 @@ import (
 // for it by name, which is what stops it reaching an environment where those
 // log lines would be a live account-takeover vector.
 type LoggingMailer struct {
-	log *slog.Logger
-
-	// consoleURL is where the links point, for example
-	// https://console.cleargate.finance.
-	consoleURL string
+	log   *slog.Logger
+	links Links
 }
 
 // NewLogging builds a development mailer that logs links instead of sending
@@ -33,17 +28,14 @@ func NewLogging(log *slog.Logger, consoleURL string) *LoggingMailer {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &LoggingMailer{
-		log:        log,
-		consoleURL: strings.TrimSuffix(consoleURL, "/"),
-	}
+	return &LoggingMailer{log: log, links: NewLinks(consoleURL)}
 }
 
 // SendEmailVerification delivers the link that confirms an address.
 func (m *LoggingMailer) SendEmailVerification(_ context.Context, to, token string) error {
 	m.log.Warn("email verification not sent, logging the link instead",
 		slog.String("to", to),
-		slog.String("link", m.link("/verify-email", token)),
+		slog.String("link", m.links.EmailVerification(token)),
 		slog.String("mailer", "logging"),
 	)
 	return nil
@@ -53,7 +45,7 @@ func (m *LoggingMailer) SendEmailVerification(_ context.Context, to, token strin
 func (m *LoggingMailer) SendPasswordReset(_ context.Context, to, token string) error {
 	m.log.Warn("password reset not sent, logging the link instead",
 		slog.String("to", to),
-		slog.String("link", m.link("/reset-password", token)),
+		slog.String("link", m.links.PasswordReset(token)),
 		slog.String("mailer", "logging"),
 	)
 	return nil
@@ -64,18 +56,10 @@ func (m *LoggingMailer) SendInvitation(_ context.Context, to, token, accountName
 	m.log.Warn("invitation not sent, logging the link instead",
 		slog.String("to", to),
 		slog.String("account", accountName),
-		slog.String("link", m.link("/accept-invite", token)),
+		slog.String("link", m.links.Invitation(token)),
 		slog.String("mailer", "logging"),
 	)
 	return nil
-}
-
-// link builds the URL a recipient would click.
-//
-// The token goes in the query string escaped, because it is base64url and a
-// caller should never have to reason about whether that is safe to interpolate.
-func (m *LoggingMailer) link(path, token string) string {
-	return fmt.Sprintf("%s%s?token=%s", m.consoleURL, path, url.QueryEscape(token))
 }
 
 // DiscardMailer accepts every message and does nothing.

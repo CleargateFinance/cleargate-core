@@ -1,0 +1,8 @@
+You have been invited to join the Cleargate account "{{.AccountName}}".
+
+Accept the invitation:
+{{.Link}}
+
+The link works once and expires. If you were not expecting this invitation, ignore this email and nothing will happen.
+
+Cleargate never asks for your password or a code by email.
