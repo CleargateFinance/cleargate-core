@@ -20,7 +20,7 @@
 
 **Holds: mechanism now, activation later.** The hold is a settlement mechanic with zero capital at risk (§7.2), and its ledger states belong in Phase 1 where the ledger is being designed anyway. It cannot *function* until there is an on-platform payee whose settlement timing we control, which arrives with netting in the second act. Build the states, leave them dormant.
 
-**Separate repositories:** TypeScript SDK, MCP server, console frontend. This repo owns the API and the contract in `api/openapi.yaml`.
+**Separate repositories:** TypeScript SDK and MCP server. This repo owns the API and the contract in `api/openapi.yaml`. **The console frontend lives in this repo** in `web/console/`, as a pure client of `consoleAPI` (see the 13 November 2026 Revision note).
 
 ---
 
@@ -452,7 +452,7 @@ The keys that authorise spending live in the humans' devices, not in Cleargate. 
 - [ ] Endpoints: `POST /v1/webauthn/credentials/begin`, `POST /v1/webauthn/credentials/finish`, `GET /v1/webauthn/credentials`, `DELETE /v1/webauthn/credentials/{id}`.
 - [ ] Relying Party ID is the console's registrable domain; reject assertions from any other origin.
 - [ ] **Gate:** two confirmed credentials before a user may sign a mandate or confirm a control change. Revoking below two is refused while that user holds `owner`, `admin` or `guardian`.
-- [ ] The console repository implements the `navigator.credentials` calls; this repo owns challenge issuance and verification only.
+- [ ] The console (`web/console/`) implements the `navigator.credentials` calls; the Go modules own challenge issuance and verification only.
 
 > **Why two credentials, and why that is what made this MVP-viable**
 > A single passkey turns device loss into an account lockout, which is the reason this was originally deferred past the MVP. Requiring a second — a phone beside a laptop, or a security key in a drawer — turns loss into an inconvenience: sign with the other, enrol a replacement. The alternative was a reset path that mints signing authority from an email link, which is precisely the backdoor an attacker would reach for first, and would have made the whole mechanism decorative.
@@ -1038,7 +1038,7 @@ That is whitepaper §22 exactly, and it is enough to put design partners on live
 | MFA encryption key stored like config | `user_mfa_factor.secret_enc` is recoverable by design, so the key that protects it is as sensitive as a signing key | Keep it in the §8.10 managed store from the first commit, not in an env var |
 | Break-glass left undesigned | Three cases have no in-app path by design: owner and guardian compromised together, an owner who is gone (only the owner may propose `transfer_owner`), and a user who lost every WebAuthn credential. A rushed reset path is a backdoor around every control above it | Write the identity re-verification runbook **before the first customer account has a guardian** |
 | Notifications treated as product polish | Task 2.8's delays are only a control if somebody is told; unnoticed, a timelock is just latency. This is also the only detection channel an attacker with a session cookie probably does not hold | Task 2.10 ships with Task 2.8, not after; bounces surface as account health |
-| Console repo not ready for WebAuthn | The `navigator.credentials` calls live in a separate repository, and until they exist **no mandate can be signed at all** — this is a hard cross-repo dependency on the critical path, not a UI polish item | Not before Task 3.1, since MVP mandates use a TOTP step-up. Agree the challenge/assertion contract with the console repo before it; stub the browser side in integration tests |
+| Console not ready for WebAuthn | The `navigator.credentials` calls live in the console (`web/console/`), and until they exist **no mandate can be signed at all** — a hard dependency on the critical path, not a UI polish item. It is one repo now, so the API and the UI can change in one pull request, but the contract in `openapi.yaml` is still the only link | Not before Task 3.1, since MVP mandates use a TOTP step-up. Fix the challenge/assertion contract in `openapi.yaml` before it; stub the browser side in integration tests |
 | Voucher signing routed through a metered API | At $0.005 per operation the netted flow costs more to sign than it moves (§8.8). Discovered after the schema is live, it is a key-role migration across every channel row | Delegated EOA outside the meter, scoped to the account (Task 7.2). **Confirm the billing boundary with CDP before Phase 7** |
 | Netting reimplemented instead of adopted | A proprietary netting engine is a worse version of x402's `batch-settlement`, maintained forever, and incompatible with what our merchants' other counterparties speak | Use the x402-foundation Go SDK. The rail adapter selects a scheme; it does not invent one |
 | On-chain data treated as the audit trail | The chain shows the *facilitator* firing, not the payer or the individual payments (§8.6). A support process or dashboard built on block explorers reconciles against the wrong object, and a promise to produce per-payment on-chain evidence cannot be met | Ledger plus vouchers plus batch hashes are the record. Hourly solvency invariant, not per-payment hashes. No tx-hash column on an individual payment |
@@ -1065,7 +1065,7 @@ That is whitepaper §22 exactly, and it is enough to put design partners on live
 
 The increase over the previous estimate is the scheme-selecting adapter and channel schema in Phase 7, plus hold states in Phase 1 and the counterparty/loss-observation tasks in Phase 5. All four are seams and schema rather than features — they are cheap now precisely because they are expensive to retrofit.
 
-Consistent with §17's Phase 0 window of months 0–3, leaving room for the SDK, MCP server and console in their own repositories.
+Consistent with §17's Phase 0 window of months 0–3, leaving room for the SDK and MCP server in their own repositories and the console in `web/console/`.
 
 **The testnet MVP, from here:**
 
@@ -1085,6 +1085,16 @@ Tasks marked **Not in MVP** are outside this total. Phase 6 grows because no han
 ---
 
 ## Revision notes
+
+**13 November 2026, the console moves into this repository.** The plan had the console as a separate repository. It is now `web/console/` here, because the team is two people and most console changes touch both sides (a mandate field means a migration, a route, `openapi.yaml` and a form), which one pull request handles better than two. The SDK and MCP server stay separate. What changes and what does not:
+
+- **The boundary stays; only the folder moves.** The console is a pure client of `consoleAPI`. It uses a client generated from `api/openapi.yaml`, never imports Go code or reads the database, and gets no route outside the contract. `openapi_routes_test.go` already fails on an undocumented route, so the API cannot grow a console-only shortcut quietly. This keeps the API complete enough for a customer or partner to build the same screens, which is why the boundary matters more than the repository.
+- **The console holds no rules.** It shows what the server returns and sends the owner's input back. It never decides what a mandate permits, computes a balance or a remaining limit, or builds the bytes to be signed, since the signed bytes are stored opaque and never re-marshalled (Task 3.1). The server canonicalises and the console passes them through unchanged. A second copy of any rule in the UI is a rule that can disagree with the server.
+- **Language: TypeScript.** The browser side of mandate signing (`navigator.credentials`, Task 2.9) and the wallet libraries are JavaScript, and a TypeScript client generated from the contract fails the UI build when a response changes. The framework is not chosen yet. A server-rendered Go UI was considered and set aside because it would sit inside the API process and give the console a private path past the public contract.
+- **One origin, no CORS.** The console's static files and the API are served from one domain behind a reverse proxy, with a dev-server proxy locally. See the CORS entry in the 3 November note.
+- **CI is split by path.** The console gets its own workflow for `web/console/**` and `api/openapi.yaml`, and the Go jobs ignore `web/**`, so a label change does not run the Postgres integration suite. The console's job gets no deploy credentials, because `npm install` runs third-party code. **Not built yet**; add it with the first console commit.
+- **Splitting back out is cheap and is a decision for later.** Reasons to do it: the console or SDK is open-sourced, a frontend contributor joins who should not see the money code, an audit wants a smaller scope, or the console's CI slows Core's. `git subtree split` keeps the history.
+- **Docs changed:** `AGENTS.md`, `README.md`, `api/openapi.yaml` (header comment) and the lines of this plan that said "separate repository" (the intro, Task 2.9, Sequencing risks, Estimate). Nothing in `web/` exists yet.
 
 **8 November 2026, chain reconciliation (Task 7.7).** The hourly check cut from the MVP on 7 November is built. Differences from the plan:
 
@@ -1201,7 +1211,7 @@ The test injects its imbalance with `session_replication_role = replica`, which 
 - **Login sets the token only in the cookie**, with `Max-Age` equal to the session lifetime and no `Domain`. The body carries `expires_at` alone. Logout ends the session and clears the cookie, and answers `204` even with no session.
 - **Unauthenticated bodies are capped at 16 KiB**, and the `User-Agent` stored on a session is cut to 512 bytes of valid UTF-8, since Postgres refuses invalid UTF-8 and NUL.
 - **Fixed, found while building:** a password longer than `crypto.MaxPasswordLength` reached the hasher only for a registered address, which answered `500` where an unknown one answered `401`. Login now refuses the length before the lookup (`TestLogin_OverlongPasswordAnswersAlikeForKnownAndUnknown`). Sign-up now also bounds the display name to 100 characters and refuses NUL, invalid UTF-8 and control characters.
-- **Not built:** CORS. The console must reach the API from an origin the browser allows, either the same origin behind a proxy or a CORS allowlist added for `CONSOLE_URL`.
+- **Not built:** CORS. The console must reach the API from an origin the browser allows. Decided 13 November 2026: serve both from one origin behind a reverse proxy (the console's files at `/`, the API under `/v1`), with a dev-server proxy locally, so no CORS is needed. A CORS allowlist is added only for an origin we do not serve, such as a partner's embedded component.
 
 **3 November 2026, Task 6.1.** Built the surfaces. Differences from the sketch:
 

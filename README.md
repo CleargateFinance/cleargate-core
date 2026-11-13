@@ -7,7 +7,7 @@
 
 The buyer-side authorization layer for AI agents that pay with [x402](https://x402.org) on Solana. A person funds an account and sets a **mandate** for each agent. The agent then pays merchants within that mandate. **Agents hold spending authority, never money.**
 
-This repository is the core service: a Go modular monolith built into two binaries, the API and the worker. The SDK, MCP server and console live in separate repositories and generate their clients from [`api/openapi.yaml`](api/openapi.yaml).
+This repository is the core service: a Go modular monolith built into two binaries, the API and the worker. The SDK and MCP server live in separate repositories and generate their clients from [`api/openapi.yaml`](api/openapi.yaml). The console will live here in `web/console/` as a client of that same contract, with no access to the Go code or the database; it is not built yet.
 
 > **Status: testnet MVP on Solana devnet.** It must not hold real money; see [Known gaps](#known-gaps). Submitted to Encode Club's Solana hackathon, track *Best Use of x402 on Solana*: see [SUBMISSION.md](SUBMISSION.md).
 
@@ -173,7 +173,7 @@ Configuration comes only from the environment. [`.env.example`](.env.example) do
 
 ### From sign-up to a first payment
 
-The console is a separate repository. The demo's [`console`](demo/console/main.go) stands in for it and makes these calls for you (see [Demo](#demo)). These are the routes, in order:
+The console will be `web/console/` in this repository, and has no UI yet. The demo's [`console`](demo/console/main.go) stands in for it and makes these calls for you (see [Demo](#demo)). These are the routes, in order:
 
 1. `POST /v1/auth/signup` creates a person and their account. Then `POST /v1/auth/verify-email` with the token from the link in the API's log.
 2. `POST /v1/auth/login` sets the `cg_session` cookie.
@@ -336,6 +336,7 @@ internal/infrastructure/
 internal/shared/     apperr, currency, typed IDs, clock, caller
 migrations/          numbered up/down SQL pairs
 api/openapi.yaml     the public contract
+web/console/         the owner's console UI, a client of the contract (planned, not built)
 deploy/              docker-compose for local Postgres and Redis
 demo/                the devnet demo: merchant, agent and console stand-in (its own Go module)
 docs/                whitepaper, data architecture, roles
