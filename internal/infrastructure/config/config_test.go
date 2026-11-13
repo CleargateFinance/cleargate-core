@@ -120,3 +120,56 @@ func TestLoadMigrate_ReadsMigrationsDir(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "/migrations", cfg.Dir)
 }
+
+func TestLoad_ReadsSESSettings(t *testing.T) {
+	required(t)
+	t.Setenv("MAIL_TRANSPORT", "ses")
+	t.Setenv("MAIL_FROM", "Cleargate <no-reply@cleargatefinance.xyz>")
+	t.Setenv("MAIL_SES_REGION", "eu-central-1")
+	t.Setenv("MAIL_SES_CONFIGURATION_SET", "cleargate-staging")
+	t.Setenv("CONSOLE_URL", "https://app.cleargatefinance.xyz")
+
+	cfg, err := Load()
+
+	require.NoError(t, err)
+	assert.Equal(t, "Cleargate <no-reply@cleargatefinance.xyz>", cfg.Mail.From)
+	assert.Equal(t, "eu-central-1", cfg.Mail.SESRegion)
+	assert.Equal(t, "cleargate-staging", cfg.Mail.SESConfigurationSet)
+}
+
+func TestLoad_SESRequiresASender(t *testing.T) {
+	required(t)
+	t.Setenv("MAIL_TRANSPORT", "ses")
+	t.Setenv("CONSOLE_URL", "https://app.cleargatefinance.xyz")
+
+	_, err := Load()
+
+	assert.ErrorContains(t, err, "MAIL_FROM")
+}
+
+// TestLoad_SESRequiresAnHTTPSConsole: every emailed link carries a working
+// credential, so a real transport must not send one over plain HTTP. Local
+// addresses are allowed, for trying SES against a console on a laptop.
+func TestLoad_SESRequiresAnHTTPSConsole(t *testing.T) {
+	cases := map[string]bool{
+		"https://app.cleargatefinance.xyz": true,
+		"http://localhost:5173":            true,
+		"http://127.0.0.1:5173":            true,
+		"http://app.cleargatefinance.xyz":  false,
+		"app.cleargatefinance.xyz":         false,
+	}
+	for consoleURL, ok := range cases {
+		required(t)
+		t.Setenv("MAIL_TRANSPORT", "ses")
+		t.Setenv("MAIL_FROM", "no-reply@cleargatefinance.xyz")
+		t.Setenv("CONSOLE_URL", consoleURL)
+
+		_, err := Load()
+
+		if ok {
+			assert.NoError(t, err, consoleURL)
+		} else {
+			assert.ErrorContains(t, err, "CONSOLE_URL", consoleURL)
+		}
+	}
+}
