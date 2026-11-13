@@ -169,7 +169,7 @@ make run-worker                  # in a second shell, after exporting .env there
 curl -s localhost:8080/v1/health # {"status":"ok",...}
 ```
 
-Configuration comes only from the environment. [`.env.example`](.env.example) documents every variable. The `SOLANA_*` variables default to devnet, so reaching mainnet means changing each one on purpose. With `SERVER_MODE=debug` and `MAIL_TRANSPORT=log`, links that would be emailed (email verification, password reset) are written to the API's log instead.
+Configuration comes only from the environment. [`.env.example`](.env.example) documents every variable. The `SOLANA_*` variables default to devnet, so reaching mainnet means changing each one on purpose. With `SERVER_MODE=debug` and `MAIL_TRANSPORT=log`, links that would be emailed (email verification, password reset) are written to the API's log instead. Hosted environments use `MAIL_TRANSPORT=ses`, which sends through Amazon SES with the credentials of the AWS SDK's default chain.
 
 ### From sign-up to a first payment
 

@@ -265,21 +265,15 @@ Changes to Core that any hosted environment needs, whatever the platform. All ar
 
 ### Task 9.2: SES mail transport
 
+**Built** in `internal/infrastructure/mail/{ses.go,links.go,messages.go,templates/}`, with `newMailer` and `newSESMailer` in `internal/app/routes.go` and `MAIL_FROM`, `MAIL_SES_REGION`, `MAIL_SES_CONFIGURATION_SET` in `internal/infrastructure/config/config.go`. The tests are `internal/infrastructure/mail/ses_test.go` (`TestSESMailer_SendsVerificationLink`, `TestSESMailer_SendsPasswordResetAndInvitationLinks`, `TestSESMailer_ErrorIsReturnedNotSwallowed`, `TestSESMailer_TransportErrorIsReturned`, `TestSESMailer_UsesTheConfigurationSet`, `TestSESMailer_EscapesTheAccountName`, `TestSESMailer_NoTracking`, `TestNewSES_RefusesABadSender`, `TestLinks_MatchAcrossTransports`), `internal/app/mailer_test.go` (`TestNewMailer_AcceptsSESOutsideDebug`, `TestNewMailer_SESTakesTheRegionFromTheEnvironment`, `TestNewMailer_SESNeedsARegion`, `TestNewMailer_StillRefusesLogOutsideDebug`) and the config tests `TestLoad_ReadsSESSettings`, `TestLoad_SESRequiresASender`, `TestLoad_SESRequiresAnHTTPSConsole`. Differences are in the Revision note of 13 November 2026, "SES mail".
+
 **Goal:** `MAIL_TRANSPORT=ses` sends verification, password-reset and invitation mail through Amazon SES v2.
 
-**Files:**
-- Create: `internal/infrastructure/mail/ses.go`, `internal/infrastructure/mail/templates/` (embedded text and HTML for the three messages), `internal/infrastructure/mail/ses_test.go`
-- Modify: `internal/app/routes.go` (`newMailer`), `internal/infrastructure/config/config.go` (`MAIL_FROM`, `MAIL_SES_REGION`, `MAIL_SES_CONFIGURATION_SET`), `.env.example`
-
-- [ ] Implement `account.Mailer` (`SendEmailVerification`, `SendPasswordReset`, `SendInvitation`) with `github.com/aws/aws-sdk-go-v2/service/sesv2`. Credentials come from the default chain, which on ECS is the task role. No keys go in the environment.
-- [ ] Links are built exactly as `LoggingMailer` builds them, from `CONSOLE_URL`. Extract the link builder so both transports share it and cannot disagree.
-- [ ] Each message has a plain-text and an HTML part. Link text names the action. The text says it can be ignored if the reader did not ask. There are no tracking pixels and no click tracking: a rewritten link in a credential email trains people to click redirectors.
-- [ ] `newMailer` accepts `ses` in any mode and still refuses `log` outside debug. An unknown or empty transport still refuses to start.
-- [ ] **Tests:**
-  - `TestSESMailer_SendsVerificationLink`: an `httptest` server stands in for the SES endpoint through `BaseEndpoint`. The test asserts the destination, the sender and that the link contains the token once.
-  - `TestSESMailer_ErrorIsReturnedNotSwallowed`
-  - `TestNewMailer_AcceptsSESOutsideDebug`
-  - `TestNewMailer_StillRefusesLogOutsideDebug`
+- [x] `account.Mailer` implemented with `aws-sdk-go-v2/service/sesv2`. Credentials come from the default chain (the task role on ECS); no key is configured.
+- [x] One link builder, `mail.Links`, shared by both transports.
+- [x] Plain-text and HTML parts. The link text names the action; the text says to ignore the email if the reader did not ask; no tracking pixel, no rewritten link, one link per message.
+- [x] `newMailer` accepts `ses` in any mode and still refuses `log` outside debug, an empty transport and an unknown one.
+- [x] **Tests:** as listed in the Built line. A fake SES endpoint decodes the JSON the real SDK sends, so serialisation is tested too.
 
 > **Why SES and not a third-party sender**
 > The deployment is AWS, SES needs no new vendor contract or secret (the task role authorizes it), and the volume is tiny. The `Mailer` port means changing provider later is one file. Bounce and complaint handling (V1 Task 2.10's `notification.failed_at`) arrives with notifications in Phase 15. Until then the account-level suppression list SES already applies is enough.
@@ -700,7 +694,7 @@ Where it needs a number, Phase 10 supplies it.
 ### Task 12.2: Sign-up, verification, login, reset
 
 - [ ] Sign-up shows the same "check your email" screen whatever happened. The API answers identically for a new and an existing address, and the UI must not undo that.
-- [ ] `/verify?token=` posts the token and moves on to login. Reset request and reset follow the same pattern.
+- [ ] `/verify-email?token=` posts the token and moves on to login; `/reset-password?token=` and `/accept-invite?token=` follow the same pattern. These are the paths the mailer's links use (`mail.Links`, Task 9.2), so the console must serve exactly them.
 - [ ] Every page shows a "Testnet: devnet USDC, not real money" banner, driven by `GET /v1/environment`.
 
 ### Task 12.3: Second factor
@@ -1504,3 +1498,14 @@ AWS is the hosting platform (owner decision), because the landing page already r
 - **The image carries the RDS CA bundle** at `/etc/ssl/certs/rds-global-bundle.pem`, which Task 13.3 assumed. RDS server certificates are signed by AWS's own CAs, so `sslmode=verify-full` needs it. It is fetched over HTTPS at build time without a pinned checksum, because AWS rotates the bundle.
 - **Every binary logs its version at start-up** (`main.version`, the full commit SHA), so a log line can be traced to the code that wrote it. `CMD` defaults to `/api`; a task definition names its binary.
 - **CI runs the arm64 image under QEMU** on the x86 runner, so the tested artifact is the architecture that ships. The build itself cross-compiles and needs no emulator. A first local build took about 7 minutes, almost all of it downloading modules; later builds reuse the module cache.
+
+**13 November 2026, SES mail (Task 9.2).** Differences from the task as written:
+
+- **With `MAIL_TRANSPORT=ses`, boot refuses a `CONSOLE_URL` that is not HTTPS** (plain HTTP to `localhost` or a loopback address is allowed, for trying SES against a local console), and refuses a missing or malformed `MAIL_FROM`. Every emailed link carries a working credential.
+- **`MAIL_SES_REGION` is optional.** Empty uses the SDK's region, `AWS_REGION`, which ECS sets for every task. Boot refuses if neither is set.
+- **The mailer's errors never carry the token, the link or the recipient.** The account service logs them. An SES API error keeps its code and message with the recipient's address redacted, since a `MessageRejected` names it. A transport error is kept whole: it names the endpoint, never the message body.
+- **The account name in an invitation appears only in the body**, escaped in the HTML part by `html/template`, and never in the subject, where it could pass for Cleargate's own words. Subjects are fixed strings.
+- **Every message ends "Cleargate never asks for your password or a code by email"** and shows the raw link beside the button, so a reader can check the domain before clicking.
+- **The logging mailer's existing test moved** from the integration suite to `internal/app/mailer_test.go`, a unit test, since it never needed a database. `newMailer` now takes a `context.Context`, for the SDK's config loader.
+- **Task 12.2's console paths were corrected** to the ones the links already used: `/verify-email`, `/reset-password` and `/accept-invite`.
+- **New dependency:** `aws-sdk-go-v2` (`config`, `credentials`, `service/sesv2`). Adding it raised `smithy-go`, already present through the CDP SDK, from v1.13.3 to v1.28.9; the CDP tests pass on it.
