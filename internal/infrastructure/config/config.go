@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -125,14 +126,26 @@ type Crypto struct {
 // any, so it is checked where the API is built rather than here: the worker
 // and the migrate tool must not need it.
 type Mail struct {
-	// Transport has no default. "log" writes the links to the log, which
-	// hands out working credentials, so it is accepted only in debug mode.
-	// No production transport exists yet, and the API refuses to start in
-	// release mode until one does.
+	// Transport has no default. "ses" sends through Amazon SES. "log" writes
+	// the links to the log, which hands out working credentials, so it is
+	// accepted only in debug mode.
 	Transport string
 
-	// ConsoleURL is where emailed links point.
+	// ConsoleURL is where emailed links point. With a real transport it must
+	// be HTTPS, since every link carries a working credential.
 	ConsoleURL string
+
+	// From is the sender, MAIL_FROM, as an address or "Name <address>". Its
+	// domain must be a verified SES identity. Required with "ses".
+	From string
+
+	// SESRegion is MAIL_SES_REGION. Empty uses the AWS SDK's own region,
+	// AWS_REGION, which ECS sets for every task.
+	SESRegion string
+
+	// SESConfigurationSet is MAIL_SES_CONFIGURATION_SET, the set that
+	// publishes bounces and complaints. Empty sends without one.
+	SESConfigurationSet string
 }
 
 // Log holds logging settings.
@@ -176,8 +189,11 @@ func Load() (*Config, error) {
 			DB:       envInt("CACHE_DB", 0),
 		},
 		Mail: Mail{
-			Transport:  os.Getenv("MAIL_TRANSPORT"),
-			ConsoleURL: env("CONSOLE_URL", "http://localhost:3000"),
+			Transport:           os.Getenv("MAIL_TRANSPORT"),
+			ConsoleURL:          env("CONSOLE_URL", "http://localhost:3000"),
+			From:                os.Getenv("MAIL_FROM"),
+			SESRegion:           os.Getenv("MAIL_SES_REGION"),
+			SESConfigurationSet: os.Getenv("MAIL_SES_CONFIGURATION_SET"),
 		},
 		Solana: Solana{
 			RPCURL:       env("SOLANA_RPC_URL", "https://api.devnet.solana.com"),
@@ -328,6 +344,17 @@ func (c *Config) validate() error {
 		}
 	}
 
+	if c.Mail.Transport == "ses" {
+		if c.Mail.From == "" {
+			problems = append(problems, errors.New("MAIL_FROM is required with MAIL_TRANSPORT=ses"))
+		}
+		if !credentialSafeURL(c.Mail.ConsoleURL) {
+			problems = append(problems, fmt.Errorf(
+				"CONSOLE_URL must be https with MAIL_TRANSPORT=ses, since every emailed link carries a credential, got %q",
+				c.Mail.ConsoleURL))
+		}
+	}
+
 	// Every key is checked, not just the active one. A retired key that decodes
 	// to the wrong length would otherwise pass here and fail much later, at the
 	// one moment it is genuinely needed: opening an old row during a rotation.
@@ -359,6 +386,26 @@ const masterKeySize = 32
 
 // env returns the environment variable named key, or fallback when it is unset
 // or empty.
+// credentialSafeURL reports whether an emailed link to raw keeps its token off
+// the network in clear text: HTTPS, or plain HTTP only to this machine, which is
+// how a developer tries the real transport against a console on a laptop.
+func credentialSafeURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	switch u.Scheme {
+	case "https":
+		return true
+	case "http":
+		host := u.Hostname()
+		ip, err := netip.ParseAddr(host)
+		return host == "localhost" || (err == nil && ip.IsLoopback())
+	default:
+		return false
+	}
+}
+
 func env(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
