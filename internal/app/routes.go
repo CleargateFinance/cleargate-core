@@ -1,11 +1,14 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
 	"time"
 
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/sesv2"
 	"github.com/gin-gonic/gin"
 
 	"github.com/CleargateFinance/cleargate-core/internal/infrastructure/config"
@@ -101,15 +104,17 @@ func byUser(c *gin.Context) (string, bool) {
 }
 
 // errNoMailTransport stops the API starting where it cannot send email
-// safely. There is no production transport yet (the provider is still to be
-// chosen), and the only one that exists hands out working credentials.
+// safely: no transport named, an unknown one, the logging one outside debug,
+// or SES with nowhere to send from.
 var errNoMailTransport = errors.New("app: MAIL_TRANSPORT")
 
 // newMailer picks the mail transport the config names. Nothing is chosen by
 // default, because the only transport that needs no configuration writes live
 // sign-in links to the log.
-func newMailer(cfg *config.Config, log *slog.Logger) (account.Mailer, error) {
+func newMailer(ctx context.Context, cfg *config.Config, log *slog.Logger) (account.Mailer, error) {
 	switch cfg.Mail.Transport {
+	case "ses":
+		return newSESMailer(ctx, cfg.Mail)
 	case "log":
 		if cfg.Server.Mode != "debug" {
 			return nil, fmt.Errorf("%w: log writes working credentials to the log and is refused outside SERVER_MODE=debug", errNoMailTransport)
@@ -120,4 +125,32 @@ func newMailer(cfg *config.Config, log *slog.Logger) (account.Mailer, error) {
 	default:
 		return nil, fmt.Errorf("%w: unknown transport %q", errNoMailTransport, cfg.Mail.Transport)
 	}
+}
+
+// newSESMailer builds the SES transport from the AWS SDK's default chain: on
+// ECS the task role supplies the credentials, so no key is ever configured.
+// Loading the chain reads no credential and calls nothing; a missing role
+// surfaces on the first send, where the account service logs it.
+func newSESMailer(ctx context.Context, c config.Mail) (account.Mailer, error) {
+	var opts []func(*awsconfig.LoadOptions) error
+	if c.SESRegion != "" {
+		opts = append(opts, awsconfig.WithRegion(c.SESRegion))
+	}
+	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("%w: ses: %w", errNoMailTransport, err)
+	}
+	if awsCfg.Region == "" {
+		return nil, fmt.Errorf("%w: ses needs a region: set MAIL_SES_REGION, or AWS_REGION", errNoMailTransport)
+	}
+
+	m, err := mail.NewSES(sesv2.NewFromConfig(awsCfg), mail.SESOptions{
+		From:             c.From,
+		ConfigurationSet: c.SESConfigurationSet,
+		ConsoleURL:       c.ConsoleURL,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", errNoMailTransport, err)
+	}
+	return m, nil
 }

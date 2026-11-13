@@ -93,7 +93,7 @@ func BuildAPI(ctx context.Context, cfg *config.Config, log *slog.Logger) (*API, 
 		return nil, nil, err
 	}
 
-	mailer, err := newMailer(cfg, log)
+	mailer, err := newMailer(ctx, cfg, log)
 	if err != nil {
 		return fail(err)
 	}

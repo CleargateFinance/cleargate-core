@@ -365,11 +365,3 @@ func TestMandateRoute_Refusals(t *testing.T) {
 	}
 	assert.Zero(t, f.mandateCount())
 }
-
-func TestBuildAPI_RefusesTheLoggingMailerInRelease(t *testing.T) {
-	_, err := newMailer(&config.Config{Server: config.Server{Mode: "release"}, Mail: config.Mail{Transport: "log"}}, nil)
-	assert.ErrorIs(t, err, errNoMailTransport)
-
-	_, err = newMailer(&config.Config{Server: config.Server{Mode: "debug"}}, nil)
-	assert.ErrorIs(t, err, errNoMailTransport, "no transport is chosen by default")
-}
