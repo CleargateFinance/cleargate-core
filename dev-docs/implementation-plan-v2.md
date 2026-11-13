@@ -1,4 +1,4 @@
-# Implementation Plan V2: from hackathon MVP to a hosted testnet beta
+# Implementation Plan V2: from hackathon MVP to a hosted testnet beta, and on to mainnet readiness
 
 > **For agentic workers:** REQUIRED SUB-SKILL: use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. Before starting a task, write its step-by-step plan (failing test, implementation, passing test, commit) with `superpowers:writing-plans`; this document fixes the scope, the files, the tests and the decisions, not every line of code.
 
@@ -13,6 +13,7 @@
 
 **Tech stack:** everything in the V1 plan, plus:
 - TypeScript, and React with Vite (pending decision D1).
+- `go-webauthn` for passkeys, and AWS KMS for decision-log checkpoints (Phases 15 and 16).
 - `openapi-typescript` and `openapi-fetch`.
 - Amazon SES v2.
 - Terraform on AWS: ECS Fargate, RDS for PostgreSQL 17, ElastiCache, ALB, CloudFront, S3, Secrets Manager, CloudWatch and ECR.
@@ -37,11 +38,15 @@
 9. [Phase 12: The console](#phase-12--the-console)
 10. [Phase 13: AWS staging environment](#phase-13--aws-staging-environment)
 11. [Phase 14: Delivering it to testers](#phase-14--delivering-it-to-testers)
-12. [Phase 15: After the beta, towards mainnet](#phase-15--after-the-beta-towards-mainnet)
-13. [Sequencing and estimate](#sequencing-and-estimate)
-14. [Definition of done for V2](#definition-of-done-for-v2)
-15. [Risks](#risks)
-16. [Revision notes](#revision-notes)
+12. [Phase 15: Signed authority and account controls](#phase-15--signed-authority-and-account-controls)
+13. [Phase 16: Evidence and integrity](#phase-16--evidence-and-integrity)
+14. [Phase 17: Money in and out, for real money](#phase-17--money-in-and-out-for-real-money)
+15. [Phase 18: Batch-settlement groundwork (exact only)](#phase-18--batch-settlement-groundwork-exact-only)
+16. [Phase 19: Production and the mainnet gate](#phase-19--production-and-the-mainnet-gate)
+17. [Sequencing and estimate](#sequencing-and-estimate)
+18. [Definition of done](#definition-of-done)
+19. [Risks](#risks)
+20. [Revision notes](#revision-notes)
 
 ---
 
@@ -85,25 +90,36 @@ The console also needs a few routes that do not exist; Phase 10 covers them.
 
 ### Still open from V1, and where each goes
 
+**Everything V1 deferred now has a home in V2.** The V1 plan keeps each task's design and Why boxes; V2 says when it is built and what changed.
+
 | V1 item | V2 placement |
 |---|---|
+| Tasks 2.9 and 3.1: WebAuthn enrolment, signed mandates | Tasks 15.2 and 15.3 |
+| Task 2.10: administrative notifications | Task 15.1, built first (the controls depend on somebody noticing) |
+| Task 2.8: guardian, timelock, control changes | Task 15.4 |
+| Task 6.3 and Phase 8: latency gate, load test to 100 ms p99 | Task 16.1, built **before** signed mandates land on the hot path |
+| Task 5.4: hash-chained decision log | Task 16.2. **AGENTS.md states hash-chaining as an invariant, but it is not built.** The README's Known gaps says so; keep them consistent. |
+| Task 5.5 (listings, delivery) and Task 5.6 (loss observation) | Tasks 16.3 and 16.4. Loss observation must run before real money (V1 Sequencing risks). |
+| Task 2.7: address screening, KYC mirror, withdrawals | Tasks 17.1 to 17.4 (screening is a **mainnet blocker**) |
+| Phase 8: peg monitor | Task 17.5 (**mainnet blocker**) |
+| Phase 8: CDP Spend Permissions and Policies | Task 17.6, a spike only. It depends on the open decision D11. |
+| Task 1.5: holds | Task 18.1, built dormant |
+| Phase 7: channels, vouchers, `batch-settlement` | **Not built (owner decision, 13 November).** Task 18.2 to 18.4 prepare the seams and a design note. |
+| Base as a second rail | After the mainnet gate (Phase 19) |
 | Task 6.2: `llms.txt` docs index | Task 11.6 |
-| Phase 8: alerting (§8.10), runbooks, structured trace logging (§8.9) | Tasks 13.8 and 13.10, and Task 9.5 for logs |
-| Task 6.3 and Phase 8: latency gate, load test to 100 ms p99 | Phase 15 (Task 15.1), before any mainnet talk |
-| Task 5.4: hash-chained, signed decision log | Phase 15. **AGENTS.md states hash-chaining as an invariant, but it is not built.** The README's Known gaps says so; keep them consistent. |
-| Tasks 2.8, 2.9, 2.10, 3.1: guardian and timelock, WebAuthn, notifications, signed mandates | Phase 15 (passkeys after the first version, owner decision of 4 November) |
-| Tasks 5.5 (listings) and 5.6 (loss observation) | Phase 15. Loss observation should ship before mainnet (V1 Sequencing risks). |
-| Task 2.7 address screening (KYT) and Phase 8 peg monitor | Phase 15, both **mainnet blockers** |
-| Phase 1.5 holds, Phase 7 channels and `batch-settlement`, Base | Phase 15; `batch-settlement` support is an open owner decision |
-| `authz` module wrapper files marked `TODO(scaffold)` (`service.go`, `ports.go`, `repo_postgres.go`, `handler_http.go`, `module.go`) | Task 9.7: delete or fill. `Decide` itself is built and used by `payment`. |
-| `crypto/crypto.go` `TODO(scaffold)` for canonical JSON, Ed25519, hash chain | Stays with Task 5.4 in Phase 15 |
+| Phase 8: alerting (§8.10), runbooks, structured trace logging (§8.9) | Tasks 13.8, 13.10 and 9.5; production paging in Task 19.2 |
+| `authz` module wrapper files marked `TODO(scaffold)` | Task 9.7: delete or fill. `Decide` itself is built and used by `payment`. |
+| `crypto/crypto.go` `TODO(scaffold)` for canonical JSON, Ed25519, hash chain | Canonical JSON in Task 15.3, the chain in Task 16.2 |
 | `internal/app/app.go` `TODO(scaffold)` for a shared `buildModules` | Task 9.7 |
+
 
 ---
 
 ## What V2 builds, and what it does not
 
-**Builds:** a hosted **testnet beta** on Solana devnet:
+V2 has two halves with a deliberate break between them.
+
+**Phases 9–14: a hosted testnet beta** on Solana devnet:
 
 - the console;
 - self-serve funded accounts;
@@ -112,7 +128,17 @@ The console also needs a few routes that do not exist; Phase 10 covers them.
 - AWS staging infrastructure with alerts;
 - a rollout to invited testers.
 
-**Does not build:** anything for real money. The README's Known gaps still hold, and the mainnet gate in Phase 15 lists what must change first. The sandbox is devnet-only **by construction** (Task 11.1), not by convention.
+**Phases 15–19: everything V1 deferred, then the gate to real money:**
+
+- **Phase 15:** signed authority and account controls (passkeys, signed mandates, notifications, guardian and timelock).
+- **Phase 16:** evidence and integrity (a latency gate, a hash-chained decision log, delivery reports, loss observation).
+- **Phase 17:** funding hardening (address screening, withdrawals, KYC, the peg monitor).
+- **Phase 18:** batch-settlement **groundwork only**.
+- **Phase 19:** the production environment and the mainnet gate.
+
+**The settlement decision (owner, 13 November 2026): payments stay `exact`.** V2 builds no channels, vouchers, netting or redemption. Phase 18 prepares only what is expensive to retrofit (hold states on the ledger, the scheme recorded on every transfer, one entry point for realising a payment) and produces a design note from the x402 spec as it stands that day.
+
+**Does not build:** anything that holds real money before the Phase 19 gate. The README's Known gaps still hold until then. The sandbox is devnet-only **by construction** (Task 11.1), not by convention.
 
 **Does not change:**
 
@@ -120,7 +146,7 @@ The console also needs a few routes that do not exist; Phase 10 covers them.
 - the ledger's rules;
 - the two caller surfaces;
 - the `Rail` and `WalletProvider` seams;
-- the rule that the worker never signs.
+- the rule that no process but `cmd/api` (account wallets) and `cmd/faucet` (treasury, devnet only) can sign a transfer. The worker may sign a decision-log checkpoint (Task 16.2), an attestation that cannot move funds.
 
 Every addition below respects them, and the Why boxes say how.
 
@@ -189,7 +215,16 @@ Each has a recommendation. AGENTS.md says open product decisions are the owner's
 | D7 | Facilitator | **The public x402.org facilitator for the beta.** Self-hosting one is the fallback. | It is what the demo proved. It has no SLA, so Task 13.8 watches it, and Risk R4 covers an outage. | Task 11.5 |
 | D8 | Infrastructure as code | **Terraform in `deploy/terraform/`**, state in the existing `cleargatefinance-xyz-tfstate` bucket under key `core/staging.tfstate` | The landing page is already managed with Terraform (`frontend/production.tfstate`). One tool and one state bucket, separate state files. | Phase 13 |
 
-Two decisions **remain from V1 and are not needed for the beta**: the primary CDP control model on mainnet, and `batch-settlement` support. Phase 15 lists them; nothing in V2 presumes an answer.
+**Decisions for Phases 15–19:**
+
+| # | Decision | Recommendation | Why | Blocks |
+|---|---|---|---|---|
+| D9 | When passkeys reach testers | **Build Phase 15 during Cohort 1 and ship it before Cohort 2.** Cohort 1 keeps the TOTP step-up, and its owners re-sign with a passkey when it arrives. | Cohort 1's job is to find out whether the core flow works. Two credentials and a QR code in the first ten minutes would test onboarding friction instead of the product. The cost is a re-sign step for Cohort 1, which Task 15.5 prompts for. The alternative, passkeys before Cohort 1, is safer but slows the first feedback by weeks. | Task 15.3 rollout |
+| D10 | Identity verification and the on-ramp | **Mirror an on-ramp's verdict, as V1 designed, and start with the one CDP already offers.** Pick it only when Phase 17 starts. | The provider must verify a buyer to sell stablecoin at all, so mirroring avoids a second verification and a second store of documents. If the first mainnet launch is stablecoin-only, the 100 USD basic cap is acceptable and Task 17.4 can wait. | Task 17.4 |
+| D11 | The primary control model on mainnet (V1's open decision) | **No recommendation here.** AGENTS.md says to stop and ask. Task 17.6's spike produces the evidence. | It sets what CDP can enforce below our backend, plus KYC, gas and licensing. | Task 17.6, the mainnet gate |
+| D12 | New credentials cannot sign immediately (Task 15.2) | **A 24-hour cooldown in production, none in the sandbox.** | A brand-new passkey is the one thing an attacker with a stolen session and a relayed TOTP code can add. A day's delay, with every other credential's owner notified, is the friction they cannot get around. It is an addition to V1's design. | Task 15.2 |
+| D13 | Decision-log signatures as checkpoints (Task 16.2) | **Hash every record in the transaction and sign a checkpoint of the chain head every minute.** | A KMS call per record would hold an account's locks for tens of milliseconds. One signature over the head covers every earlier record. It is a change from V1 Task 5.4. | Task 16.2 |
+| D14 | The on-ramp webhook never posts to the ledger (Task 17.4) | **Confirm.** | Deposit detection already credits what arrives on chain, and a second credit path is a double-credit risk. A change from V1 Phase 8. | Task 17.4 |
 
 ---
 
@@ -747,7 +782,7 @@ flowchart TB
 
 ### Task 13.1: Terraform layout and state
 
-**Files:** create `deploy/terraform/` with `versions.tf`, `providers.tf`, `backend.tf`, `variables.tf`, `outputs.tf`, `staging.tfvars` and one file per area below.
+**Files:** create `deploy/terraform/` as a reusable module `modules/core/` (one file per area below, with `variables.tf` and `outputs.tf`) and an environment directory `envs/staging/` holding `versions.tf`, `providers.tf`, `backend.tf` and `staging.tfvars`. Production (Task 19.1) becomes a second environment directory that instantiates the same module, not a copy.
 
 - [ ] Backend: the S3 bucket `cleargatefinance-xyz-tfstate`, key `core/staging.tfstate`, `use_lockfile = true`. That is S3-native locking: there is no DynamoDB lock table, and the landing page's state does not use one either. Check that the bucket has versioning and default encryption on before the first apply.
 - [ ] Providers: `aws` in `eu-central-1`, and an aliased `aws.us_east_1` for the CloudFront certificate.
@@ -928,6 +963,7 @@ flowchart TB
 - [ ] A database snapshot has been taken, and restoring one has been tried once.
 - [ ] The README's Known gaps, the testnet banner and the quickstart all say devnet and not real money.
 - [ ] Invite codes have been generated, with expiry and a note per cohort.
+- [ ] **Terms of Service and Privacy Policy text exist and say this is a testnet.** Sign-up already records consent to both documents (`DocumentTermsOfService`, `DocumentPrivacyPolicy`), so the console must link real text, not placeholders.
 
 ### Task 14.3: Cohorts
 
@@ -945,34 +981,357 @@ flowchart TB
   - declines by reason code, since a lot of `category_not_permitted` means the presets are wrong;
   - grants unspent after 7 days.
 
-  Read them weekly. The plan for after the beta (Phase 15) is reordered by what this shows.
+  Read them weekly. Phases 15 to 19 are reordered by what this shows, within the dependencies in their diagrams.
 
 ---
 
-# Phase 15 — After the beta, towards mainnet
+# Phase 15 — Signed authority and account controls
 
-These are not part of V2's delivery. They are listed in the order we currently expect, to be re-ordered by beta feedback. Each one is specified in the V1 plan, which stays the source of truth for its design.
+**Outcome:** a mandate is an assertion signed by a key that lives in the owner's device, never something the server can mint. A compromised server, or a stolen session cookie plus a relayed TOTP code, cannot create or widen spending authority. This is V1's Tasks 2.9, 3.1, 2.10 and 2.8, deferred by the owner decision of 4 November 2026 ("passkeys after the first version"). The design and the Why boxes stay in the V1 plan. This phase adds what is new: the order, the files, the rollout, and the gaps found while re-reading them.
 
-| # | Item | Source | Why it is here |
-|---|---|---|---|
-| 15.1 | **Latency gate and load test**: `authorize` p99 under 100 ms against a seeded database, failing the build above it | V1 Tasks 6.3 and Phase 8 | The whitepaper's budget (§6.6) has never been measured |
-| 15.2 | Hash-chained, signed decision log | V1 Task 5.4 | AGENTS.md already states it as an invariant |
-| 15.3 | Loss observation | V1 Task 5.6 | Free to collect, unrecoverable later. It must precede real money. |
-| 15.4 | Notifications (outbox to SES), with bounces surfaced as account health | V1 Task 2.10 | Precondition for 15.5 meaning anything |
-| 15.5 | WebAuthn enrolment, then mandates signed with a passkey | V1 Tasks 2.9 and 3.1 | Replaces the TOTP stand-in. The RP ID is `cleargatefinance.xyz`, which the console on `app.` satisfies. |
-| 15.6 | Guardian, timelock and control changes | V1 Task 2.8 | With 15.4 and 15.5 |
-| 15.7 | Counterparty listings and delivery reports (`POST /v1/payments/{id}/delivery`) | V1 Task 5.5 | Groundwork for the directory |
-| 15.8 | Address screening (KYT) on deposits | V1 Task 2.7, Phase 8 | **Mainnet blocker** (Revision note, 7 November) |
-| 15.9 | Peg monitor | V1 Phase 8 | **Mainnet blocker**, pointless on devnet |
-| 15.10 | Holds; `batch-settlement`; Base as a second rail | V1 Tasks 1.5, Phase 7 | Behind the owner decisions below |
+**What already exists, so nobody rebuilds it:**
 
-**Mainnet gate.** No mainnet deployment until all of these hold:
+| Exists | Where |
+|---|---|
+| `user_webauthn_credential` (public key, `sign_count`, `backup_eligible`, `backup_state`, `revoked_at`) | migration 000004 |
+| `webauthn_challenge`, with purposes `enrol`, `sign_mandate` and `confirm_control_change`, single-use via `consumed_at`, and a `bound_to` that a CHECK requires for every purpose but `enrol` | migration 000004 |
+| `account_control_change` (five change types, `effective_at` fixed at proposal, one live proposal per type) and `account.timelock_hours` | migration 000004 |
+| One guardian per account (`account_one_guardian`) | migration 000004 |
+| `notification` (per-delivery record with `failed_at`) and `event_outbox` (written in the same transaction as the change) | migrations 000004, 000007 |
+| Mandate columns for a WebAuthn approval (`signature`, `authenticator_data`, `client_data_json`, `credential_id`, `signed_by`), the `pending`, `vetoed` and `active` statuses, and CHECKs tying `signature_scheme` to them | migration 000006 |
+| A mandate repository that **refuses** a stored `webauthn` row, since no verifier exists | `internal/modules/mandate` |
 
-- 15.1, 15.3, 15.8 and 15.9 are built;
-- the owner has decided the primary CDP control model;
-- a production environment exists separately from staging, with its own AWS account or at least its own VPC, secrets and CDP projects, multi-AZ RDS, two NAT gateways, and paging to a person on call;
-- the sandbox is off and its config refusal has been tested against the production configuration;
-- the break-glass runbook has been written (V1 Sequencing risks).
+**What does not exist:** the `go-webauthn` dependency, any verifier, any enrolment route, any code that reads `event_outbox` (it is written and never relayed), and the console.
+
+**Order matters, and it is not V1's numbering.** Notifications come first, because enrolling a credential and every later control change must tell somebody, and a control nobody hears about is only a delay (V1 Task 2.10). Latency (Task 16.1) also comes first: the signed-mandate check lands on the hot path, so a baseline has to exist before it does.
+
+```mermaid
+flowchart LR
+    L16["16.1 Latency gate<br/>(baseline first)"] --> E
+    N["15.1 Notifications"] --> E["15.2 WebAuthn enrolment"]
+    E --> S["15.3 Signed mandates"]
+    S --> G["15.4 Guardian, timelock,<br/>control changes"]
+    S --> C["15.5 Console screens"]
+    G --> C
+    G --> R["15.6 Rollout and runbooks"]
+```
+
+### Task 15.1: Notifications that reach a person
+
+**Files:**
+- Create: `internal/modules/notify/{doc.go,domain.go,ports.go,service.go,repo_postgres.go,module.go}` and tests, `internal/infrastructure/mail/ses_notify.go`, a migration `NNNNNN_notification_event.{up,down}.sql`
+- Modify: `internal/app/worker.go` (a new job `outbox_relay`), `internal/app/routes.go` and the account, mandate and settlement services (emit events), `api/openapi.yaml`
+
+Read V1 Task 2.10 first; its list of what to emit, and its Why boxes, hold.
+
+- [ ] **Relay.** `outbox_relay` runs every 10 seconds. It reads `event_outbox WHERE published_at IS NULL ORDER BY id LIMIT 100 FOR UPDATE SKIP LOCKED`. For each event it creates one `notification` row per recipient and sets `published_at`, in one transaction. Delivery then happens after the commit, so a slow mail provider never holds the lock.
+- [ ] **Idempotent per recipient.** Add `notification.event_id` with `UNIQUE (event_id, user_id)`, so a relay that runs twice, or two relays racing, sends once.
+- [ ] **Delivery.** A `notify.Sender` port with one SES implementation. Each kind has an embedded template (text and HTML) whose links are deep links into the console (`CONSOLE_URL/...`), **never an action**: a one-click veto in an email would hand the control to whoever holds the inbox (V1 Why box). `sent_at` or `failed_at` and `failure` are written back.
+- [ ] **Emit, in the same transaction as the change.** Wherever the change commits, append to the outbox through the existing `outbox.Writer`. The events to cover are V1's list: proposal created, reminder 6 hours before `effective_at`, applied, vetoed, cancelled; freeze and unfreeze; membership and role changes; credential enrolled or revoked; agent connected or revoked; a payout destination changed (Phase 17); each stage of an ownership transfer.
+- [ ] **Notify the party acted upon**, not only the actor. Removing a guardian notifies that guardian; demoting an admin notifies them.
+- [ ] **Security notifications cannot be disabled.** There is deliberately **no preference table**. A test asserts that no code path suppresses a `security.*` kind.
+- [ ] **Bounces are an account-health problem.** The SES configuration set (Task 13.7) publishes bounce and complaint events to an SNS topic delivered into an SQS queue. A worker job `ses_feedback` reads the queue, sets `notification.failed_at` for the matching delivery, and the account's summary gains `health: [{kind: "notification_failing", user_id, since}]`. SQS is private; an SNS HTTPS endpoint would have been a new public route to authenticate. Add the queue and the worker's `sqs:ReceiveMessage` permission to Terraform (Tasks 13.4 and 13.7).
+- [ ] `GET /v1/accounts/{id}/notifications`, cursor-paginated, readable by any member (V1 Task 6.2's open step).
+- [ ] The worker's task role gains `ses:SendEmail`. It still holds no signer.
+- [ ] **Tests:** V1's list (`TestProposalNotifiesGuardianImmediately`, `TestExpiringProposalSendsReminder`, `TestTargetOfActionIsNotified`, `TestSecurityNotificationsCannotBeDisabled`, `TestBouncedNotificationSurfacesAsAccountHealth`, `TestNotificationRidesTheSameTransaction`) plus `TestRelay_RunTwiceSendsOnce`, `TestRelay_SendFailureDoesNotLoseTheEvent`, `TestNotificationLinks_NeverCarryAnAction`.
+
+> **Why a relay and not sending inline**
+> An inline send inside the request makes every administrative change depend on SES being up, and sends mail for a change whose transaction later rolls back. The outbox row commits or rolls back with the change, so a notification exists exactly when the change does.
+
+### Task 15.2: WebAuthn enrolment
+
+**Files:**
+- Create: `internal/modules/account/webauthn.go`, `webauthn_test.go`, `internal/modules/account/webauthntest/` (a software ES256 authenticator that produces valid registration and assertion payloads, for unit and integration tests)
+- Modify: `go.mod` (`github.com/go-webauthn/webauthn`, pinned), `internal/modules/account/ports.go` (a `WebAuthnVerifier` port that wraps the library, so `service.go` never imports it), `internal/infrastructure/config/config.go`, `.env.example`, `internal/app/routes.go`, `api/openapi.yaml`
+
+- [ ] **Config.** `WEBAUTHN_RP_ID` (the owner's decision: `cleargatefinance.xyz`), `WEBAUTHN_RP_NAME`, `WEBAUTHN_ORIGINS` (a comma-separated list: `https://app.cleargatefinance.xyz`, and `http://localhost:5173` for development). Boot refuses when the RP ID is not a suffix of every origin's host, when an origin is plain `http` and not `localhost`, or when the list is empty with WebAuthn on. The RP ID is permanent: changing it later means every customer enrols again (V1 Revision note, 4 November).
+- [ ] **Endpoints** (V1 Task 2.9): `POST /v1/webauthn/credentials/begin`, `POST /v1/webauthn/credentials/finish`, `GET /v1/webauthn/credentials`, `DELETE /v1/webauthn/credentials/{id}`.
+- [ ] **Accepted algorithms:** ES256 and EdDSA, and nothing else, rejected explicitly rather than inherited from the library's defaults. Attestation `none`. `userVerification: required`. The origin and RP ID hash are checked on every ceremony.
+- [ ] **Challenges live in Postgres, not Redis.** Redis is disposable by design, and a flush inside the five-minute window would reopen a consumed challenge. Consume with `UPDATE webauthn_challenge SET consumed_at = now() WHERE challenge = $1 AND consumed_at IS NULL AND expires_at > now() RETURNING …`, so concurrent use has exactly one winner.
+- [ ] **Two credentials before signing** (V1's gate), and revoking below two is refused while the user holds `owner`, `admin` or `guardian`. The second credential must be a distinct authenticator (a different `aaguid`, or a different `credential_id` when the `aaguid` is zero, as with synced passkeys).
+- [ ] **`sign_count`** is stored. A decrease from a non-zero value logs `alert=webauthn_counter_regressed`, and **never rejects on its own**, since synced passkeys return zero forever (V1 Why box). `backup_eligible` and `backup_state` are stored and returned, so the console can show a device-bound or synced posture.
+- [ ] **Addition to V1's design, for the owner to confirm: enrolling a credential must be harder than using one.** V1 makes signing strictly stronger than TOTP step-up, but a credential's *enrolment* is the weak link: an attacker with a stolen session and one relayed TOTP code could enrol their own passkey, then sign mandates. So:
+  - the user's **first** credential needs the TOTP step-up (there is nothing stronger yet);
+  - every **later** credential also needs an assertion from an existing one;
+  - a newly enrolled credential **cannot sign for `WEBAUTHN_NEW_CREDENTIAL_COOLDOWN`** (default `24h`, `0` in the sandbox), and enrolment notifies every other credential's owner (Task 15.1).
+
+  This is a deliberate friction at the one moment an attacker needs it. The cost is a day's wait before a brand-new device can sign, and a lost-all-credentials case that goes through the break-glass runbook (Task 15.6).
+- [ ] **Tests:** V1's list (`TestEnrol_StoresPublicKeyOnly`, `TestCannotSignWithFewerThanTwoCredentials`, `TestSecondCredentialMustBeDistinctAuthenticator`, `TestRevokedCredentialCannotSign`, `TestCannotRevokeBelowTwoWhilePrivileged`, `TestChallengeIsSingleUse`, `TestChallengeExpires`, `TestEnrolRejectsUnsupportedAlgorithm`) plus:
+  - `TestChallenge_ConsumedByExactlyOneOfTwoConcurrentCalls`
+  - `TestOrigin_MustMatchConfiguredList`
+  - `TestConfig_RPIDMustBeSuffixOfEveryOrigin`
+  - `TestEnrol_LaterCredentialRequiresExistingAssertion`
+  - `TestNewCredential_CannotSignDuringCooldown`
+  - `TestCounterRegression_AlertsButDoesNotReject`
+
+### Task 15.3: Signed mandates
+
+**Files:**
+- Create: `internal/infrastructure/crypto/canonical.go` and tests (RFC 8785 JCS, which clears the `TODO(scaffold)` in `crypto.go` for canonical JSON; Task 16.2 reuses it), `internal/modules/mandate/signing.go`, `migrations/NNNNNN_mandate_draft.{up,down}.sql`
+- Modify: `internal/modules/mandate/{service.go,repo_postgres.go,domain.go}`, `internal/modules/payment` (the authorization path), `api/openapi.yaml`, `internal/infrastructure/config/config.go` (`MANDATE_APPROVAL_SCHEMES`)
+
+Read V1 Tasks 3.1 and 3.2 first: signed bytes are stored opaque and never re-marshalled, and the challenge is the SHA-256 of the canonical payload, so the assertion proves *what* was approved.
+
+- [ ] **Flow** (V1 Task 3.1), as two routes so that neither is overloaded:
+  1. `POST /v1/agents/{id}/mandate-drafts` takes the rules. The server canonicalises once, stores a `mandate_draft` row (the exact bytes, their digest, the agent, the proposer, `expires_at`, `consumed_at`), and returns `{ draft_id, payload (base64), challenge (base64url of the digest), rules (parsed from the payload, for display), expires_at }`.
+  2. `POST /v1/mandate-drafts/{id}/sign` takes the WebAuthn assertion. The server checks the four things V1 lists before writing anything: the challenge equals the digest of the bytes **it** holds, the origin is allowed, the UV flag is set, and the challenge is unconsumed. Then it inserts the mandate as `webauthn`, from the draft's stored bytes.
+- [ ] **The console builds nothing.** It displays `rules` as returned, passes `challenge` to `navigator.credentials.get`, and posts the assertion back (AGENTS.md).
+- [ ] **The authorization path verifies the signature before it trusts a cap.** `mandate.Current` verifies a `webauthn` row against the credential's stored public key, then parses the caps from the verified bytes. A row that does not verify is **not enforced**: the payment declines with a new reason code **`mandate_unverifiable`** (advice: "Stop; a person must re-approve the mandate"), logs `alert=mandate_signature_invalid` at `page` severity, and records the failing check. This is the one place a forged row is caught (V1's Why box on `TestAuthorizationRejectsMandateWithInvalidSignature`), so it is not optional. Like Task 10.6, it is a public contract change: the `ReasonCode` enum, the `reason_code` CHECK and `Decide`'s order table change together, and clients must tolerate an unknown code.
+- [ ] **A mandate signed by a credential that was later revoked stays valid.** The signature was valid when it was made, and revocation stops *future* signing. A compromised credential is handled by freezing the account and re-signing, which the compromise runbook says.
+- [ ] **Approval policy.** `MANDATE_APPROVAL_SCHEMES` is a list of `webauthn` and `session_stepup`. It governs both who may approve a *new* mandate and which stored mandates are *enforced*. Boot refuses an empty list. Local development and the demo run `session_stepup`. Staging runs `webauthn,session_stepup` from the day this ships, and drops to `webauthn` once every Cohort 1 owner has re-signed (the console prompts, Task 15.5; a query lists who has not). Production runs `webauthn` only, which Task 19.4's gate checks.
+- [ ] **Every new version is signed, tightening included.** Tightening only skips the timelock (V1 Task 3.2), not the signature.
+- [ ] **Hot-path cost.** One ES256 or EdDSA verification and one credential lookup per authorization, in-process, with no cache: a cache of "this mandate verified" that fails open would defeat the check. Task 16.1's gate measures it. If it costs more than a few milliseconds, the answer is to batch the lookup into the existing mandate query, not to skip the check.
+- [ ] **Tests:** V1's list (`TestCanonicalise_IsStableAcrossMarshals`, `TestChallengeIsDigestOfCanonicalPayload`, `TestVerify_FailsOnAnyMutation`, `TestVerify_FailsOnWrongCredential`, `TestVerify_RejectsMismatchedChallenge`, `TestVerify_RejectsWrongOrigin`, `TestVerify_RejectsMissingUserVerification`, `TestVerify_RejectsReplayedChallenge`, `TestServerHoldsNoMandateSigningKey`, `TestAuthorizationRejectsMandateWithInvalidSignature`, `TestSignedByMatchesCredentialOwner`) plus:
+  - `TestDraft_ExpiresAndIsSingleUse`
+  - `TestSign_RefusedUnderTwoCredentials`
+  - `TestSign_RefusedDuringCredentialCooldown`
+  - `TestAuthorize_TamperedCapsDeclineAsMandateUnverifiable`. It edits `signed_payload` directly in the database; the generated cap columns follow the tampered bytes, and only the verification catches it.
+  - `TestAuthorize_StepupMandateRefusedWhenSchemeNotApproved`
+  - `TestApprovalPolicy_EmptyListRefusesBoot`
+  - `TestRevokedCredential_PastMandateStillEnforced`
+
+### Task 15.4: Guardian, timelock and control changes
+
+**Files:**
+- Create: `internal/modules/account/{guardian.go,controlchange.go}` and tests, a worker job file `internal/app/jobs_controls.go`
+- Modify: `internal/modules/mandate`, `internal/modules/account/accounts.go` (freeze provenance), `api/openapi.yaml`, a migration only if `account` has no record of who froze it (check for `frozen_by`; add it with the time an unfreeze was requested if absent)
+
+V1 Task 2.8 is the design: three tiers (Simple, Self-guarded, Guarded), a guardian whose power is subtractive only, three classes of change, and the asymmetry "turning protection on is instant, turning it off is slow and loud". Read its Why boxes before changing any rule.
+
+- [ ] **Routes** (V1 Task 6.2's open list):
+  - `POST /v1/mandates/{id}/veto` (guardian only) and `DELETE /v1/mandates/{id}` (the proposer withdraws a pending proposal);
+  - `POST /v1/accounts/{id}/control-changes` (**owner only**), with `POST …/{cid}/veto` and `DELETE …/{cid}`;
+  - appointing the first guardian (instant, owner) and `PUT /v1/accounts/{id}/timelock` (raising is instant; lowering is the `lower_timelock` control change);
+  - guardian freeze; unfreeze instant for whoever froze and delayed for anyone else;
+  - `PUT` and `DELETE /v1/accounts/{id}/members/{uid}`, which refuse `guardian` outright (Task 10.5 builds the rest of the membership routes).
+- [ ] **Every proposal, veto and confirmation carries a WebAuthn assertion** over its canonical payload (purposes `sign_mandate` and `confirm_control_change`, with `bound_to` the proposal's id), so a server compromise cannot manufacture either party's decision.
+- [ ] **Worker jobs** (neither signs anything): `pending_mandate_promotion` promotes a `pending` mandate to `active` once `effective_from` has passed with no veto, superseding its predecessor, in one conditional statement. `control_change_apply` applies a due `account_control_change`, and sends the 6-hour reminder (Task 15.1). Both are safe to run twice, and Task 9.4's advisory lock keeps two from running at once.
+- [ ] **`effective_at` is fixed at proposal time and never recomputed**, and removing a guardian does not accelerate or apply pending proposals (V1's two edge cases). Both have named tests below.
+- [ ] **Tests:** V1's list in full (`TestSimpleTierAppliesChangesInstantly`, `TestFirstGuardianCanBeAppointed`, `TestGuardianCannotVetoOwnRemoval`, `TestGuardianCanVetoTimelockReduction`, `TestRaisingTimelockIsInstant`, `TestLoweringTimelockWaitsCurrentTimelock`, `TestGuardianCannotProposeAnyChange`, `TestGuardianVetoStopsPendingMandate`, `TestVetoedProposalCanBeReProposed`, `TestProposerCanCancelOwnProposal`, `TestFrozenAccountDeclinesAllAgentPayments`, `TestFreezerCanUnfreezeInstantly`, `TestOtherUserUnfreezeIsDelayed`, `TestPendingProposalKeepsOriginalEffectiveAt`, `TestRemovingGuardianDoesNotApplyPendingProposals`, `TestOnlyOwnerCanProposeControlChange`, and `TestVetoedMandateNeverActivates`, `TestTighteningSkipsTimelock` from Task 3.2) plus `TestPromotionJob_RunTwiceActivatesOnce` and `TestControlChangeAssertion_BoundToProposal`.
+
+### Task 15.5: The console for signed authority
+
+All screens render what the server returns (Phase 12's rule). The browser calls `navigator.credentials`, using a small pinned helper library such as `@simplewebauthn/browser` or the raw API, and does no cryptography of its own.
+
+- [ ] **Onboarding.** After TOTP enrolment, a guided "Add a passkey" step, then "Add a second one (a phone or a security key)". V1's risk row says enrolment friction is discovered at the worst moment, so it belongs in sign-up, not at the first mandate. Show `backup_eligible` as "synced" or "this device only", with one sentence on what that means.
+- [ ] **Sign a mandate.** The Task 12.6 editor now creates a draft, shows the server's `rules` ("review what you are approving"), asks the authenticator, then posts the assertion. Copy says plainly what the passkey prompt cannot show: a prompt names the site, not the amount (V1's "what this does not defend" box).
+- [ ] **Re-sign prompt** for any agent whose mandate is `session_stepup` while staging is migrating (Task 15.3).
+- [ ] **Credentials screen:** list, add, revoke, with the cooldown shown as the server returns it.
+- [ ] **Notifications** list, and the account-health banner for a failing recipient.
+- [ ] **Guardian and pending changes:** appoint a guardian, a pending-change list with `effective_at` as given, a veto button for the guardian, a cancel button for the proposer, and a freeze button for the guardian.
+- [ ] **Tests:** Playwright runs Chromium's **virtual authenticator** (`WebAuthn.addVirtualAuthenticator` over the DevTools protocol), so the whole journey, including enrolling two credentials, signing, and a guardian veto, runs in CI without hardware. Run `design:accessibility-review` on these screens; a passkey flow with no keyboard path is a lockout.
+
+### Task 15.6: Rollout and runbooks
+
+- [ ] **Order of deployment to staging:** 15.1 (notifications) first and soak for a few days, then 15.2 with `WEBAUTHN_*` set but nothing requiring it, then 15.3 with `MANDATE_APPROVAL_SCHEMES=webauthn,session_stepup`, then 15.4. Each step ships behind its own config, so a rollback is a redeploy and not a migration.
+- [ ] **Runbooks** (V1's Sequencing risks require them *before the first customer account has a guardian*): `break-glass.md` (a human verifies identity at Cleargate; deliberately not an endpoint, because a reset that mints authority from an email link is a backdoor around everything above it), `lost-all-credentials.md`, `owner-and-guardian-compromised.md`, `owner-gone.md`.
+- [ ] **Done when:** a Cohort 1 owner has re-signed their mandate with a passkey, the staging list is `webauthn` only, and a guardian veto, a timelocked raise and a tightening have each been exercised end to end on staging.
+
+---
+
+# Phase 16 — Evidence and integrity
+
+**Outcome:** the record of what agents tried and what was decided is complete, tamper-evident and measured. This is V1's Tasks 6.3, 5.4, 5.6 and 5.5, in an order chosen so that cost is measured before it is added.
+
+### Task 16.1: The latency gate
+
+**Build this before Task 15.3 merges.** Signed-mandate verification (15.3) and the chain-head lock (16.2) both land on the path whose budget is 100 ms (§6.6). Without a baseline there is nobody to blame for the day it slips.
+
+**Files:** `test/bench/authorize_test.go` (`//go:build integration`), `Makefile` (`make bench`), `.github/workflows/ci.yml` (a job), `docs/performance.md`
+
+- [ ] Benchmark `POST /v1/payments/authorize` through the real HTTP handler against a seeded database: 1,000 accounts, 5 agents each, a month of decisions, and realistic concurrency (8 to 64 workers), using the fake chain and custodian (`solanatest`, `cdptest`). It measures the **decision**, the part the whitepaper budgets, and reports the signing step separately, since signing adds a custodian round trip and two chain reads that the budget does not cover (README, Known gaps).
+- [ ] CI **fails the build above 100 ms p99 for the decision** on the CI runner, with a documented margin for runner noise. Record the baseline numbers in `docs/performance.md`, and update them with each task that adds to the path.
+- [ ] A **staging load test** (k6 or similar) at the ALB with a fake merchant, to put an honest number on the whole request, CloudFront included. Run it before each cohort.
+- [ ] **Tests:** `TestBench_FailsAboveBudget` proves the gate itself, with a deliberately slow stub.
+
+### Task 16.2: The hash-chained decision log
+
+**Files:** `internal/modules/decisionlog/chain.go` and tests, `migrations/NNNNNN_decision_chain.{up,down}.sql`, `internal/infrastructure/crypto/` (shares Task 15.3's canonical JSON), a worker job, `docs/data-architecture.md` (update)
+
+Read V1 Task 5.4 and data-architecture.md §8 first.
+
+- [ ] **First, move free text out of `decision.features`.** The snapshot holds the agent's `purpose` and `task` and the full `resource_url`, any of which can carry personal data or a secret in a query string (V1 Task 5.4). Once records are hash-chained, a field that has to be erased cannot be. Store such fields encrypted per account through `crypto` envelope encryption (AGENTS.md: a secret the server must read back goes through it), and keep a reference plus a digest in the snapshot, so destroying an account's key is erasure (crypto-shredding). The features replay test (Task 4.2) must still reconstruct the same decision from the digest and reference. **This is a one-way door for every record written after the chain starts, so do it first.**
+- [ ] **One chain per account**, not one global chain. A global chain would serialize every authorization in the system behind one row. A per-account chain serializes only one account's payments, which the transaction already does through its bucket locks. Add a `decision_chain_head (account_id PK, hash, seq)` row, locked `FOR UPDATE` **last** in the transaction's fixed lock order, and document that order beside the code.
+- [ ] **Hash in the transaction, sign as a checkpoint.** Computing `hash = SHA-256(prev_hash ‖ canonical_record)` is microseconds and belongs inside the authorize transaction. **A signature does not**: a KMS call is tens of milliseconds, and it would hold the account's locks while it ran. So instead of V1's signature per record, a worker job signs a **checkpoint**, `{account_id, seq, head_hash, at}`, every minute for each chain that moved. The head hash covers every earlier record, so one signature attests to all of them. **This is a deliberate change from V1 Task 5.4, for the owner to confirm.** The nullable `signature` column on `decision` stays unused, or is dropped in the migration.
+- [ ] **The signing key** lives in AWS KMS, with `kms:Sign` granted to one role and one key. **Confirm which asymmetric key spec KMS offers in `eu-central-1` for Ed25519 before choosing**, and fall back to ECDSA P-256 if not. The checkpoint job runs in the worker, whose README claim "holds no credential that can move money" stays true, since the key signs attestations and can never move funds. Update the README's "What each process can do" table to say so.
+- [ ] **Verification.** `decision_chain_verify` runs daily: recompute each chain from its start (or from the last verified checkpoint), compare against the stored hashes and verify the checkpoint signatures. A break logs `alert=decision_chain_broken` at `page` severity. The console shows "verified through <time>" per account, as returned by the server.
+- [ ] **Tests:** V1's (`TestRecord_LinksToPreviousHash`, `TestVerifyChain_DetectsTampering`, `TestRecord_SignatureVerifies`, the last as a checkpoint test) plus `TestChain_ConcurrentAuthorizationsKeepOneLinearChain`, `TestChain_TwoAccountsDoNotContend`, `TestFreeText_ErasableWithoutBreakingChain`, `TestCheckpoint_SignatureVerifiesAgainstPublicKey`, `TestAuthorize_StaysUnderBudgetWithChain`, which is Task 16.1's gate.
+- [ ] **Docs.** AGENTS.md states hash-chaining as an invariant while the README's Known gaps says it is not built. Update both once this lands, and until then keep them consistent.
+
+### Task 16.3: Delivery reports and counterparty listings
+
+**Files:** `internal/modules/payment` (the delivery route), `internal/modules/counterparty` (listing tiers), a migration, `api/openapi.yaml`
+
+- [ ] **`POST /v1/payments/{id}/delivery`** on the agent surface (V1 Task 6.2): the agent reports whether it received what it paid for. Record **payment observed** and **delivery observed** as two distinct facts and never collapse them into one status (V1 Task 5.5). The merchant's own `200` is not evidence of delivery of anything but a response; an agent's report is a **self-report**, stored as `reported_by_agent` and never treated as truth. It feeds loss observation (16.4) and listing statistics with that caveat.
+- [ ] **Listing tiers:** `observed` (created by traffic, limited display, carrying a claim hook) and `registered` (claimed by a verified payee, full statistics). Only the schema and the hook are built. The claim flow waits for merchant onboarding, which is out of scope (V1).
+- [ ] **A read-only directory** is open and rate-limited, never gated to customers (V1 §11.1 box): `GET /v1/directory/payees`. It shows payment counts and, only where delivery was reported, delivery statistics, labelled as reported.
+- [ ] The quickstart, the demo agent and the SDK snippets call the delivery route after each paid response. Missing reports are normal and mean "unknown", never "failed".
+- [ ] **Tests:** V1's (`TestObservedListingShowsNoDeliveryStatsWithoutConfirmation`, `TestClaimingListingPreservesHistory`, `TestPaymentObservedIsNotDeliveryObserved`) plus `TestDeliveryReport_OnlyByTheAgentThatPaid`, `TestDeliveryReport_IsIdempotent`.
+
+### Task 16.4: Silent loss observation
+
+**Files:** `internal/modules/payment/lossobservation.go`, a migration
+
+- [ ] Record every event that **would** have been a covered loss had a guarantee existed: non-delivery (from 16.3), dispute, and approvals that turned out to be wrong, with full context: payee, category, amount, reason, and which check let it through. The record comes from the same transaction that writes the triggering fact.
+- [ ] **Pay out nothing, show nothing.** The table has no route, no console screen, no summary field and no export. `TestLossObservation_NeverAppearsInTheContract` scans `api/openapi.yaml` for any property or path derived from it and fails if one exists. AGENTS.md: no code references a reserve, a coverage limit or absorbing a loss.
+- [ ] **Tests:** V1's (`TestNonDeliveryWritesLossObservation`, `TestLossObservationNeverAffectsBalance`, `TestLossObservationCapturesFailingCheck`).
+
+---
+
+# Phase 17 — Money in and out, for real money
+
+**Outcome:** the funding side is safe to run with real USDC: deposits are screened, withdrawals exist and are constrained, verification tiers can be lifted, and a depeg is visible. Everything here is a **mainnet blocker** (V1 Revision note, 7 November) and none of it matters on devnet, which is why it comes after the beta. Phase 17 needs two owner decisions first (D10, D11).
+
+### Task 17.1: Spike: what screening exists on Solana
+
+- [ ] V1 assumed CDP's built-in KYT, **which this plan has not verified for Solana.** Before designing anything, write `docs/research/address-screening.md` (dated, as AGENTS.md says of that directory) answering:
+  - does CDP offer address screening, on Solana, through an API we can call from the deposit path;
+  - what does a verdict look like, and how fast;
+  - what do the alternatives cost (a dedicated vendor);
+  - what the legal owner of the decision requires.
+- [ ] **Done when** the owner has chosen a provider. The tasks below are written against a port, so the choice changes one adapter.
+
+### Task 17.2: Screening in the funding path
+
+**Files:** `internal/modules/account/funding.go` (the `TODO(mvp)` in `internal/app/adapters.go`), `internal/modules/settlement/deposits.go`, a migration `address_screening`
+
+- [ ] An `AddressScreener` port, with an adapter from 17.1 and a fake. A table `address_screening (chain, address, verdict, provider, reference, screened_at)`: one verdict per address and provider, append-only, with a staleness window.
+- [ ] **A deposit is credited only after its source is screened.** The `DepositWatcher` records a deposit as `pending_screening` and a job screens each source owner whose balance decreased in the transaction (a multi-source transfer screens each source). Clear sources let the credit proceed through the existing gate. Today the gate is called with no chain or address, which skips screening (V1 Revision note, 7 November), so removing that bypass is part of this task, and `TestFundingRefusedWhenHistoryNotWired`'s sibling, `TestFundingRefusedWhenScreenerNotWired`, proves it fails closed.
+- [ ] **A flagged source is quarantined, alerted (`alert=deposit_flagged`, `page`), and never automatically returned.** Returning sanctioned funds is a compliance action for a person, not a job. The runbook says who decides.
+- [ ] **Quarantined deposits get an ops return path** (resolving the README's Known gap, "a deposit past the funding cap is not credited or returned"): `cmd/ops return-deposit <deposit id>`, which needs no ledger entry since the deposit was never credited. It logs who ran it and why, and requires a second operator's confirmation for flagged deposits.
+- [ ] **Tests:** `TestDeposit_NotCreditedUntilSourceScreened`, `TestDeposit_FlaggedSourceQuarantinedAndAlerted`, `TestDeposit_MultiSourceScreensEachSource`, `TestFunding_RefusedWhenScreenerNotWired`, `TestReturnDeposit_NeverWritesLedgerEntry`.
+
+### Task 17.3: Withdrawals and return to source
+
+**Files:** `internal/modules/settlement/withdrawal.go`, `internal/modules/account`, a migration (`payout_destination`, `withdrawal`), `api/openapi.yaml`, the console
+
+V1 Task 2.7's rules: a `basic` principal may only withdraw to an address that funded them; a `verified` principal may withdraw anywhere; the destination is screened at **every** tier; and "anything that creates authority or redirects money is signed, never merely stepped up" (V1 Task 2.4's Why box).
+
+- [ ] **Payout destinations** are added with a **WebAuthn assertion** over the destination (purpose `confirm_control_change`, or a new `sign_payout_destination` purpose added to the CHECK in a migration), subject to the timelock when one is set, and notified (Task 15.1).
+- [ ] **`POST /v1/accounts/{id}/withdrawals`** creates a withdrawal: a `withdrawal` ledger entry (customer funds to the on-chain float) in the same transaction that records it, then the **API** has the account's CDP wallet sign the transfer, since only the API holds that credential. The worker confirms it from the chain exactly as it confirms payments, and an expired or failed withdrawal posts a reversing entry.
+- [ ] **Order of locks and checks:** the same rule as a payment: lock the debited `customer_funds` buckets, check the balance, post, and never go negative.
+- [ ] **The wallet check** (`wallet_reconcile`) must treat a withdrawal in flight like a payment in flight: the ledger drops before the chain does, which can only make the wallet look fuller than promised.
+- [ ] **Tests:** V1's (`TestUnverifiedWithdrawalMustReturnToSource`, `TestVerifiedPrincipalMayWithdrawAnywhere`, `TestWithdrawalScreensDestinationAtEveryTier`, `TestAddressComparisonIgnoresCase`) plus `TestWithdrawal_BalanceNeverGoesNegativeUnderConcurrency`, `TestWithdrawal_ExpiryRestoresFunds`, `TestPayoutDestination_RequiresPasskeyAssertion`.
+
+### Task 17.4: KYC mirror and the on-ramp (after D10)
+
+- [ ] **Per V1 Task 2.7:** `onramp_customer (provider, external_id) → principal_id`, the provider's verdict mirrored onto `principal_identity.kyc_status` with its `kyc_reference`, `retention_hold_until` set on the first successful funding, and tiers lifted on a `verified` verdict. Webhooks are untrusted input: verify the signature, make them idempotent by provider reference, and treat a customer we cannot map to a principal as an **alert, never a credit**.
+- [ ] **A deviation from V1's Phase 8, for the owner to confirm: the webhook never posts to the ledger.** V1 had the on-ramp webhook produce the `funding` entry. But deposit detection (built) already credits what arrives on chain, keyed by transaction and wallet, and a second credit path is a double-credit waiting to happen. The on-ramp delivers USDC **to the account wallet's address**, so it arrives through the one existing path, and the webhook only carries the KYC verdict and ties the deposit to the customer.
+- [ ] **Tests:** V1's (`TestFundingRejectedWhenKycNotVerified`, `TestKycWebhookIsIdempotent`, `TestKycWebhookRequiresValidSignature`, `TestUnknownOnrampCustomerIsRejected`, `TestFirstFundingSetsRetentionHold`) plus `TestOnrampWebhook_NeverWritesToTheLedger`.
+
+### Task 17.5: Peg monitor
+
+**Files:** `internal/modules/settlement/peg.go` and tests, a migration (`token_price_reading`, `token_status`), a worker job, `internal/modules/summary`, `api/openapi.yaml`, the console
+
+V1 Phase 8 specifies it fully; build it as written:
+
+- a worker reads USDC/USD from two independent sources every minute and stores each reading as a fact;
+- a token is `pegged`, `impaired` or `unknown`: `impaired` only after both sources stay outside ±0.5% of $1 for 15 consecutive minutes, back to `pegged` only after 60 minutes inside, and `unknown` when sources disagree by more than the band or are both stale;
+- while not `pegged`, every balance surface shows what backs the balance and its market value beside it (never par as if par were a price when `unknown`);
+- it **never posts to the ledger, never declines a payment, never blocks a deposit**, and owners are notified on entering and leaving `impaired` (Task 15.1);
+- the status and price at decision time join the feature snapshot as **features v2**. Version the snapshot format and keep `Decide`'s replay test (Task 4.2) green for both versions, since old decision records must still replay.
+- [ ] **Choose the two price sources** (they must be independent of each other and of CDP) and record the choice in a Revision note.
+- [ ] **Tests:** V1's four (`TestPegMonitor_ImpairedOnlyAfterSustainedDeviation`, `TestPegMonitor_UnknownWhenSourcesDisagree`, `TestPegMonitor_NeverPostsToLedger`, `TestSummary_ImpairedShowsMarketValueBesideBalance`) plus `TestSnapshot_V1RecordsStillReplay`.
+
+### Task 17.6: Spike: enforcement below our backend (blocked on D11)
+
+- [ ] V1 Phase 8 proposed expressing mandates partly as CDP Spend Permissions and Policies, so a compromise of our servers still cannot exceed them. Whether that is the primary control model is the **owner's open decision from V1, which this plan does not presume.** The spike only produces evidence: `docs/research/cdp-policies-on-solana.md`, answering whether CDP Server Wallet policies on Solana can express per-transaction caps and payee allowlists, with what latency and failure behaviour, and what it costs. No code until the owner decides.
+
+---
+
+# Phase 18 — Batch-settlement groundwork (exact only)
+
+**Decision (owner, 13 November 2026):** payments stay `exact`. Netting, channels, vouchers and redemption are **not built** in V2. Only the parts that are expensive to retrofit later are prepared. The rule for what counts: *prepare what touches historic rows or public contracts; leave out what adds new tables.* A table can be added later without touching one existing row, whereas a column or a state on a live money table cannot.
+
+**Prepared (this phase):**
+
+| Item | Why it cannot wait |
+|---|---|
+| Hold states on ledger entries (Task 18.1) | A new state on a live ledger table is a migration over every historical row, run against real balances (V1 Task 1.5) |
+| A `scheme` on every transfer, and scheme chosen through one function (Tasks 18.2, 18.3) | Every existing `payment_transfer` row needs a value, and merchants will start to offer `batch-settlement` options |
+| A design note with the migrations a future batch rail needs (Task 18.4) | V1 Phase 7 was written before the SDK's batch scheme was read; building from an unverified sketch puts a wrong schema on money tables |
+
+**Deliberately not built, and where to find the design when it is wanted:** `settlement_profile`, `settlement_channel` and `settlement_voucher` tables (V1 Task 7.2), the delegated voucher-signing key and its metered-signing economics, channel opening and top-up, redemption and cadence (V1 Task 7.3), promotion policy (V1 Task 7.1), treasury reconciliation and the hourly solvency invariant (V1 Task 7.4). All stay in the V1 plan, marked **Not in MVP**, as the starting point for a future decision.
+
+### Task 18.1: Hold states, dormant
+
+**Files:** a migration `NNNNNN_ledger_holds.{up,down}.sql`, `internal/modules/ledger`, `internal/app/worker.go` (a job `hold_expiry`, which finds nothing)
+
+Read V1 Task 1.5 and data-architecture.md's ledger section first.
+
+- [ ] Model `committed`, `released`, `refunded` and `expired` on the ledger entry, with an `expires_at`. A hold that expires posts a **reversing entry** to the buyer, never an update (§8.3).
+- [ ] **Dormant:** nothing but tests puts an entry in a hold state, and a test asserts that no production code path does. A hold needs an on-platform payee whose settlement timing Cleargate controls, which does not exist on `exact`.
+- [ ] No code references a reserve, a coverage limit or absorbing a loss (AGENTS.md).
+- [ ] **Tests:** V1's (`TestHold_CommitsWithoutReleasing`, `TestHold_ReleaseRequiresDeliveryConfirmation`, `TestHold_ExpiryRefundsBuyer`, `TestHold_DoubleReleaseIsRefused`) plus `TestNoProductionPathCreatesAHold`, and a run of `ledger_book_check` over a book that includes held entries.
+
+### Task 18.2: Scheme as data
+
+**Files:** a migration `NNNNNN_transfer_scheme.{up,down}.sql`, `internal/modules/settlement/{domain.go,ports.go,requirement.go}`, `internal/infrastructure/solana/x402.go`
+
+- [ ] `payment_transfer.scheme text NOT NULL DEFAULT 'exact' CHECK (scheme IN ('exact','upto','batch-settlement'))`. The CHECK admits values nothing writes yet, so a future rail needs no migration to start writing them.
+- [ ] A `Scheme` type in the settlement domain, with the three values (V1 Task 7.1), and `Rail.Supports(Scheme) bool`. The Solana rail supports `exact` only.
+- [ ] **Option selection becomes one function:** `Select(options []Option, supports func(Scheme) bool, network, mint string) (Option, error)`. Today `requirement.go` hard-codes `option.Scheme != "exact"`. With only `exact` supported the behaviour is unchanged. A merchant that offers `batch-settlement` first and `exact` second is paid with `exact`; a merchant that offers **only** `batch-settlement` gets the recorded decline from Task 10.6, with the reason "this merchant requires a payment scheme Cleargate does not support yet", which is the honest answer to the question testers will ask the first time they meet one.
+- [ ] **Tests:** `TestSelect_SkipsUnsupportedSchemes`, `TestSelect_OnlyBatchOfferIsUnpayableNotMalformed`, `TestTransfer_RecordsScheme`, `TestRail_SupportsExactOnly`
+
+### Task 18.3: One entry point for realising a payment
+
+- [ ] V1 Task 7.1 makes the whole scheme-selection algorithm one branch inside `Realize(ctx, RealizeParams)`. Today the payment module calls settlement to sign directly. Route that call through a `Realize` method whose body is "look up the (account, payee) profile through a `Profiles` port, which returns `exact` for everyone, and sign through the rail". The port has one in-memory implementation and **no table**.
+- [ ] **The point is the seam:** when netting arrives, the branch and the profile table appear behind `Realize`, and the payment module, the authorization pipeline and the console change not at all.
+- [ ] **Tests:** `TestRealize_DefaultsToExact`, `TestRealize_ProfilesPortErrorFallsBackToNothing`. A profile lookup that fails must fail the payment closed and never guess a scheme.
+
+### Task 18.4: Design note: what a batch rail would change
+
+- [ ] Write `docs/research/batch-settlement-notes.md`, dated, from the **x402 specification and the Go SDK as they are on the day**, not from V1's sketch. It must state:
+  - what the SDK actually provides for `batch-settlement` (client, server, facilitator);
+  - **which migrations a batch rail needs** (new tables, and which existing ones change), so Phase 18's choices can be checked against them;
+  - what a payment's status would mean when its voucher is signed but not redeemed, and whether the `settled` vocabulary needs a new value (a public enum change, so it is a contract decision);
+  - that `Decision.payment.transaction` (Task 10.3) is **null for a netted payment**, since a batch hash identifies no single payment (V1 Sequencing risks);
+  - **the billing boundary with CDP**: V1 records that CDP prices wallet operations per call (at the time, $0.005 each after a free allowance), which would make per-voucher signing cost more than the payments. Confirm the current pricing before any design relies on it.
+- [ ] **Done when** the owner can read one page and decide whether and when to build a batch rail. This task is the whole of the "decision input" for it.
+
+---
+
+# Phase 19 — Production and the mainnet gate
+
+**Outcome:** a separate production environment, and a written gate that must be green before it holds real money. **Nothing in this phase is started before the gate's inputs exist** (Phases 15 to 17 and decisions D10 and D11), because an environment built early becomes the thing that gets used before it is ready.
+
+### Task 19.1: Production environment
+
+- [ ] **A separate AWS account**, under AWS Organizations, with its own Terraform state. This is why Task 13.1 lays Terraform out as a reusable module (`deploy/terraform/modules/core`) with one environment directory per environment: production is a second instance of it, not a copy.
+- [ ] Differences from staging, all in variables: multi-AZ RDS with PITR and AWS Backup copies to a second region, one NAT gateway per AZ, customer-managed KMS keys for RDS and secrets, **WAF on and required**, GuardDuty and CloudTrail on with logs delivered to a locked bucket, ECS desired counts of at least 2 for `api`, and deletion protection everywhere.
+- [ ] **Separate CDP projects and keys** for production accounts, and **no treasury**: the faucet and the sandbox merchants are not deployed.
+- [ ] **A hostname plan for passkeys:** staging and production origins are both under `cleargatefinance.xyz`, and each environment's `WEBAUTHN_ORIGINS` lists only its own origin, so a passkey assertion for one is never accepted by the other (Task 15.2).
+
+### Task 19.2: Paging and incident response
+
+- [ ] A paging service behind the SNS alert topic (PagerDuty, Opsgenie or AWS-native), with an on-call rotation of the two of you at minimum, and every `page`-severity alert from `docs/alerts.md` routed to it. **Fire each once** and confirm a person is woken.
+- [ ] A severity table and an incident template; a status page; a published way to report a vulnerability.
+
+### Task 19.3: Security review
+
+- [ ] `govulncheck` and `npm audit` as required CI checks (the repository already patches findings, per its history), Dependabot on Go, npm and Terraform providers.
+- [ ] **An external penetration test** of the API and console, scoped to the signed-authority flow, the funding path and the session and CSRF design.
+- [ ] A secrets-rotation drill: rotate `CRYPTO_MASTER_KEYS` through the key-id mechanism, and rotate the CDP keys, on staging, and write down how long each took.
+- [ ] A review of Phase 15's threat model against the finished code: what a compromised server, a stolen session and a compromised browser can each do (V1's Task 3.1 box).
+
+### Task 19.4: The mainnet gate
+
+Nothing goes to mainnet until every box is ticked and the date is recorded in a Revision note:
+
+- [ ] Phases 15 and 16 are built, and production runs `MANDATE_APPROVAL_SCHEMES=webauthn` only (a boot check refuses anything else when `SOLANA_NETWORK` is mainnet).
+- [ ] Task 16.1's gate is green with every addition to the path, and the staging load test is within budget.
+- [ ] Task 16.2 (the hash chain) and Task 16.4 (loss observation) have been collecting for at least one cohort's worth of traffic.
+- [ ] Phase 17 is built: screening (17.2), withdrawals (17.3), the peg monitor (17.5), and KYC or on-ramp per D10 (17.4) if the first launch needs verified tiers.
+- [ ] **D10 and D11 are decided**, and the CDP control model is the one the code reflects.
+- [ ] The sandbox is off in production, and its boot refusal (Task 11.1) has been tested against the production configuration.
+- [ ] Paging works (19.2), every runbook exists (13.10, 15.6, and the mainnet ones), and the break-glass procedure has been rehearsed.
+- [ ] The penetration test's findings are closed or consciously accepted in writing.
+- [ ] **Legal review is done.** This plan does not cover it: money-transmission and sanctions obligations, and real Terms of Service and a Privacy Policy (sign-up already records consent to both documents, `account.DocumentTermsOfService` and `DocumentPrivacyPolicy`). V1's whitepaper §18 warns that discovering the custody and licensing model late costs a rewrite plus a year. Get advice before real money, not after.
+- [ ] The launch limits are conservative and recorded: start with the basic tier's cap as it stands (100 USD per person), and raise it deliberately.
+
+### After the gate
+
+Not planned in detail, in the order currently expected: **Base as a second rail** (EIP-3009 `exact`, behind the existing `Rail` and `WalletProvider`, with nothing chain-specific outside them), then a batch rail if the Task 18.4 note says it is worth it, then merchant onboarding and the directory's claim flow, which the V1 plan scoped out of the MVP.
 
 ---
 
@@ -1019,9 +1378,47 @@ These are estimates, not commitments. The long poles are not code:
 
 Both meet at Task 12.9 and Phase 14.
 
+### After the beta: Phases 15–19
+
+```mermaid
+flowchart LR
+    B["Beta: Phases 9-14<br/>(Cohort 1 live)"] --> P16a["16.1 Latency gate"]
+    B --> P15a["15.1 Notifications"]
+    P16a --> P15c["15.3 Signed mandates"]
+    P15a --> P15b["15.2 WebAuthn enrolment"] --> P15c
+    P15c --> P15d["15.4 Guardian, timelock"]
+    P15c --> P15e["15.5 Console screens"]
+    P15d --> P15e
+    B --> P18["Phase 18<br/>Groundwork (exact only)"]
+    P15c --> P16b["16.2 Hash chain"]
+    P16b --> P16c["16.3-16.4 Delivery, loss obs."]
+    B --> P17a["17.1 Screening spike"] --> P17b["17.2-17.3 Screening, withdrawals"]
+    P15c --> P17b
+    P17b --> P17c["17.5 Peg monitor"]
+    P15e & P16c & P17c & P18 --> P19["Phase 19<br/>Production and gate"]
+    D["D10, D11 decided"] --> P17b
+    D --> P19
+```
+
+| Phase | Days, one engineer | Notes |
+|---|---|---|
+| 15 Signed authority and controls | 28–36 (notifications 4–5, enrolment 3–4, signed mandates 5–6, guardian and timelock 7–9, console 8–10, rollout 1–2) | Schema exists, so most of the work is services, routes and screens |
+| 16 Evidence and integrity | 15–19 (latency gate 4–5, hash chain 6–8, delivery and listings 3–4, loss observation 2–3) | 16.1 must precede 15.3 |
+| 17 Money in and out | 23–29 (screening spike 2, screening 5–6, withdrawals 7–9, KYC and on-ramp 4–6, peg monitor 5–6) | Blocked on D10; the spike in 17.1 is independent |
+| 18 Groundwork | 9–12 (holds 3–4, scheme as data 2–3, `Realize` seam 2–3, design note 2) | Can run any time after Phase 10.6 |
+| 19 Production and the gate | 10–15, **excluding** the external penetration test and legal review, which are calendar time | Starts only when its inputs exist |
+| **Total after the beta** | **≈ 85–111 engineer-days**, about **9–12 weeks** for two people in parallel | |
+
+These are rougher than the beta's, **±50%**, because they depend on decisions not made yet (D10, D11) and on external services not yet looked at (screening, KMS key specs, the price sources). Re-estimate each phase when it starts.
+
+**Suggested order for the two of you, once Cohort 1 is live:** one person takes Phase 16.1 and then Phases 15.1 to 15.4 (they touch the same modules in sequence); the other takes the console screens for 15.5 as each backend task lands, then Phase 18 and the Phase 17 spikes, which are independent and can fill gaps while waiting on feedback.
+
+
 ---
 
-## Definition of done for V2
+## Definition of done
+
+### The beta (Phases 9–14)
 
 Demonstrable on staging, by someone who is not on the team:
 
@@ -1037,6 +1434,23 @@ Demonstrable on staging, by someone who is not on the team:
 5. Freezing stops the agent's next payment with `account_blocked`.
 6. During all of it, `ledger_book_check` and `wallet_reconcile` stay clean. An induced fault (worker stopped) reaches a person through an alarm.
 7. Every route the console used is in `api/openapi.yaml`, and the console compiled against the generated client.
+
+### Signed authority and integrity (Phases 15–16)
+
+1. A new owner enrols two passkeys during onboarding, and their mandate is approved only by a passkey assertion over the exact bytes the server stored. Editing `signed_payload` in the database makes the next payment decline `mandate_unverifiable` and page.
+2. A new credential cannot sign for 24 hours, and the owner's other credentials are told it was added.
+3. A guardian vetoes a pending mandate and a timelocked cap increase, and every action sent a notification in the same transaction as the change. A bounced address shows as an account-health problem.
+4. `authorize` stays under 100 ms p99 in CI with signature verification and the hash chain both in place, and the numbers are in `docs/performance.md`.
+5. The decision chain verifies for every account, a checkpoint signature verifies against the KMS public key, and erasing an account's key leaves the chain intact.
+
+### Real money (Phases 17–19)
+
+6. A flagged deposit is quarantined and paged, an unverified owner can withdraw only to the address that funded them, and the peg monitor shows market value beside a balance during a simulated depeg without ever declining a payment.
+7. Every box in Task 19.4's gate is ticked and dated in a Revision note.
+
+### Throughout
+
+8. Payments are `exact`. Nothing in V2 writes a channel, a voucher or a netted payment, and the one `Realize` seam (Task 18.3) is where a batch rail would plug in.
 
 ---
 
@@ -1054,6 +1468,13 @@ Demonstrable on staging, by someone who is not on the team:
 | R8 | Shared mutable staging used for demos and testers at once | A demo reset wipes testers' state | `reset-staging.md` forbids it during a cohort. Keep `demo/` runnable locally for recordings. |
 | R9 | Cost creep | NAT, RDS and Fargate run around the clock | Single NAT, small instances, ARM64. **Rough** expectation: low hundreds of USD a month; check with the AWS Pricing Calculator before the first apply. Turn `faucet` and `merchants` off between cohorts if needed. |
 | R10 | Migration incompatible with the running API during deploy | 5xx during every deploy | The expand-then-contract rule in Task 13.9 and the `add-migration` skill |
+| R11 | Passkey lockout | A user who loses every credential cannot sign, and a reset that mints authority from an email link is the backdoor an attacker would use | Two credentials before signing (Task 15.2), a cooldown on new ones, and a human break-glass runbook that is deliberately not an endpoint (Task 15.6). Written before the first guardian exists. |
+| R12 | Signed-mandate verification slows the hot path | It runs on every authorization | Task 16.1's gate exists first and fails the build above budget. Fold the credential lookup into the mandate query before ever caching a "verified" result. |
+| R13 | The beta's TOTP-approved mandates outlive the policy | Cohort 1 owners keep spending authority approved by something phishable | `MANDATE_APPROVAL_SCHEMES` governs enforcement as well as approval, a query lists owners who have not re-signed, and staging drops `session_stepup` on a date (Task 15.3). Production never has it. |
+| R14 | The hash chain serialises authorization | One chain-head lock per account could add latency | One chain per account, the head locked last in a documented order, hashing in the transaction and signing outside it (Task 16.2). `TestChain_TwoAccountsDoNotContend`. |
+| R15 | Screening is unavailable on Solana, or too slow | Deposits cannot be credited safely | Task 17.1's spike runs first and its result picks the provider. A deposit waits as `pending_screening` rather than being credited unscreened. |
+| R16 | A merchant requires `batch-settlement` | Testers meet an unpayable merchant | A recorded decline that names the reason (Task 18.2) instead of a bare `400`, and the design note (Task 18.4) so a decision has evidence. |
+| R17 | Real money arrives before the legal review | Licensing and sanctions obligations are discovered late (V1 Sequencing risks, §18) | The review is an explicit box in the mainnet gate (Task 19.4), outside this plan's estimate. |
 
 ---
 
@@ -1070,3 +1491,10 @@ Demonstrable on staging, by someone who is not on the team:
 - the path to mainnet.
 
 AWS is the hosting platform (owner decision), because the landing page already runs there: S3 and CloudFront in account `714386598111`, with Terraform state in `cleargatefinance-xyz-tfstate`. Decisions D1–D8 are open.
+
+**13 November 2026, scope extended (owner decision).** V2 is no longer only the beta:
+
+- **Everything V1 deferred is now scheduled**: passkeys and signed mandates, notifications, guardian and timelock, the hash-chained decision log, loss observation, delivery reports, address screening, withdrawals, KYC, the peg monitor, and holds. Each keeps its V1 design and Why boxes, and V2 adds the order, the files and what changed. They are Phases 15–19, after Cohort 1.
+- **Settlement stays `exact`.** V2 builds no channels, vouchers, netting or redemption. Phase 18 prepares only what is costly to retrofit (hold states, `scheme` on every transfer, one `Realize` entry point) and writes a design note from the x402 spec as it stands that day. The settlement-profile, channel and voucher tables are deliberately **not** created: new tables can be added later without touching an existing row, and V1's sketch for them predates reading the SDK's batch scheme. This settles the V1 open decision "`batch-settlement` support" for now.
+- **Changes from V1's design, flagged for the owner (D12 to D14):** a cooldown on newly enrolled credentials (15.2), decision-log signatures as periodic checkpoints rather than per record (16.2), and an on-ramp webhook that never posts to the ledger (17.4).
+- **Still open, and not decided here:** the primary CDP control model on mainnet (D11), and the choice of verification provider (D10).
