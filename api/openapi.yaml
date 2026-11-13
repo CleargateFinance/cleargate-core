@@ -1,7 +1,8 @@
 # Source of truth for the public API contract.
 #
-# The SDK, MCP server and console live in separate repositories and generate
-# their clients from this file. Keeping the contract here means a breaking
+# The SDK and MCP server live in separate repositories, and the console in
+# web/console/ in this one. All three generate their clients from this file, and
+# the console gets no route that is not in it. Keeping the contract here means a breaking
 # change is visible as a diff in this repo rather than discovered by a
 # customer's agent failing mid-run.
 #
