@@ -5,6 +5,7 @@
 package server
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -22,12 +23,20 @@ type Options struct {
 	// peer, which lets a client choose the address its rate limits and login
 	// throttle are counted against.
 	TrustedProxies []string
+
+	// ClientIPHeader, when set, names the header the edge puts the client's
+	// address in, such as CloudFront's CloudFront-Viewer-Address. The address
+	// is then read from it alone and X-Forwarded-For is never believed, so it
+	// excludes TrustedProxies. It is safe only when nothing but the edge can
+	// reach the server; see ClientAddressFrom.
+	ClientIPHeader string
 }
 
 // New builds the Gin engine with the standard middleware chain already
 // installed, in the order every request must pass through them.
 //
-// Order matters and is deliberate:
+// Order matters and is deliberate. With a client IP header configured,
+// ClientAddressFrom runs before all of these, so the address is settled first.
 //
 //  1. RequestID first, so every later middleware and handler can log with it.
 //  2. Recovery second, so it can catch panics from everything after it.
@@ -42,10 +51,25 @@ type Options struct {
 func New(opts Options, log *slog.Logger) (*gin.Engine, error) {
 	gin.SetMode(ginMode(opts.Mode))
 
+	if opts.ClientIPHeader != "" && len(opts.TrustedProxies) > 0 {
+		return nil, errors.New("server: a client IP header and trusted proxies are two answers to one question; set one")
+	}
+
 	engine := gin.New()
 	if err := engine.SetTrustedProxies(opts.TrustedProxies); err != nil {
 		return nil, fmt.Errorf("server: trusted proxies: %w", err)
 	}
+
+	// The client's address is settled before anything else runs, so every
+	// later middleware and handler sees the same one.
+	if opts.ClientIPHeader != "" {
+		if opts.Mode == "debug" {
+			log.Warn("trusting a header for the client's address with nothing in front of the API: any client can set it and choose its own rate limit",
+				slog.String("header", opts.ClientIPHeader))
+		}
+		engine.Use(ClientAddressFrom(opts.ClientIPHeader))
+	}
+
 	engine.Use(
 		RequestID(),
 		Recovery(log),
