@@ -68,7 +68,7 @@ The hackathon MVP is built, and it was demonstrated at Encode Club's Solana hack
 | Settlement | One CDP Server Wallet per account per chain. x402 `exact` signing on Solana. Confirmation, failure and expiry from the chain at `finalized`. Deposit detection with the funding gate. Hourly wallet-vs-ledger check. | `internal/modules/settlement`, `internal/infrastructure/{solana,cdp}`, migrations 000009–000010 |
 | Contract | `api/openapi.yaml`, held to the server by `openapi_routes_test.go` | `api/` |
 | Demo | Atlas Data merchant, scripted agent, a Go console stand-in, CDP faucet funding, the video script | `demo/` |
-| CI | Build, vet, unit, integration (testcontainers), lint with depguard, demo module | `.github/workflows/ci.yml` |
+| CI | Build, vet, unit, integration (testcontainers) and lint with depguard on every PR (`ci.yml`). The demo module (`demo.yml`) and the container image (`image.yml`) run only when their own files change. | `.github/workflows/` |
 
 ### Not built, and why it matters now
 
@@ -250,7 +250,7 @@ Changes to Core that any hosted environment needs, whatever the platform. All ar
 
 ### Task 9.1: Container image
 
-**Built** in `Dockerfile`, `.dockerignore`, the `image` target in `Makefile` and CI job `image` in `.github/workflows/ci.yml`. `config.LoadMigrate` (`internal/infrastructure/config/config.go`) and `cmd/migrate` read only `DATABASE_DSN` and `MIGRATIONS_DIR`. The tests are `TestLoadMigrate_NeedsOnlyTheDSN`, `TestLoadMigrate_RefusesMissingDSN`, `TestLoadMigrate_DirDefaultsToTheRepository`, `TestLoadMigrate_ReadsMigrationsDir`, and the CI job. Differences are in the Revision note of 13 November 2026, "container image".
+**Built** in `Dockerfile`, `.dockerignore`, the `image` target in `Makefile` and the `Image` workflow, `.github/workflows/image.yml`. `config.LoadMigrate` (`internal/infrastructure/config/config.go`) and `cmd/migrate` read only `DATABASE_DSN` and `MIGRATIONS_DIR`. The tests are `TestLoadMigrate_NeedsOnlyTheDSN`, `TestLoadMigrate_RefusesMissingDSN`, `TestLoadMigrate_DirDefaultsToTheRepository`, `TestLoadMigrate_ReadsMigrationsDir`, and the CI job. Differences are in the Revision note of 13 November 2026, "container image".
 
 **Goal:** one image holding the three binaries `api`, `worker` and `migrate`, and later `faucet`. The command is chosen per container, so the same image runs every role.
 
@@ -258,7 +258,7 @@ Changes to Core that any hosted environment needs, whatever the platform. All ar
 - [x] `migrations/` is in the image at `/migrations`, and `cmd/migrate` reads `MIGRATIONS_DIR`, defaulting to `./migrations` so `make migrate-up` is unchanged.
 - [x] No shell in the image and no `HEALTHCHECK`; the ALB's `GET /v1/health` decides.
 - [x] `.dockerignore` keeps local secrets out of every layer.
-- [x] **Test:** CI job `image` builds the arm64 image, then runs `/migrate up` and `/migrate version` from it against a Postgres service container. Both must exit 0.
+- [x] **Test:** the `Image` workflow builds the arm64 image, then runs `/migrate up` and `/migrate version` from it against a Postgres service container. Both must exit 0.
 
 > **Why one image and not three**
 > The three binaries come from the same modules and must agree on the schema. Shipping them as one artifact with one tag makes "the migrate that ran is the code that is serving" true by construction. Three images can drift by one build.
@@ -1509,3 +1509,11 @@ AWS is the hosting platform (owner decision), because the landing page already r
 - **The logging mailer's existing test moved** from the integration suite to `internal/app/mailer_test.go`, a unit test, since it never needed a database. `newMailer` now takes a `context.Context`, for the SDK's config loader.
 - **Task 12.2's console paths were corrected** to the ones the links already used: `/verify-email`, `/reset-password` and `/accept-invite`.
 - **New dependency:** `aws-sdk-go-v2` (`config`, `credentials`, `service/sesv2`). Adding it raised `smithy-go`, already present through the CDP SDK, from v1.13.3 to v1.28.9; the CDP tests pass on it.
+
+**15 November 2026, CI path filters.** The `image` and `demo` jobs moved out of `ci.yml` into `image.yml` and `demo.yml`, because GitHub filters by path per workflow and not per job. They no longer run on every PR:
+
+- **`demo.yml`** runs when `demo/**` or its own file changes. The demo imports nothing from the core's `internal/` and reaches the API over HTTP, so a core change cannot break its build.
+- **`image.yml`** runs when `Dockerfile`, `.dockerignore`, `migrations/**`, `cmd/**`, `go.mod`, `go.sum`, `Makefile` or its own file changes. `internal/**` is deliberately not in the list: `build-and-test` compiles it on every PR, and the image's own job is the Dockerfile, the migrations and `migrate` starting from them. If an image-only failure ever comes from `internal/`, add it.
+- **`ci.yml`** keeps `build-and-test`, `integration` and `lint`, which guard the money code and still run on every PR that is not docs-only.
+- **No required status checks exist on `main`** (its ruleset requires a pull request and nothing else), so a skipped workflow blocks nothing. **If a required check is ever added for `Image` or `Demo`, a path-filtered workflow that does not run leaves the PR waiting for it forever.** Add the check only after removing that workflow's path filter, or use a path-filter step with an always-running job.
+- Path lists are written out in full rather than as YAML anchors.
