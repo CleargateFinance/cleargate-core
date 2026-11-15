@@ -1,0 +1,49 @@
+name: Demo
+
+# demo/ is its own Go module, which ./... from the root never reaches, so it is
+# built, tested and linted in a workflow of its own. It runs only when demo/
+# changes: it imports nothing from the core's internal/ packages and talks to
+# the API over HTTP, so a core change cannot break its build, and CI could not
+# catch a runtime break against the API either way.
+#
+# GitHub filters by path per workflow, not per job, which is why this is not a
+# job in ci.yml. There are no required status checks on main, so a skipped run
+# blocks nothing.
+on:
+  push:
+    branches: [main]
+    paths:
+      - demo/**
+      - .github/workflows/demo.yml
+  pull_request:
+    paths:
+      - demo/**
+      - .github/workflows/demo.yml
+
+jobs:
+  demo:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: demo
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache: true
+          cache-dependency-path: demo/go.sum
+
+      - name: Build and vet
+        run: go build ./... && go vet ./...
+
+      - name: Run unit tests
+        run: go test ./... -race -count=1
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v7
+        with:
+          working-directory: demo
