@@ -303,6 +303,26 @@ func TestRateLimit_PublicBelievesATrustedProxy(t *testing.T) {
 	assert.Equal(t, http.StatusTooManyRequests, via("198.51.100.1"))
 }
 
+// TestRateLimit_PublicCountsTheViewerBehindCloudFront: behind CloudFront and
+// the load balancer, each tester is counted by the address CloudFront saw, and
+// the port in that header does not buy a fresh allowance per connection.
+func TestRateLimit_PublicCountsTheViewerBehindCloudFront(t *testing.T) {
+	f := newAPIFixture(t, func(c *config.Config) {
+		c.RateLimit.Public = 1
+		c.Server.ClientIPHeader = "CloudFront-Viewer-Address"
+	})
+	via := func(viewer string) int {
+		return f.serve(request{
+			method: http.MethodPost, path: "/v1/auth/login", body: "{", consoleHeader: true,
+			remoteAddr: "10.0.1.20:40000", header: map[string]string{"CloudFront-Viewer-Address": viewer},
+		}).Code
+	}
+
+	assert.Equal(t, http.StatusBadRequest, via("198.51.100.1:50001"))
+	assert.Equal(t, http.StatusBadRequest, via("198.51.100.2:50001"), "testers behind one load balancer are counted apart")
+	assert.Equal(t, http.StatusTooManyRequests, via("198.51.100.1:50002"), "a new connection is the same tester")
+}
+
 func TestRateLimit_AgentIsPerAgent(t *testing.T) {
 	f := newAPIFixture(t, func(c *config.Config) { c.RateLimit.Agent = 2 })
 	f.api.surfaces.agent.GET("/probe/agent", func(c *gin.Context) { c.Status(http.StatusNoContent) })
