@@ -173,3 +173,37 @@ func TestLoad_SESRequiresAnHTTPSConsole(t *testing.T) {
 		}
 	}
 }
+
+func TestLoad_ReadsClientIPHeader(t *testing.T) {
+	required(t)
+	t.Setenv("SERVER_CLIENT_IP_HEADER", "CloudFront-Viewer-Address")
+
+	cfg, err := Load()
+
+	require.NoError(t, err)
+	assert.Equal(t, "CloudFront-Viewer-Address", cfg.Server.ClientIPHeader)
+}
+
+// TestLoad_RefusesClientIPHeaderWithTrustedProxies: the two are different
+// answers to "where is the client's address", and setting both leaves it to
+// whichever one the code happens to check first.
+func TestLoad_RefusesClientIPHeaderWithTrustedProxies(t *testing.T) {
+	required(t)
+	t.Setenv("SERVER_CLIENT_IP_HEADER", "CloudFront-Viewer-Address")
+	t.Setenv("SERVER_TRUSTED_PROXIES", "10.0.0.0/8")
+
+	_, err := Load()
+
+	assert.ErrorContains(t, err, "SERVER_CLIENT_IP_HEADER")
+}
+
+func TestLoad_RefusesAnInvalidClientIPHeaderName(t *testing.T) {
+	for _, name := range []string{"Bad Header", "X-Ip:", "Ü"} {
+		required(t)
+		t.Setenv("SERVER_CLIENT_IP_HEADER", name)
+
+		_, err := Load()
+
+		assert.ErrorContains(t, err, "SERVER_CLIENT_IP_HEADER", name)
+	}
+}
