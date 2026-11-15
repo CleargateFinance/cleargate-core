@@ -77,6 +77,13 @@ type Server struct {
 	// everyone would let any client name its own address and step around the
 	// per-address limits and the login throttle.
 	TrustedProxies []string
+
+	// ClientIPHeader is SERVER_CLIENT_IP_HEADER: the header the edge puts the
+	// client's address in, CloudFront-Viewer-Address behind CloudFront. When
+	// set, the address is read from it alone and X-Forwarded-For is ignored,
+	// so it cannot be combined with TrustedProxies. Safe only when nothing but
+	// the edge can reach the API (Task 13.6).
+	ClientIPHeader string
 }
 
 // RateLimit caps requests per minute on each surface (Task 6.1).
@@ -171,6 +178,7 @@ func Load() (*Config, error) {
 			ShutdownTimeout: envDuration("SERVER_SHUTDOWN_TIMEOUT", 15*time.Second),
 			Mode:            env("SERVER_MODE", "debug"),
 			TrustedProxies:  envList("SERVER_TRUSTED_PROXIES"),
+			ClientIPHeader:  strings.TrimSpace(os.Getenv("SERVER_CLIENT_IP_HEADER")),
 		},
 		RateLimit: RateLimit{
 			Public:  envInt("RATE_LIMIT_PUBLIC_PER_MINUTE", 30),
@@ -334,6 +342,15 @@ func (c *Config) validate() error {
 			}
 		}
 	}
+	if h := c.Server.ClientIPHeader; h != "" {
+		if !validHeaderName(h) {
+			problems = append(problems, fmt.Errorf("SERVER_CLIENT_IP_HEADER %q is not a header name", h))
+		}
+		if len(c.Server.TrustedProxies) > 0 {
+			problems = append(problems, errors.New(
+				"SERVER_CLIENT_IP_HEADER and SERVER_TRUSTED_PROXIES are two answers to where the client's address is; set one"))
+		}
+	}
 	for name, limit := range map[string]int{
 		"RATE_LIMIT_PUBLIC_PER_MINUTE":  c.RateLimit.Public,
 		"RATE_LIMIT_AGENT_PER_MINUTE":   c.RateLimit.Agent,
@@ -386,6 +403,19 @@ const masterKeySize = 32
 
 // env returns the environment variable named key, or fallback when it is unset
 // or empty.
+// validHeaderName accepts letters, digits and hyphens, which covers every
+// header an edge uses for a client's address and rejects a typo with a space
+// or a colon that would otherwise never match.
+func validHeaderName(h string) bool {
+	for _, r := range h {
+		ok := r == '-' || r >= '0' && r <= '9' || r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z'
+		if !ok {
+			return false
+		}
+	}
+	return h != ""
+}
+
 // credentialSafeURL reports whether an emailed link to raw keeps its token off
 // the network in clear text: HTTPS, or plain HTTP only to this machine, which is
 // how a developer tries the real transport against a console on a laptop.

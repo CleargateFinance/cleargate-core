@@ -172,7 +172,11 @@ func BuildAPI(ctx context.Context, cfg *config.Config, log *slog.Logger) (*API, 
 	if err != nil {
 		return fail(fmt.Errorf("app: rate limits: %w", err))
 	}
-	engine, err := server.New(server.Options{Mode: cfg.Server.Mode, TrustedProxies: cfg.Server.TrustedProxies}, log)
+	engine, err := server.New(server.Options{
+		Mode:           cfg.Server.Mode,
+		TrustedProxies: cfg.Server.TrustedProxies,
+		ClientIPHeader: cfg.Server.ClientIPHeader,
+	}, log)
 	if err != nil {
 		return fail(fmt.Errorf("app: %w", err))
 	}

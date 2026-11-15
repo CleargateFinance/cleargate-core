@@ -280,18 +280,14 @@ Changes to Core that any hosted environment needs, whatever the platform. All ar
 
 ### Task 9.3: Client IP behind CloudFront and the ALB
 
+**Built** in `internal/infrastructure/server/clientip.go` (`ClientAddressFrom`), `server.Options.ClientIPHeader` in `server.go`, and `SERVER_CLIENT_IP_HEADER` in `internal/infrastructure/config/config.go`, wired in `internal/app/api.go`. The tests are `TestClientIP_FromViewerAddressHeader`, `TestClientIP_IgnoresForwardedForWhenHeaderConfigured`, `TestClientIP_MalformedHeaderFallsBackToPeer`, `TestNew_RefusesAHeaderAndTrustedProxiesTogether`, `TestNew_WarnsInDebugWhenTrustingAHeader` (`server_test.go`), `TestLoad_ReadsClientIPHeader`, `TestLoad_RefusesClientIPHeaderWithTrustedProxies`, `TestLoad_RefusesAnInvalidClientIPHeaderName` (config), and the integration test `TestRateLimit_PublicCountsTheViewerBehindCloudFront` (`internal/app/auth_routes_test.go`). Differences are in the Revision note of 15 November 2026, "client IP".
+
 **Goal:** the public rate limit and the audit trail see the tester's address, not CloudFront's.
 
-**Files:**
-- Modify: `internal/infrastructure/server/server.go`, `server_test.go`, `internal/infrastructure/config/config.go` (`SERVER_CLIENT_IP_HEADER`), `.env.example`
-
-- [ ] Add `SERVER_CLIENT_IP_HEADER`. When it is set, the client address is parsed from that header and `X-Forwarded-For` is ignored. CloudFront's `CloudFront-Viewer-Address` is `ip:port`, and IPv6 comes as `[::1]:port`.
-- [ ] When it is empty, behaviour is exactly today's: `SERVER_TRUSTED_PROXIES` and `X-Forwarded-For`.
-- [ ] This is safe only because the ALB accepts traffic from CloudFront alone (Task 13.6). Say so in the config comment, and have the API log a warning at boot if the header is set and `SERVER_MODE=debug`.
-- [ ] **Tests:**
-  - `TestClientIP_FromViewerAddressHeader`, covering IPv4 and IPv6.
-  - `TestClientIP_IgnoresForwardedForWhenHeaderConfigured`
-  - `TestClientIP_MalformedHeaderFallsBackToPeer`: never an empty address, which the limiter would treat as unlimited.
+- [x] `SERVER_CLIENT_IP_HEADER`: when set, the client address is parsed from that header (`ip:port`, `[ipv6]:port` or a bare address) and `X-Forwarded-For` is ignored.
+- [x] When it is empty, behaviour is exactly today's: `SERVER_TRUSTED_PROXIES` and `X-Forwarded-For`.
+- [x] The config comment and `.env.example` say it is safe only when the ALB accepts CloudFront alone, and the API warns at boot when it is set with `SERVER_MODE=debug`.
+- [x] **Tests:** as listed in the Built line.
 
 > **Why a header and not CloudFront's IP ranges as trusted proxies**
 > CloudFront publishes hundreds of ranges, and they change. A stale list silently turns into "every tester shares one bucket". The origin-facing security group already guarantees that every request reaching the task came through CloudFront. Reading the one header CloudFront sets, and never one a client can set, is both simpler and stricter.
@@ -871,6 +867,7 @@ flowchart TB
   - the SES DKIM, MAIL FROM and DMARC records
 - [ ] **Smoke test after apply:**
   - `curl https://api.cleargatefinance.xyz/v1/health` returns `ok`.
+  - A request that sends its own `CloudFront-Viewer-Address` reaches the API with CloudFront's value, not the client's (Task 9.3 trusts that header, so this is what makes it safe). Check it once with a test route or the request log.
   - `curl https://origin.cleargatefinance.xyz/v1/health` without the secret header returns `403`, and from the internet the ALB origin is unreachable anyway.
 
 > **Why agents also go through CloudFront**
@@ -1519,3 +1516,12 @@ AWS is the hosting platform (owner decision), because the landing page already r
 - Path lists are written out in full rather than as YAML anchors.
 
 **15 November 2026, CI stages.** `ci.yml` is now three jobs in sequence instead of three in parallel: `build-and-lint` (build, vet, golangci-lint), then `unit-tests`, then `integration`, each with `needs:` on the one before. A PR that does not compile or lint is told so in about a minute and never spends the minutes the Postgres-backed tests cost. **The trade-off is wall-clock time**: the stages add up where parallel jobs overlapped, so a green run takes roughly the sum of the three (about 5 minutes on the last runs) instead of the slowest one (about 3). Lint moved into the first stage with build and vet, which is the one merge the owner asked for. The `Demo` and `Image` workflows are unaffected.
+
+
+**15 November 2026, client IP (Task 9.3).** Differences from the task as written:
+
+- **The address is settled by a middleware that rewrites the request's remote address**, `server.ClientAddressFrom`, installed before every other middleware. Every existing caller of `c.ClientIP()` (the public rate limit, the login throttle, the session's audit fields) gets the viewer's address unchanged. Gin's own `TrustedPlatform` was set aside because it returns the header raw, and CloudFront's `ip:port` would give every connection its own rate-limit bucket.
+- **The port is dropped and an IPv4-mapped IPv6 address is unmapped**, so one tester has one key.
+- **Boot refuses `SERVER_CLIENT_IP_HEADER` together with `SERVER_TRUSTED_PROXIES`**, and refuses a header name with anything but letters, digits and hyphens. Two settings answering "where is the client's address" would leave it to whichever the code checked first.
+- **A value that does not parse, including a comma-separated list, falls back to the peer, the load balancer.** That is correct only if a client cannot put its own value in the header. **This assumes CloudFront overwrites a viewer-supplied `CloudFront-Viewer-Address`**; Task 13.6's smoke test now checks it before testers arrive. If it does not, a client could send a malformed value and share the load balancer's bucket with everyone else.
+- **An integration test, `TestRateLimit_PublicCountsTheViewerBehindCloudFront`, runs through `BuildAPI` and the Redis-backed limiter.** With the one wiring line in `api.go` removed it fails, with two testers sharing one allowance.
