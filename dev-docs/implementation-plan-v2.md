@@ -68,7 +68,7 @@ The hackathon MVP is built, and it was demonstrated at Encode Club's Solana hack
 | Settlement | One CDP Server Wallet per account per chain. x402 `exact` signing on Solana. Confirmation, failure and expiry from the chain at `finalized`. Deposit detection with the funding gate. Hourly wallet-vs-ledger check. | `internal/modules/settlement`, `internal/infrastructure/{solana,cdp}`, migrations 000009–000010 |
 | Contract | `api/openapi.yaml`, held to the server by `openapi_routes_test.go` | `api/` |
 | Demo | Atlas Data merchant, scripted agent, a Go console stand-in, CDP faucet funding, the video script | `demo/` |
-| CI | Build, vet, unit, integration (testcontainers) and lint with depguard on every PR (`ci.yml`). The demo module (`demo.yml`) and the container image (`image.yml`) run only when their own files change. | `.github/workflows/` |
+| CI | On every PR (`ci.yml`), in three stages that each need the one before: build, vet and lint with depguard; unit tests; integration tests (testcontainers). The demo module (`demo.yml`) and the container image (`image.yml`) run only when their own files change. | `.github/workflows/` |
 
 ### Not built, and why it matters now
 
@@ -1517,3 +1517,5 @@ AWS is the hosting platform (owner decision), because the landing page already r
 - **`ci.yml`** keeps `build-and-test`, `integration` and `lint`, which guard the money code and still run on every PR that is not docs-only.
 - **No required status checks exist on `main`** (its ruleset requires a pull request and nothing else), so a skipped workflow blocks nothing. **If a required check is ever added for `Image` or `Demo`, a path-filtered workflow that does not run leaves the PR waiting for it forever.** Add the check only after removing that workflow's path filter, or use a path-filter step with an always-running job.
 - Path lists are written out in full rather than as YAML anchors.
+
+**15 November 2026, CI stages.** `ci.yml` is now three jobs in sequence instead of three in parallel: `build-and-lint` (build, vet, golangci-lint), then `unit-tests`, then `integration`, each with `needs:` on the one before. A PR that does not compile or lint is told so in about a minute and never spends the minutes the Postgres-backed tests cost. **The trade-off is wall-clock time**: the stages add up where parallel jobs overlapped, so a green run takes roughly the sum of the three (about 5 minutes on the last runs) instead of the slowest one (about 3). Lint moved into the first stage with build and vet, which is the one merge the owner asked for. The `Demo` and `Image` workflows are unaffected.
