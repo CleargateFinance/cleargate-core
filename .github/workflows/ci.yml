@@ -8,7 +8,11 @@ on:
     paths-ignore: ["docs/**", "**.md"]
 
 jobs:
-  build-and-test:
+  # Three stages, each starting only if the one before it passed. The cheap
+  # checks go first, so a PR that does not compile or lint is told so in about a
+  # minute without spending the minutes the Postgres-backed tests cost. The price
+  # is wall-clock time: the stages add up, where parallel jobs would overlap.
+  build-and-lint:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -26,10 +30,27 @@ jobs:
       - name: Vet (static analysis)
         run: go vet ./...
 
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v7
+
+  unit-tests:
+    needs: build-and-lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache: true
+
       - name: Run unit tests
         run: go test ./internal/... -race -count=1
 
   integration:
+    needs: unit-tests
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -47,18 +68,3 @@ jobs:
       # testcontainers-go spins up the same Postgres/Redis containers used locally.
       - name: Run integration tests (spins real Postgres + Redis via testcontainers)
         run: go test ./... -race -count=1 -tags=integration
-
-  lint:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: "1.26"
-          cache: true
-
-      - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@v7
